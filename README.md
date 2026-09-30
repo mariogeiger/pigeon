@@ -23,7 +23,8 @@ change.
   as `/cheapmo/src/@mario`, belongs to that member: only their machines write
   it, and everyone can read it. A member can have as many as they like.
 - **Drop folders.** Every other folder is a drop folder: anyone can add files
-  to it, and a file never changes once someone else has received it.
+  to it, and a file freezes once published, after which only a request
+  changes it.
 - **Requests.** To change a file you do not own, you propose or force the
   change from the web interface or the command line, and the owner's machine
   applies it.
