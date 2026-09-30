@@ -8,8 +8,8 @@ Syncthing and similar tools sync folders that several machines write, so two
 people editing the same file end up with a conflict copy. pigeon gives every
 file exactly one owner instead: only the owner's machines write it, so people
 never conflict, and anyone else proposes or forces a change from the web
-interface. It is our own tool, written in Rust on top of existing libraries,
-so that the group can adapt it at will.
+interface or the command line. It is our own tool, written in Rust on top of
+existing libraries, so that the group can adapt it at will.
 
 ## Status
 
@@ -25,10 +25,11 @@ change.
 - **Drop folders.** Every other folder is a drop folder: anyone can add files
   to it, and a file never changes once someone else has received it.
 - **Requests.** To change a file you do not own, you propose or force the
-  change from the web interface, and the owner's machine applies it.
-- **Subscriptions.** Everyone sees the whole tree in the web interface; each
-  machine downloads only the folders it subscribes to, and single files on
-  demand.
+  change from the web interface or the command line, and the owner's machine
+  applies it.
+- **Subscriptions.** Everyone sees the whole tree, in the web interface or the
+  command line; each machine downloads only the folders it subscribes to, and
+  single files on demand.
 - **Peer to peer.** Machines connect directly, end-to-end encrypted, over the
   local network or the internet.
 

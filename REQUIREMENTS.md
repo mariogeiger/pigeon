@@ -62,8 +62,9 @@ of the first implementation.
 - **P0** A request replaces, renames, or deletes a file that the requester
   cannot write. It either proposes the change, which the owner accepts or
   refuses, or forces it, which needs no acceptance.
-- **P0** Requests are made only from the web UI, for instance by selecting a
-  file and proposing a replacement. Editing a file on disk never creates one.
+- **P0** Requests are made only from the web UI or the CLI, for instance by
+  selecting a file and proposing a replacement. Editing a file on disk never
+  creates one.
 - **P0** A machine of the file's owner applies every request: a proposal once
   accepted, a forced request as soon as that machine is online. The owner
   stays the only writer, so requests never conflict; a forced request waits
@@ -157,6 +158,8 @@ of the first implementation.
   missing, a flag for every prompt so that scripts never block, `--json`
   output, errors that name the command to run next, and shell completions.
   The CLI, over SSH, manages headless machines such as the server.
+- **P0** The web UI and the CLI offer exactly the same actions: whatever this
+  file says the web UI does, the CLI does too.
 - **Later** iOS, and a WebAssembly build that runs pigeon in a browser
   without installation.
 
