@@ -87,6 +87,8 @@ of the first implementation.
 - **P0** A one-time copy keeps the downloaded version. The web UI marks it
   outdated once a newer version exists, and one click refreshes it or turns
   it into a subscription.
+- **P0** Unsubscribing from a folder turns its downloaded files into one-time
+  copies, and offers to delete them to free the space.
 - **P0** Deleting on disk a file one cannot write unsubscribes from that file:
   it is not downloaded again, and the web UI shows it as excluded, with a way
   to bring it back. Deleting a file in one's own personal folder deletes it
@@ -113,9 +115,10 @@ of the first implementation.
 ## History
 
 - **P1** Any machine can keep history. The group's "server" is nothing
-  special: an always-on machine, usually headless, subscribed to everything
-  with history on. It also serves files while their owners' machines are off,
-  and it gains no right to write.
+  special: an always-on machine, usually headless, that joins as a member of
+  its own, such as `server`, and subscribes to everything with history on. It
+  owns no personal folder, so it gains no right to write anyone's files, and
+  it serves files while their owners' machines are off.
 - **P1** Default retention, adjustable on each machine: every version for 24
   hours, then the last version of each day for 30 days, then the last version
   of each week for a year; the last version before a deletion for a year;
@@ -146,9 +149,14 @@ of the first implementation.
 ## Platforms and interfaces
 
 - **P0** Windows, Linux, and macOS, on Intel and Apple Silicon.
-- **P0** One Rust program per machine synchronizes and serves the web UI
-  itself on localhost, with pages generated in Rust: a single binary.
-- **P1** A JSON web API, and a CLI built on it.
+- **P0** One Rust program per machine synchronizes, answers a JSON API, and
+  serves the web UI with pages generated in Rust, all on localhost only: a
+  single binary.
+- **P0** A CLI on that API, with the ergonomics of `gh`: `pigeon <noun> <verb>`
+  commands, prompts only when a terminal is attached and an argument is
+  missing, a flag for every prompt so that scripts never block, `--json`
+  output, errors that name the command to run next, and shell completions.
+  The CLI, over SSH, manages headless machines such as the server.
 - **Later** iOS, and a WebAssembly build that runs pigeon in a browser
   without installation.
 
@@ -177,8 +185,3 @@ of the first implementation.
 - Syncing symbolic links, Unix permissions, or extended attributes, apart
   from the executable bit.
 - Placeholder files and a mobile app, in the first version.
-
-## Open questions
-
-- What happens to local copies when a subscription ends.
-- How to reach the web UI of a headless machine from another machine.
