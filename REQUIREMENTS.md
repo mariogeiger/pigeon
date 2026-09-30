@@ -24,7 +24,8 @@ of the first implementation.
   files in the hidden drop folder `/<group>/.pigeon`, which every machine
   follows. They sync, show up, and keep their history like any other file,
   and nothing ever edits them; pigeon publishes them at once, without the
-  5-minute delay of drop folders.
+  5-minute delay of drop folders. A member's notifications are simply the
+  statements that concern them.
 - **P1** A member changes their password from any machine where they are
   logged in. Any member can reset another member's password from the web UI,
   without a vote; everyone sees it, and the member is notified.
@@ -38,20 +39,23 @@ of the first implementation.
 ## Folders and ownership
 
 - **P0** Every member sees the group's whole tree in the web UI.
+- **P0** Every folder follows one rule with two settings: who may add files
+  to it, and when its files freeze. Only a file's author's machines write it,
+  and only until it freezes; any other change goes through a request. A
+  personal folder lets only its owner add files, and they never freeze; a
+  drop folder lets anyone add files, and each freezes once another member has
+  received it entirely.
 - **P0** A member creates a personal folder by creating, on disk or in the web
   UI, a folder named `@` followed by their name anywhere outside personal
   folders, and may have as many as they like, such as `/cheapmo/src/@mario`
-  and `/cheapmo/etc/@mario`. Only the owner's machines write inside it, and
-  the owner names its subfolders freely.
+  and `/cheapmo/etc/@mario`. The owner names its subfolders freely.
 - **P0** Outside personal folders, only the member `<name>` can create a
   folder named `@<name>`, and nobody can join under a name while a folder
   `@<name>` exists. Other names starting with `@`, such as npm's `@types`,
   are ordinary folders.
-- **P0** Every other folder, the root included, is a drop folder: anyone can
-  add files and folders to it, and nothing in it changes once received, not
-  even for its author, except through a request. This holds for the folders
-  themselves: once received, a folder is renamed or deleted only through a
-  request.
+- **P0** Every other folder, the root included, is a drop folder. The folders
+  in it follow the same rule as its files: once received, a folder is renamed
+  or deleted only through a request.
 - **P0** Every file therefore has exactly one owner: the member whose personal
   folder holds it, or the member who dropped it. Only the owner's machines
   write it, so two people never conflict.
@@ -61,8 +65,6 @@ of the first implementation.
   machine, which can still edit or delete it. It is sent after 5 minutes
   without modification, and any modification before another member has
   received it entirely restarts this cycle.
-- **P0** Once another member has received it entirely, the file is frozen,
-  and a later modification on disk is set aside.
 - **P0** When two members drop the same name at once, both files are kept and
   one is renamed.
 
@@ -82,9 +84,11 @@ of the first implementation.
 
 ## Requests
 
-- **P0** A request replaces, renames, or deletes a file that the requester
-  cannot write. It either proposes the change, which the owner accepts or
-  refuses, or forces it, which needs no acceptance.
+- **P0** A request is a patch on the files of one owner that the requester
+  cannot write: a set of paths, each with its new content or nothing, so that
+  one request replaces, adds, renames, and deletes files at once, like a pull
+  request. It either proposes the patch, which the owner accepts or refuses
+  as a whole, or forces it, which needs no acceptance.
 - **P0** Requests are made only from the web UI or the CLI, for instance by
   selecting a file and proposing a replacement. Editing a file on disk never
   creates one.
@@ -97,22 +101,25 @@ of the first implementation.
   owner's history keeps the replaced version, so a forced change can always
   be undone.
 - **P0** The web UI shows the differences for text files, and marks a
-  proposal as based on an old version when the file changed since.
+  proposal as based on an old version when one of its files changed since.
 
 ## Selection
 
 - **P0** Each machine holds what its selection says: a list of rules, each a
   pattern in the gitignore syntax of `.pigeonignore` with a mode, where the
   last matching rule wins. A rule follows its paths, downloading them and
-  keeping them in sync; freezes them at a date, keeping the versions of that
-  moment; or excludes them.
+  keeping them in sync; pins them at a date, keeping for each file the last
+  version from before that date; or excludes them.
 - **P0** Every action on local copies edits the selection. Subscribing adds a
-  follow rule, and a one-time download adds a freeze at the current date.
-  Unsubscribing turns a follow rule into a freeze, or into an exclusion to
-  free the space. Deleting on disk a file one cannot write adds an exclusion,
-  and refreshing moves a freeze to the current date.
-- **P0** The web UI marks a frozen file as outdated once a newer version
+  follow rule, and a one-time download adds a pin at the current date.
+  Unsubscribing turns a follow rule into a pin, or into an exclusion to free
+  the space. Deleting on disk a file one cannot write adds an exclusion, and
+  refreshing moves a pin to the current date.
+- **P0** The web UI marks a pinned file as outdated once a newer version
   exists.
+- **P1** A pin may target any past date that some machine's history covers,
+  which brings back an earlier state of any part of the tree, at the
+  resolution the history kept.
 - **P0** Deleting a file in one's own personal folder deletes it for everyone,
   and the owner's history keeps its last version.
 - **P0** An owner keeps files out of publication with a `.pigeonignore` file,
@@ -185,8 +192,10 @@ of the first implementation.
   missing, a flag for every prompt so that scripts never block, `--json`
   output, errors that name the command to run next, and shell completions.
   The CLI, over SSH, manages headless machines such as the server.
-- **P0** The web UI and the CLI offer exactly the same actions: whatever this
-  file says the web UI does, the CLI does too.
+- **P0** Each action is defined once, with its name, arguments, and effect,
+  and the CLI commands, the JSON API, and the web UI forms are generated from
+  that definition. The web UI and the CLI therefore offer exactly the same
+  actions: whatever this file says the web UI does, the CLI does too.
 - **Later** iOS, and a WebAssembly build that runs pigeon in a browser
   without installation.
 
