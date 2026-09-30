@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Fail when a file reaches 1000 lines or a source file lacks a short header.
+
+A header is the language's file-level documentation: a Python module
+docstring, Rust `//!` comments, or otherwise the first comment block after
+any shebang. Only languages known by extension or shebang need one; empty
+files are exempt. A header over 20 lines fails: it states the mission, and
+detail belongs in the code. With no arguments, every file tracked by Git is
+checked. Skip files with the pre-commit `exclude:` pattern or
+`SKIP=<hook id>`.
+"""
+
+import ast
+import subprocess
+import sys
+from pathlib import Path
+
+MAX_LINES = 999
+MAX_HEADER_LINES = 20
+
+LINE_COMMENTS = {
+    "#": {
+        ".sh", ".bash", ".zsh", ".fish", ".sbatch", ".rb", ".pl", ".r", ".jl",
+        ".nix", ".cmake", ".mk",
+    },
+    "//": {
+        ".c", ".h", ".cc", ".cpp", ".cxx", ".hh", ".hpp", ".cu", ".cuh",
+        ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".go", ".java", ".kt",
+        ".swift", ".scala", ".zig", ".typ", ".dart", ".cs",
+    },
+    "--": {".lua", ".sql", ".hs"},
+    "%": {".tex", ".m"},
+}
+BLOCK_COMMENT_PREFIXES = {"//"}
+SHEBANG_LANGUAGES = {"python": ".py", "bash": ".sh", "sh": ".sh", "zsh": ".zsh", "node": ".js"}
+
+
+def language(path, text):
+    """Return the extension naming the file's language, or None if unknown."""
+    suffix = Path(path).suffix.lower()
+    if suffix:
+        return suffix
+    first_line = text.split("\n", 1)[0]
+    if not first_line.startswith("#!"):
+        return None
+    words = first_line[2:].split()
+    interpreters = [Path(word).name for word in words if not word.startswith("-")]
+    if "uv" in interpreters:
+        return ".py"
+    for interpreter in interpreters:
+        stem = interpreter.rstrip("0123456789.")
+        if stem in SHEBANG_LANGUAGES:
+            return SHEBANG_LANGUAGES[stem]
+    return None
+
+
+def python_header(text):
+    try:
+        return ast.get_docstring(ast.parse(text)) or ""
+    except SyntaxError:
+        return ""
+
+
+def rust_header(text):
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    header = []
+    for line in lines:
+        if not line.startswith("//!"):
+            break
+        header.append(line[3:].removeprefix(" "))
+    return "\n".join(header)
+
+
+def comment_header(text, prefix):
+    lines = text.splitlines()
+    if lines and lines[0].startswith("#!"):
+        lines = lines[1:]
+    while lines and not lines[0].strip():
+        lines = lines[1:]
+    if not lines:
+        return ""
+    if prefix in BLOCK_COMMENT_PREFIXES and lines[0].lstrip().startswith("/*"):
+        block = []
+        for line in lines:
+            block.append(line)
+            if "*/" in line:
+                break
+        body = "\n".join(block).strip().removeprefix("/*").removeprefix("*").removeprefix("!")
+        body = body.split("*/", 1)[0]
+        stripped = (line.strip().removeprefix("*").removeprefix(" ") for line in body.splitlines())
+        return "\n".join(stripped).strip()
+    header = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith(prefix):
+            break
+        header.append(stripped[len(prefix):].removeprefix(" "))
+    return "\n".join(header).strip()
+
+
+def header(path, text):
+    """Return the file's header text, "" if it has none, or None if not required."""
+    suffix = language(path, text)
+    if suffix == ".py":
+        return python_header(text)
+    if suffix == ".rs":
+        return rust_header(text)
+    for prefix, suffixes in LINE_COMMENTS.items():
+        if suffix in suffixes:
+            return comment_header(text, prefix)
+    return None
+
+
+def read_text(path):
+    """Return the file's text, or None when it is binary or unreadable."""
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return None
+    if b"\0" in data[:8192]:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def line_count(text):
+    return text.count("\n") + (not text.endswith("\n") and text != "")
+
+
+def violations(path):
+    text = read_text(path)
+    if text is None:
+        return []
+    found = []
+    lines = line_count(text)
+    if lines > MAX_LINES:
+        found.append(f"{lines} lines, over the {MAX_LINES}-line limit; split it by sub-mission")
+    if not text.strip():
+        return found
+    file_header = header(path, text)
+    if file_header == "":
+        found.append("missing file header describing its mission")
+    elif file_header is not None:
+        header_lines = len(file_header.splitlines())
+        if header_lines > MAX_HEADER_LINES:
+            found.append(
+                f"{header_lines}-line header, over the {MAX_HEADER_LINES}-line limit; keep only the mission"
+            )
+    return found
+
+
+def tracked_files():
+    listing = subprocess.run(["git", "ls-files", "-z"], capture_output=True, check=True)
+    return [name for name in listing.stdout.decode().split("\0") if name]
+
+
+def main(arguments):
+    failed = False
+    for path in arguments or tracked_files():
+        for problem in violations(path):
+            print(f"{path}: {problem}", file=sys.stderr)
+            failed = True
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

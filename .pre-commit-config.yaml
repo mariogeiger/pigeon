@@ -1,0 +1,8 @@
+repos:
+  - repo: local
+    hooks:
+      - id: check-file-length-and-header
+        name: check file length and header
+        entry: scripts/check-file-length-and-header
+        language: script
+        types: [text]
