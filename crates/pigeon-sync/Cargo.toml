@@ -1,0 +1,28 @@
+[package]
+name = "pigeon-sync"
+description = "pigeon's engine: keeping a group's root, its ledger, and its peers in agreement"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pigeon-core.workspace = true
+pigeon-net.workspace = true
+pigeon-store.workspace = true
+anyhow.workspace = true
+iroh.workspace = true
+iroh-base.workspace = true
+iroh-blobs.workspace = true
+iroh-mdns-address-lookup.workspace = true
+notify.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

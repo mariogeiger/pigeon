@@ -8,7 +8,7 @@ use pigeon_core::clock::Stamp;
 use pigeon_core::identity::GroupId;
 use pigeon_core::ledger::Ledger;
 use pigeon_core::patch::SignedPatch;
-use pigeon_core::path::PathKey;
+use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::retention::Retention;
 use pigeon_core::selection::{Rule, Selection};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
@@ -119,17 +119,32 @@ impl State {
             .transpose()?)
     }
 
-    /// Every index entry, by path key.
+    /// The index entries at `under` and inside it, or every entry, by path
+    /// key.
     ///
     /// # Errors
     ///
     /// Fails if the database cannot be read.
-    pub fn index(&self) -> Result<Vec<IndexEntry>> {
+    pub fn index(&self, under: Option<&GroupPath>) -> Result<Vec<IndexEntry>> {
         let transaction = self.database.begin_read()?;
         let table = transaction.open_table(INDEX)?;
+        let start = under.map(GroupPath::key);
+        let range = match &start {
+            Some(key) => table.range(key.as_str()..)?,
+            None => table.range::<&str>(..)?,
+        };
         let mut entries = Vec::new();
-        for entry in table.iter()? {
-            let (_, value) = entry?;
+        for entry in range {
+            let (key, value) = entry?;
+            let key = key.value();
+            if let Some(start) = &start {
+                let Some(rest) = key.strip_prefix(start.as_str()) else {
+                    break;
+                };
+                if !rest.is_empty() && !rest.starts_with('/') {
+                    continue;
+                }
+            }
             entries.push(postcard::from_bytes(value.value())?);
         }
         Ok(entries)

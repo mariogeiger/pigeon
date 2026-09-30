@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use iroh_blobs::Hash;
 use iroh_blobs::api::TempTag;
+use iroh_blobs::api::proto::BlobStatus;
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::store::fs::options::Options;
 use iroh_blobs::store::{GcConfig, ProtectOutcome};
@@ -78,19 +79,34 @@ impl Blobs {
         *self.protected.lock().expect("no panic holds the lock") = hashes;
     }
 
-    /// Copies the file at `path` into the store. The returned tag keeps it
-    /// from garbage collection until it is protected or dropped.
+    /// Copies the file at `path` into the store and returns its size. The
+    /// returned tag keeps it from garbage collection until it is protected
+    /// or dropped.
     ///
     /// # Errors
     ///
     /// Fails if the file cannot be read.
-    pub async fn import(&self, path: &Path) -> Result<TempTag> {
-        self.store
+    pub async fn import(&self, path: &Path) -> Result<(TempTag, u64)> {
+        let tag = self
+            .store
             .blobs()
             .add_path(path)
             .temp_tag()
             .await
-            .map_err(blob_error)
+            .map_err(blob_error)?;
+        match self
+            .store
+            .blobs()
+            .status(tag.hash())
+            .await
+            .map_err(blob_error)?
+        {
+            BlobStatus::Complete { size } => Ok((tag, size)),
+            _ => Err(StoreError::Blobs(format!(
+                "{} was not stored whole",
+                path.display()
+            ))),
+        }
     }
 
     /// Whether the store holds the whole content.
@@ -186,7 +202,8 @@ mod tests {
             .unwrap();
         let source = dir.path().join("source");
         std::fs::write(&source, vec![7u8; 100_000]).unwrap();
-        let tag = blobs.import(&source).await.unwrap();
+        let (tag, size) = blobs.import(&source).await.unwrap();
+        assert_eq!(size, 100_000);
         let hash = hash_file(&source).unwrap();
         assert_eq!(tag.hash(), blob_hash(&hash));
         assert!(blobs.has(&hash).await.unwrap());

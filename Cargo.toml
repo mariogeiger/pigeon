@@ -13,6 +13,7 @@ rust-version = "1.91"
 pigeon-core = { path = "crates/pigeon-core" }
 pigeon-store = { path = "crates/pigeon-store" }
 pigeon-net = { path = "crates/pigeon-net" }
+pigeon-sync = { path = "crates/pigeon-sync" }
 anyhow = "1"
 argon2 = "0.5"
 blake3 = "1"
@@ -23,6 +24,7 @@ iroh = "1.3"
 iroh-blobs = "0.103"
 iroh-mdns-address-lookup = "0.6"
 n0-future = "0.3"
+notify = "8.2"
 iroh-base = { version = "1.3", default-features = false, features = ["key"] }
 postcard = { version = "1", features = ["use-std"] }
 redb = "4.1"

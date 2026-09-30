@@ -101,8 +101,39 @@ fn index_entries_are_set_and_removed_together() {
         .unwrap();
     assert_eq!(state.index_entry(&a.key()).unwrap(), Some(ea));
     state.update_index([(&b.key(), None)]).unwrap();
-    assert_eq!(state.index().unwrap().len(), 1);
+    assert_eq!(state.index(None).unwrap().len(), 1);
     assert_eq!(state.index_entry(&b.key()).unwrap(), None);
+}
+
+#[test]
+fn index_entries_are_listed_under_a_folder_without_case() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("s")).unwrap();
+    let paths = ["a", "a/b", "A/c", "ab", "a.txt", "b"].map(|p| GroupPath::parse(p).unwrap());
+    let entries: Vec<IndexEntry> = paths
+        .iter()
+        .map(|path| IndexEntry {
+            path: path.clone(),
+            seen: None,
+            synced: None,
+        })
+        .collect();
+    let keys: Vec<PathKey> = paths.iter().map(GroupPath::key).collect();
+    state
+        .update_index(keys.iter().zip(entries.iter().map(Some)))
+        .unwrap();
+    let under = |text: &str| -> Vec<String> {
+        let prefix = GroupPath::parse(text).unwrap();
+        let listed = state.index(Some(&prefix)).unwrap();
+        listed
+            .into_iter()
+            .map(|e| e.path.as_str().to_owned())
+            .collect()
+    };
+    assert_eq!(under("a"), ["a", "a/b", "A/c"]);
+    assert_eq!(under("A/C"), ["A/c"]);
+    assert!(under("c").is_empty());
+    assert_eq!(state.index(None).unwrap().len(), 6);
 }
 
 #[test]
