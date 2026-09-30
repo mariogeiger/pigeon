@@ -6,6 +6,7 @@ repos:
         entry: scripts/check-file-length-and-header
         language: script
         types: [text]
+        exclude: ^Cargo\.lock$
       - id: cargo-fmt
         name: cargo fmt
         entry: cargo fmt --all -- --check
