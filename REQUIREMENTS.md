@@ -59,9 +59,8 @@ of the first implementation.
   machine, which can still edit or delete it. It is sent after 5 minutes
   without modification, and any modification before another member has
   received it entirely restarts this cycle.
-- **P0** Once another member has received it entirely, the file is frozen. A
-  later modification on disk never propagates: pigeon restores the original
-  and keeps the modified content as a new draft named `name (2)`.
+- **P0** Once another member has received it entirely, the file is frozen,
+  and a later modification on disk is set aside.
 - **P0** When two members drop the same name at once, both files are kept and
   one is renamed.
 
