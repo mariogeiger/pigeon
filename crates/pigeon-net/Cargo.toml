@@ -1,0 +1,26 @@
+[package]
+name = "pigeon-net"
+description = "pigeon's network: admitting group machines, exchanging patches over a full mesh, and moving blobs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pigeon-core.workspace = true
+anyhow.workspace = true
+iroh.workspace = true
+iroh-blobs.workspace = true
+iroh-mdns-address-lookup.workspace = true
+n0-future.workspace = true
+postcard.workspace = true
+serde.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+iroh-base.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
