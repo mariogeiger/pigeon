@@ -12,7 +12,9 @@ of the first implementation.
   members with one or two machines each. Each group has its own root folder,
   such as `/cheapmo`, and nothing in pigeon is specific to one group.
 - **P0** Joining takes three fields at first launch: the group key, shared by
-  the members, which admits a new machine; a name; and a personal password.
+  the members, which admits a new machine; a name, of 1 to 32 characters
+  among `a`–`z` and `0`–`9`, so that it is valid in any path on every
+  system; and a personal password.
 - **P0** The first machine to claim a name reserves it; when two newcomers
   claim the same name at once, the earlier claim wins and the other machine
   asks for another name. The password derives the member's signing key, with
