@@ -19,9 +19,9 @@ change.
 
 ## How it works
 
-- **Personal folders.** A folder named after a member, such as
-  `/cheapmo/src/mario`, belongs to that member: only their machines write it,
-  and everyone can read it. A member can have as many as they like.
+- **Personal folders.** A folder named `@` followed by a member's name, such
+  as `/cheapmo/src/@mario`, belongs to that member: only their machines write
+  it, and everyone can read it. A member can have as many as they like.
 - **Drop folders.** Every other folder is a drop folder: anyone can add files
   to it, and a file never changes once someone else has received it.
 - **Requests.** To change a file you do not own, you propose or force the
