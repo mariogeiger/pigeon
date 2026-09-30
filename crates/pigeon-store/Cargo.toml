@@ -1,0 +1,29 @@
+[package]
+name = "pigeon-store"
+description = "pigeon's local state: group configuration, the patch log, the disk index, the set-aside list, and blobs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pigeon-core.workspace = true
+blake3 = { workspace = true, features = ["mmap", "rayon"] }
+data-encoding.workspace = true
+getrandom.workspace = true
+ignore.workspace = true
+iroh-base.workspace = true
+iroh-blobs.workspace = true
+postcard.workspace = true
+redb.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
