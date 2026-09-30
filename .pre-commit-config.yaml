@@ -6,3 +6,15 @@ repos:
         entry: scripts/check-file-length-and-header
         language: script
         types: [text]
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all -- --check
+        language: system
+        files: \.rs$
+        pass_filenames: false
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -D clippy::pedantic
+        language: system
+        files: (\.rs|Cargo\.toml|Cargo\.lock)$
+        pass_filenames: false
