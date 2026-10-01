@@ -1,4 +1,4 @@
-//! The questions `pigeon setup` asks, in French: yes or no, one choice
+//! The questions `pigeon setup` asks: yes or no, one choice
 //! among several, a line of text, and a member name checked as it is
 //! typed against the rules of names and the names already taken.
 
@@ -13,14 +13,14 @@ use pigeon_core::name::MemberName;
 ///
 /// Fails if the terminal cannot be read.
 pub fn yes(term: &Term, question: &str, yes: bool) -> Result<bool> {
-    let hint = if yes { "[O/n]" } else { "[o/N]" };
+    let hint = if yes { "[Y/n]" } else { "[y/N]" };
     loop {
         term.write_str(&format!("{question} {hint} "))?;
         match term.read_line()?.trim().to_lowercase().as_str() {
             "" => return Ok(yes),
-            "o" | "oui" | "y" | "yes" => return Ok(true),
-            "n" | "non" | "no" => return Ok(false),
-            _ => term.write_line("Répondez o (oui) ou n (non).")?,
+            "y" | "yes" => return Ok(true),
+            "n" | "no" => return Ok(false),
+            _ => term.write_line("Answer y (yes) or n (no).")?,
         }
     }
 }
@@ -64,9 +64,9 @@ pub fn text(
 #[must_use]
 pub fn name_problem(text: &str, taken: &[String]) -> Option<String> {
     if MemberName::parse(text).is_err() {
-        Some("de 1 à 32 caractères parmi a-z et 0-9".into())
+        Some("1 to 32 characters among a-z and 0-9".into())
     } else if taken.iter().any(|name| name == text) {
-        Some("déjà pris".into())
+        Some("taken".into())
     } else {
         None
     }
@@ -82,13 +82,13 @@ pub fn new_name(term: &Term, question: &str, taken: &[String]) -> Result<String>
     let mut name = String::new();
     loop {
         let verdict = match name_problem(&name, taken) {
-            None => "✓ libre".to_owned(),
+            None => "✓ free".to_owned(),
             Some(_) if name.is_empty() => String::new(),
             Some(problem) => format!("✗ {problem}"),
         };
         let after = format!("   {verdict}");
         term.clear_line()?;
-        term.write_str(&format!("{question} : {name}{after}"))?;
+        term.write_str(&format!("{question}: {name}{after}"))?;
         term.move_cursor_left(measure_text_width(&after))?;
         match term.read_key()? {
             Key::Char(character) if !character.is_control() => name.push(character),
@@ -112,7 +112,7 @@ mod tests {
     fn a_new_name_follows_the_rules_of_names_and_is_not_taken() {
         let taken = vec!["mario".to_owned(), "lea".to_owned()];
         assert_eq!(name_problem("anna", &taken), None);
-        assert_eq!(name_problem("mario", &taken).as_deref(), Some("déjà pris"));
+        assert_eq!(name_problem("mario", &taken).as_deref(), Some("taken"));
         for wrong in ["", "Anna", "an na", &"a".repeat(33)] {
             assert!(name_problem(wrong, &taken).is_some(), "{wrong}");
         }

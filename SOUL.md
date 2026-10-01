@@ -29,3 +29,5 @@ exactly one owner, whose machines alone write it.
    never the context that calls it.
 8. **Keep each file bounded.** Give each file one mission, state it in its
    header, and split the file before it reaches 1000 lines.
+9. **Write in English.** The code, the documentation, and everything pigeon
+   says to the people who use it are in English.

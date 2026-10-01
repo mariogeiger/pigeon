@@ -23,10 +23,10 @@ pub fn choose(term: &Term, group: &str) -> Result<PathBuf> {
     }
     let command = admin_command(&shared);
     term.write_line(&format!(
-        "Seul un administrateur peut créer {}, le dossier du groupe sur chaque machine. La commande :\n  {command}",
+        "Only an administrator can create {}, the group's folder on every machine. The command:\n  {command}",
         shared.display()
     ))?;
-    if ask::yes(term, "Je la lance avec sudo ?", true)? {
+    if ask::yes(term, "Run it with sudo?", true)? {
         run_in_terminal(&command)?;
         match create_root(&shared) {
             Ok(()) => return Ok(shared),
@@ -34,21 +34,16 @@ pub fn choose(term: &Term, group: &str) -> Result<PathBuf> {
         }
     }
     term.write_line(&format!(
-        "⚠ Ailleurs qu'en {}, les chemins des fichiers du groupe diffèrent de ceux des autres machines.",
+        "⚠ Anywhere but {}, the paths of the group's files differ from the other machines'.",
         shared.display()
     ))?;
     let home = dirs::home_dir().unwrap_or_default().join(group);
     loop {
-        let other = ask::text(
-            term,
-            "Dossier racine",
-            &home.display().to_string(),
-            |text| {
-                Path::new(text)
-                    .is_relative()
-                    .then(|| "un chemin absolu".to_owned())
-            },
-        )?;
+        let other = ask::text(term, "Root folder", &home.display().to_string(), |text| {
+            Path::new(text)
+                .is_relative()
+                .then(|| "an absolute path".to_owned())
+        })?;
         let other = PathBuf::from(other);
         match create_root(&other) {
             Ok(()) => return Ok(other),

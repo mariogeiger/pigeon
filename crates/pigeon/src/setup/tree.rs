@@ -173,7 +173,7 @@ impl Tree {
             .saturating_sub(room / 2)
             .min(rows.len().saturating_sub(room));
         let mut text = String::from(
-            "Quoi suivre sur cette machine\n↑↓ se déplacer · →← ouvrir, fermer · espace cocher · Entrée valider · Échap passer\n\n",
+            "What this machine follows\n↑↓ move · →← open, close · space check · Enter confirm · Esc skip\n\n",
         );
         for (index, row) in rows.iter().enumerate().skip(first).take(room) {
             let pointer = if index == self.cursor { '›' } else { ' ' };
@@ -186,7 +186,7 @@ impl Tree {
             let slash = if row.folder { "/" } else { "" };
             let size: u64 = self.under(row).map(|file| file.size).sum();
             let own = if self.under(row).all(|file| file.locked) {
-                "  (à vous)"
+                "  (yours)"
             } else {
                 ""
             };
@@ -198,7 +198,7 @@ impl Tree {
                 render::size(size)
             );
         }
-        text + &format!("\nÀ télécharger : {}\n", render::size(self.to_download()))
+        text + &format!("\nTo download: {}\n", render::size(self.to_download()))
     }
 
     /// Lets one choose on `term`; returns nothing when one skips.
@@ -319,9 +319,9 @@ mod tests {
         assert!(tree.changes.is_empty());
         let drawn = tree.render(40);
         assert!(
-            drawn.contains("\n›   ▸ [x] +mario/  5 B  (à vous)\n"),
+            drawn.contains("\n›   ▸ [x] +mario/  5 B  (yours)\n"),
             "{drawn}"
         );
-        assert!(drawn.ends_with("\nÀ télécharger : 0 B\n"), "{drawn}");
+        assert!(drawn.ends_with("\nTo download: 0 B\n"), "{drawn}");
     }
 }

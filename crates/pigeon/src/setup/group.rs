@@ -43,16 +43,16 @@ pub fn step(home: &Home, list: &mut Checklist) -> Result<Membership> {
         .iter()
         .map(|group| {
             format!(
-                "Continuer avec {} ({})",
+                "Continue with {} ({})",
                 text(group, "name"),
                 text(group, "member")
             )
         })
         .collect();
-    choices.push("Rejoindre un groupe (clé)".into());
-    choices.push("Créer un groupe".into());
+    choices.push("Join a group (key)".into());
+    choices.push("Found a group".into());
     let term = list.term().clone();
-    let chosen = ask::choose(&term, "Groupe", &choices)?;
+    let chosen = ask::choose(&term, "Group", &choices)?;
     if let Some(group) = groups.get(chosen) {
         let membership = Membership {
             group: text(group, "name"),
@@ -89,10 +89,10 @@ fn names(value: &Value, name: &str) -> Vec<String> {
 /// Joins a group with its key, under a member's name or a new one.
 fn join(home: &Home, list: &mut Checklist) -> Result<Membership> {
     let term = list.term().clone();
-    let key = ask::text(&term, "Clé du groupe", "", |text| {
+    let key = ask::text(&term, "Group key", "", |text| {
         text.parse::<GroupKey>()
             .err()
-            .map(|_| "ce n'est pas une clé de groupe".to_owned())
+            .map(|_| "not a group key".to_owned())
     })?;
     let group = key
         .parse::<GroupKey>()
@@ -103,7 +103,7 @@ fn join(home: &Home, list: &mut Checklist) -> Result<Membership> {
     list.set(
         GROUP,
         Mark::Running,
-        format!("{group} : connexion au groupe…"),
+        format!("{group}: reaching the group…"),
     )?;
     let heard = call(home, "group", "names", json!({ "key": key }))?;
     let members = names(&heard, "members");
@@ -111,29 +111,29 @@ fn join(home: &Home, list: &mut Checklist) -> Result<Membership> {
     let heard = heard["heard"].as_bool().unwrap_or(false);
     if !heard {
         list.note(format!(
-            "⚠ Aucune machine de {group} n'a répondu : les noms déjà pris sont inconnus."
+            "⚠ No machine of {group} answered: the names taken are unknown."
         ));
     }
     list.set(GROUP, Mark::Running, &group)?;
     let mut choices = members.clone();
-    choices.push("Nouveau nom…".into());
+    choices.push("New name…".into());
     let chosen = if members.is_empty() {
         members.len()
     } else {
         ask::choose(
             &term,
-            "Qui êtes-vous ? (un membre ajoute ainsi une machine)",
+            "Who are you? (a member adds a machine this way)",
             &choices,
         )?
     };
     let member = match members.get(chosen) {
         Some(member) => member.clone(),
-        None => ask::new_name(&term, "Nouveau nom", &taken)?,
+        None => ask::new_name(&term, "New name", &taken)?,
     };
     list.set(NAME, Mark::Running, &member)?;
     let root = root::choose(&term, &group)?;
     list.set(ROOT, Mark::Done, root.display().to_string())?;
-    list.set(GROUP, Mark::Running, format!("{group} : on rejoint…"))?;
+    list.set(GROUP, Mark::Running, format!("{group}: joining…"))?;
     match call(
         home,
         "group",
@@ -159,13 +159,13 @@ fn join(home: &Home, list: &mut Checklist) -> Result<Membership> {
 /// Founds a group, of which one becomes the first member.
 fn found(home: &Home, list: &mut Checklist) -> Result<Membership> {
     let term = list.term().clone();
-    let group = ask::text(&term, "Nom du groupe", "", |text| {
+    let group = ask::text(&term, "Group name", "", |text| {
         MemberName::parse(text)
             .err()
-            .map(|_| "de 1 à 32 caractères parmi a-z et 0-9".to_owned())
+            .map(|_| "1 to 32 characters among a-z and 0-9".to_owned())
     })?;
     list.set(GROUP, Mark::Running, &group)?;
-    let member = ask::new_name(&term, "Votre nom dans le groupe", &[])?;
+    let member = ask::new_name(&term, "Your name in the group", &[])?;
     list.set(NAME, Mark::Running, &member)?;
     let root = root::choose(&term, &group)?;
     list.set(ROOT, Mark::Done, root.display().to_string())?;
@@ -177,7 +177,7 @@ fn found(home: &Home, list: &mut Checklist) -> Result<Membership> {
     ) {
         Ok(created) => {
             list.note(format!(
-                "Clé du groupe, à donner aux machines qui le rejoignent (`pigeon group key` la redonne) :\n  {}",
+                "The group key, for the machines that join it (`pigeon group key` prints it again):\n  {}",
                 text(&created, "key")
             ));
             list.set(NAME, Mark::Done, &member)?;

@@ -1,4 +1,4 @@
-//! `pigeon setup`: sets pigeon up on this machine step by step, in French,
+//! `pigeon setup`: sets pigeon up on this machine step by step,
 //! redrawing a checklist that each step marks from the machine's real
 //! state, so that running it again resumes. It is a client of the daemon's
 //! API like the command line, each step a command one may run alone:
@@ -27,15 +27,15 @@ use crate::home::Home;
 use crate::{api, client, render, service};
 
 const RUST: &str = "Rust";
-const BUILT: &str = "pigeon compilé";
-const INSTALLED: &str = "installé";
-const SERVICE: &str = "Démarrage auto";
-const DAEMON: &str = "Daemon en marche";
-const GROUP: &str = "Groupe";
-const NAME: &str = "Nom";
-const ROOT: &str = "Dossier racine";
-const FOLLOW: &str = "Quoi suivre";
-const UI: &str = "Interface web";
+const BUILT: &str = "pigeon built";
+const INSTALLED: &str = "Installed";
+const SERVICE: &str = "Start at login";
+const DAEMON: &str = "Daemon running";
+const GROUP: &str = "Group";
+const NAME: &str = "Name";
+const ROOT: &str = "Root folder";
+const FOLLOW: &str = "What to follow";
+const UI: &str = "Web UI";
 
 /// Calls `noun verb` with the object `args` on the daemon of `home`.
 fn call(home: &Home, noun: &str, verb: &str, args: Value) -> Result<Value> {
@@ -82,13 +82,13 @@ fn installation(list: &mut Checklist) -> Result<()> {
         Some(found) => list.set(
             INSTALLED,
             Mark::Failed,
-            format!("le shell trouve d'abord {}", found.display()),
+            format!("the shell finds {} first", found.display()),
         ),
         None => list.set(
             INSTALLED,
             Mark::Failed,
             format!(
-                "{} n'est pas dans le PATH : . \"$HOME/.cargo/env\"",
+                "{} is not on the PATH: . \"$HOME/.cargo/env\"",
                 running.parent().unwrap_or(&running).display()
             ),
         ),
@@ -98,9 +98,9 @@ fn installation(list: &mut Checklist) -> Result<()> {
 /// Describes when the service starts the daemon.
 fn service_detail() -> &'static str {
     if service::lingers() {
-        "à l'ouverture de session et au démarrage"
+        "at login and at boot"
     } else {
-        "à l'ouverture de session"
+        "at login"
     }
 }
 
@@ -111,13 +111,9 @@ fn start_at_login(home: &Home, list: &mut Checklist) -> Result<()> {
     }
     let term = list.term().clone();
     if client::answers(home) {
-        term.write_line("Un daemon lancé à la main tourne : le service le remplacera.")?;
+        term.write_line("A daemon started by hand is running: the service will replace it.")?;
     }
-    if !ask::yes(
-        &term,
-        "Lancer pigeon automatiquement à l'ouverture de session ?",
-        true,
-    )? {
+    if !ask::yes(&term, "Start pigeon automatically at login?", true)? {
         return list.set(SERVICE, Mark::Skipped, "pigeon service install");
     }
     install_service(home, list, false)
@@ -141,7 +137,7 @@ fn run_daemon(home: &Home, list: &mut Checklist) -> Result<()> {
     match service::start_detached(home) {
         Ok(log) => {
             list.note(format!(
-                "Le daemon tourne jusqu'au prochain redémarrage ; son journal : {}",
+                "The daemon runs until the next reboot; its log: {}",
                 log.display()
             ));
             list.set(DAEMON, Mark::Done, home.address()?.to_string())
@@ -158,11 +154,7 @@ fn run_daemon(home: &Home, list: &mut Checklist) -> Result<()> {
 fn follow(home: &Home, list: &mut Checklist, membership: &Membership) -> Result<()> {
     let term = list.term().clone();
     let group = &membership.group;
-    if ask::yes(
-        &term,
-        "Cette machine est un serveur toujours allumé ?",
-        false,
-    )? {
+    if ask::yes(&term, "Is this machine an always-on server?", false)? {
         install_service(home, list, true)?;
         call(
             home,
@@ -176,7 +168,7 @@ fn follow(home: &Home, list: &mut Checklist, membership: &Membership) -> Result<
             "set",
             json!({ "group": group, "everything": "on" }),
         )?;
-        return list.set(FOLLOW, Mark::Done, "tout, avec son historique (serveur)");
+        return list.set(FOLLOW, Mark::Done, "everything, with its history (server)");
     }
     let tag = format!("+{}", membership.member);
     let own = format!("{tag}/");
@@ -185,11 +177,11 @@ fn follow(home: &Home, list: &mut Checklist, membership: &Membership) -> Result<
             return list.set(
                 FOLLOW,
                 Mark::Skipped,
-                format!("{own} ; le reste depuis l'interface web"),
+                format!("{own}; the rest from the web UI"),
             );
         }
-        Origin::Kept if !ask::yes(&term, "Modifier ce que cette machine suit ?", false)? => {
-            return list.set(FOLLOW, Mark::Done, "inchangé");
+        Origin::Kept if !ask::yes(&term, "Change what this machine follows?", false)? => {
+            return list.set(FOLLOW, Mark::Done, "unchanged");
         }
         _ => {}
     }
@@ -215,11 +207,11 @@ fn follow(home: &Home, list: &mut Checklist, membership: &Membership) -> Result<
         })
         .collect();
     if files.is_empty() {
-        return list.set(FOLLOW, Mark::Skipped, format!("{own} ; le groupe est vide"));
+        return list.set(FOLLOW, Mark::Skipped, format!("{own}; the group is empty"));
     }
     let tree = Tree::new(files);
     let Some(chosen) = tree.choose(&term)? else {
-        return list.set(FOLLOW, Mark::Skipped, "inchangé");
+        return list.set(FOLLOW, Mark::Skipped, "unchanged");
     };
     for (pattern, follows) in &chosen.toggles {
         let verb = if *follows { "follow" } else { "unfollow" };
@@ -241,7 +233,7 @@ fn follow(home: &Home, list: &mut Checklist, membership: &Membership) -> Result<
     list.set(
         FOLLOW,
         Mark::Done,
-        format!("{} à télécharger", render::size(chosen.download)),
+        format!("{} to download", render::size(chosen.download)),
     )
 }
 
@@ -249,9 +241,9 @@ fn follow(home: &Home, list: &mut Checklist, membership: &Membership) -> Result<
 fn open_ui(home: &Home, list: &mut Checklist) -> Result<()> {
     let link = api::open_link(home.address()?, &home.token()?);
     let opened = installation::open_in_browser(&link);
-    list.note("Mettre pigeon à jour plus tard : pigeon update");
+    list.note("To update pigeon later: pigeon update");
     let detail = if opened {
-        format!("{link} (ouverte)")
+        format!("{link} (opened)")
     } else {
         link
     };

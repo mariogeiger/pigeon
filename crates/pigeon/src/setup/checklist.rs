@@ -123,13 +123,13 @@ mod tests {
 
     #[test]
     fn each_step_shows_its_mark_and_detail_aligned_above_the_notes() {
-        let mut list = Checklist::new(Term::stdout(), &["Rust", "Groupe"]);
+        let mut list = Checklist::new(Term::stdout(), &["Rust", "Group"]);
         list.lines[0].mark = Mark::Done;
         list.lines[0].detail = "cargo 1.91".into();
-        list.note("clé : abc");
+        list.note("key: abc");
         assert_eq!(
             list.render(),
-            "pigeon setup\n\n✓ Rust    cargo 1.91\n☐ Groupe\n\nclé : abc\n\n"
+            "pigeon setup\n\n✓ Rust   cargo 1.91\n☐ Group\n\nkey: abc\n\n"
         );
     }
 }

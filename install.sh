@@ -27,7 +27,7 @@ compiler_fix() {
     elif command -v pacman >/dev/null 2>&1; then
         echo "sudo pacman -S base-devel"
     else
-        echo "installez gcc ou clang"
+        echo "install gcc or clang"
     fi
 }
 
@@ -40,31 +40,31 @@ main() {
             server) mode=server ;;
             --key) key=${2-} && shift ;;
             --member) member=${2-} && shift ;;
-            *) fail "argument inconnu : $1" ;;
+            *) fail "unknown argument: $1" ;;
         esac
         shift
     done
     if [ "$mode" = server ] && { [ -z "$key" ] || [ -z "$member" ]; }; then
-        fail "server demande --key et --member"
+        fail "server needs --key and --member"
     fi
     case $(uname -s) in
         Linux) cache=${XDG_CACHE_HOME:-$HOME/.cache} ;;
         Darwin) cache=$HOME/Library/Caches ;;
-        *) fail "install.sh installe pigeon sur Linux et macOS" ;;
+        *) fail "install.sh installs pigeon on Linux and macOS" ;;
     esac
     repository=https://github.com/mariogeiger/pigeon
     shell_path=$PATH
     bin=${CARGO_HOME:-$HOME/.cargo}/bin
     PATH=$bin:$PATH
 
-    command -v git >/dev/null 2>&1 || fail "git : installez-le depuis https://git-scm.com"
-    command -v cc >/dev/null 2>&1 || fail "Compilateur C : $(compiler_fix)"
+    command -v git >/dev/null 2>&1 || fail "git: install it from https://git-scm.com"
+    command -v cc >/dev/null 2>&1 || fail "C compiler: $(compiler_fix)"
     if ! command -v cargo >/dev/null 2>&1; then
         if [ "$mode" = setup ]; then
-            printf 'Rust manque : l’installer avec rustup ? [O/n] '
+            printf 'Rust is missing: install it with rustup? [Y/n] '
             read -r answer </dev/tty
             case $answer in
-                "" | [oOyY]*) ;;
+                "" | [yY]*) ;;
                 *) fail "Rust : curl https://sh.rustup.rs -sSf | sh" ;;
             esac
         fi
@@ -81,12 +81,12 @@ main() {
         git clone --quiet --branch main "$repository" "$source"
     fi
     cargo install --locked --target-dir "$cache/pigeon/build" --path "$source/crates/pigeon" </dev/null
-    echo "✓ pigeon compilé  $("$bin/pigeon" --version | sed 's/^pigeon //')"
+    echo "✓ pigeon built  $("$bin/pigeon" --version | sed 's/^pigeon //')"
     pigeon=$bin/pigeon
     if [ "$(PATH=$shell_path command -v pigeon || true)" = "$pigeon" ]; then
-        echo "✓ installé  $pigeon"
+        echo "✓ Installed  $pigeon"
     else
-        echo "✗ installé  $bin n’est pas dans le PATH : . \"${bin%/bin}/env\""
+        echo "✗ Installed  $bin is not on the PATH: . \"${bin%/bin}/env\""
     fi
 
     if [ "$mode" = server ]; then
@@ -94,7 +94,7 @@ main() {
         "$pigeon" group join --key "$key" --member "$member" </dev/null
         "$pigeon" selection follow --pattern '*' </dev/null
         "$pigeon" retention set --everything on </dev/null
-        echo "✓ serveur du groupe, sous le nom $member"
+        echo "✓ server of the group, as $member"
     else
         exec "$pigeon" setup </dev/tty
     fi
