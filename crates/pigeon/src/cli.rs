@@ -15,7 +15,7 @@ use serde_json::{Map, Value};
 
 use crate::catalog::{ACTIONS, Action, GROUP, Kind, NOUNS, Param, Scope, find};
 use crate::home::Home;
-use crate::{client, relay, render, serve, update};
+use crate::{api, client, relay, render, serve, update};
 
 fn param_arg(param: &Param) -> Arg {
     let arg = Arg::new(param.name).long(param.name).help(param.about);
@@ -227,8 +227,7 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
             tokio::runtime::Runtime::new()?.block_on(relay::run(&home, hostname, contact, port))
         }
         "ui" => {
-            let address = home.address()?;
-            println!("http://{address}/open?token={}", home.token()?);
+            println!("{}", api::open_link(home.address()?, &home.token()?));
             Ok(())
         }
         "completions" => {

@@ -2,7 +2,7 @@
 
 This guide founds a group, brings in its members and their machines, and
 sets up an always-on server and the group's own relay. Every command below
-also exists as a form in the web interface that `pigeon ui` opens. Each
+also exists as a form in the web interface the daemon links to. Each
 command asks for a missing argument when a terminal is attached, and
 prints JSON with `--json`. On a machine with several groups, `-g <group>`
 picks one.
@@ -27,7 +27,7 @@ other show as incompatible in `pigeon group status`: update them all.
 
 `pigeon daemon` syncs every group of the machine and serves the API and the
 web interface on localhost port 6767, or the one `--port` names. The link
-`pigeon ui` prints leaves the browser a cookie that lasts 400 days, so
+it prints at start, which `pigeon ui` prints again, leaves the browser a cookie that lasts 400 days, so
 afterwards <http://127.0.0.1:6767> opens the interface directly.
 
 The daemon keeps its state in `$PIGEON_HOME`, by default a `pigeon` folder

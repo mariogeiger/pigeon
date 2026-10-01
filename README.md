@@ -13,18 +13,19 @@ cargo install --git https://github.com/mariogeiger/pigeon pigeon
 pigeon daemon
 ```
 
-Leave the daemon running. In another terminal:
+Leave the daemon running: it prints the link that opens the web interface.
+In another terminal:
 
 ```sh
 pigeon group join --key <the key> --member <your name>
-pigeon ui
 ```
 
 Choose a password when asked, and use the same one on your other machines.
 If pigeon says only an administrator can create the group's folder, run the
-command it prints and join again. `pigeon ui` prints the link to the web
-interface, where you choose the folders to follow. Open it once per
-browser; from then on the interface is at <http://127.0.0.1:6767>.
+command it prints and join again. The daemon's link opens the web
+interface, where you choose the folders to follow; `pigeon ui` prints it
+again. Open it once per browser; from then on the interface is at
+<http://127.0.0.1:6767>.
 
 `pigeon update` later builds the latest pigeon and restarts the daemon
 onto it. To found a group, run its server, or manage members, see

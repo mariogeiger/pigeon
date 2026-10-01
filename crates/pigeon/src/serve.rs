@@ -1,5 +1,5 @@
 //! Running the daemon: start every group, listen on localhost, record the
-//! address for the command line, and stop cleanly on Ctrl-C or when asked
+//! address for the command line, print the link that opens the web UI, and stop cleanly on Ctrl-C or when asked
 //! to restart, closing every connection, event streams included.
 
 use std::net::{Ipv4Addr, SocketAddr};
@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use pigeon_sync::Options;
 use tokio::net::TcpListener;
 
-use crate::api::{App, serve};
+use crate::api::{App, open_link, serve};
 use crate::daemon::{Daemon, Stop};
 use crate::home::Home;
 use crate::program::Program;
@@ -34,7 +34,10 @@ pub async fn run(home: Home, port: u16) -> Result<Option<Program>> {
     let address = listener.local_addr()?;
     let daemon = Daemon::start(home.clone(), Options::default()).await?;
     home.save_address(address)?;
-    eprintln!("pigeon: listening on {address}; open the web UI with the link `pigeon ui` prints");
+    eprintln!(
+        "pigeon: listening on {address}; open the web UI at {}",
+        open_link(address, &token)
+    );
     let mut stopping = daemon.stopping();
     let app = Arc::new(App { daemon, token });
     let interrupted = Arc::downgrade(&app);

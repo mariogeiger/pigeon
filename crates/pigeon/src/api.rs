@@ -3,6 +3,7 @@
 //! the user's secret token, so that no website can act in the user's name.
 
 use std::future::Future;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -105,6 +106,13 @@ async fn guard(State(app): State<Arc<App>>, request: Request, next: Next) -> Res
 #[derive(Deserialize)]
 struct Open {
     token: String,
+}
+
+/// The link that opens the web UI served at `address`, whose `/open`
+/// trades `token` for a cookie.
+#[must_use]
+pub fn open_link(address: SocketAddr, token: &str) -> String {
+    format!("http://{address}/open?token={token}")
 }
 
 /// Trades the token in the link for a cookie, so that it leaves the
