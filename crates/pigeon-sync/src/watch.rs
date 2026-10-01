@@ -1,10 +1,12 @@
-//! Watching a group's root: the operating system reports changed paths,
-//! which become the group paths whose subtrees pigeon rescans.
+//! Watching a group's root and the destinations of its placed folders: the
+//! operating system reports changed paths, which become the group paths
+//! whose subtrees pigeon rescans.
 
 use std::path::{Path, PathBuf};
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use pigeon_core::path::GroupPath;
+use pigeon_core::places::Place;
 use pigeon_store::disk::TEMPORARY_PREFIX;
 use tokio::sync::mpsc;
 
@@ -18,16 +20,58 @@ pub enum Rescan {
     All,
 }
 
-/// The group path of a location under `root`, or of its deepest portable
-/// folder; `None` for the root itself or pigeon's own temporary files.
+/// A watched folder: the root, or the destination of a placed folder.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Watched {
+    /// Where the folder is, followed through any link.
+    pub location: PathBuf,
+    /// The group path it holds, `None` for the root.
+    pub folder: Option<GroupPath>,
+}
+
+impl Watched {
+    /// The folders to watch for `root` and `places`, leaving out the
+    /// destinations that are not there.
+    #[must_use]
+    pub fn all(root: &Path, places: &[Place]) -> Vec<Self> {
+        let mut watched: Vec<Self> = root
+            .canonicalize()
+            .ok()
+            .map(|location| Self {
+                location,
+                folder: None,
+            })
+            .into_iter()
+            .collect();
+        watched.extend(places.iter().filter_map(|place| {
+            Some(Self {
+                location: place.destination.canonicalize().ok()?,
+                folder: Some(place.folder.clone()),
+            })
+        }));
+        watched
+    }
+}
+
+/// The group path of a location under a watched folder, or of its deepest
+/// portable folder; `None` for pigeon's own temporary files and what lies
+/// elsewhere.
 #[must_use]
-pub fn rescan_of(root: &Path, location: &Path) -> Option<Rescan> {
-    let relative = location.strip_prefix(root).ok()?;
-    let names: Vec<&str> = relative
+pub fn rescan_of(watched: &Watched, location: &Path) -> Option<Rescan> {
+    let relative = location.strip_prefix(&watched.location).ok()?;
+    let mut names: Vec<&str> = watched
+        .folder
+        .as_ref()
+        .map(|folder| folder.names().collect())
+        .unwrap_or_default();
+    match relative
         .components()
         .map(|part| part.as_os_str().to_str())
-        .collect::<Option<_>>()
-        .unwrap_or_default();
+        .collect::<Option<Vec<_>>>()
+    {
+        Some(more) => names.extend(more),
+        None => names.clear(),
+    }
     if names.is_empty() {
         return Some(Rescan::All);
     }
@@ -43,27 +87,26 @@ pub fn rescan_of(root: &Path, location: &Path) -> Option<Rescan> {
         .map_or(Some(Rescan::All), |path| Some(Rescan::Under(path)))
 }
 
-/// Starts watching `root`, followed to the folder it may link to, since
-/// some systems report changes under that folder's own path; the watcher
-/// stops when dropped.
+/// Starts watching every folder of `watched`, each followed to the folder
+/// it may link to, since some systems report changes under that folder's
+/// own path; the watcher stops when dropped.
 ///
 /// # Errors
 ///
-/// Fails if the root does not exist or the system refuses to watch it.
+/// Fails if the system refuses to watch a folder.
 pub fn watch(
-    root: &Path,
+    watched: Vec<Watched>,
     changes: mpsc::UnboundedSender<Rescan>,
 ) -> notify::Result<RecommendedWatcher> {
-    let followed: PathBuf = root.canonicalize().map_err(notify::Error::io)?;
-    let base = followed.clone();
-    let mut watcher =
+    let locations: Vec<PathBuf> = watched.iter().map(|one| one.location.clone()).collect();
+    let mut system =
         notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
             Ok(event) => {
                 if event.need_rescan() {
                     let _ = changes.send(Rescan::All);
                 }
                 for location in &event.paths {
-                    if let Some(rescan) = rescan_of(&base, location) {
+                    if let Some(rescan) = watched.iter().find_map(|one| rescan_of(one, location)) {
                         let _ = changes.send(rescan);
                     }
                 }
@@ -72,8 +115,10 @@ pub fn watch(
                 let _ = changes.send(Rescan::All);
             }
         })?;
-    watcher.watch(&followed, RecursiveMode::Recursive)?;
-    Ok(watcher)
+    for location in &locations {
+        system.watch(location, RecursiveMode::Recursive)?;
+    }
+    Ok(system)
 }
 
 #[cfg(test)]
@@ -83,7 +128,10 @@ mod tests {
 
     #[test]
     fn locations_become_the_deepest_portable_path() {
-        let root = Path::new("/g");
+        let root = &Watched {
+            location: PathBuf::from("/g"),
+            folder: None,
+        };
         let under = |text: &str| Some(Rescan::Under(GroupPath::parse(text).unwrap()));
         assert_eq!(rescan_of(root, Path::new("/g/a/b.txt")), under("a/b.txt"));
         assert_eq!(rescan_of(root, Path::new("/g/a/b?.txt")), under("a"));
@@ -91,6 +139,19 @@ mod tests {
         assert_eq!(rescan_of(root, Path::new("/g")), Some(Rescan::All));
         assert_eq!(rescan_of(root, Path::new("/g/a/.~pigeon-b.txt")), None);
         assert_eq!(rescan_of(root, Path::new("/elsewhere")), None);
+        let disk = &Watched {
+            location: PathBuf::from("/disk/videos"),
+            folder: Some(GroupPath::parse("a/videos").unwrap()),
+        };
+        assert_eq!(
+            rescan_of(disk, Path::new("/disk/videos/v.mp4")),
+            under("a/videos/v.mp4")
+        );
+        assert_eq!(
+            rescan_of(disk, Path::new("/disk/videos")),
+            under("a/videos")
+        );
+        assert_eq!(rescan_of(disk, Path::new("/disk")), None);
     }
 
     #[tokio::test]
@@ -98,7 +159,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let (sender, mut changes) = mpsc::unbounded_channel();
-        let _watcher = watch(root, sender).unwrap();
+        let _watcher = watch(Watched::all(root, &[]), sender).unwrap();
         std::fs::write(root.join("new.txt"), "x").unwrap();
         let expected = Rescan::Under(GroupPath::parse("new.txt").unwrap());
         let seen = tokio::time::timeout(Duration::from_secs(5), async {

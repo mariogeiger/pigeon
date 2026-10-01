@@ -91,6 +91,9 @@ impl Inner {
         let keys: Vec<PathKey> = work.pending.keys().cloned().collect();
         for key in keys {
             let pending = work.pending[&key].clone();
+            if work.is_frozen(&pending.path) {
+                continue;
+            }
             let settle = if self.ledger.lock().freezes(&pending.path) {
                 self.options.settle_drop
             } else {

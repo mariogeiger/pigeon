@@ -246,6 +246,7 @@ async fn members(State(app): State<Arc<App>>, Path(group): Path<String>) -> Page
 
 async fn selection(State(app): State<Arc<App>>, Path(group): Path<String>) -> Page {
     let rules = view(&app, "selection", "list", json!({ "group": group })).await?;
+    let places = view(&app, "selection", "places", json!({ "group": group })).await?;
     let back = format!("/g/{group}/selection");
     let fill = Fill {
         group: Some(&group),
@@ -253,6 +254,11 @@ async fn selection(State(app): State<Arc<App>>, Path(group): Path<String>) -> Pa
     };
     let forms = html! {
         @for verb in ["follow", "download", "unfollow", "pin"] {
+            (form(action("selection", verb), &back, fill))
+        }
+        h2 { "Places" }
+        (pages::table(action("selection", "places"), &places, &|_| None))
+        @for verb in ["place", "unplace"] {
             (form(action("selection", verb), &back, fill))
         }
     };

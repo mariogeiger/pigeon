@@ -126,6 +126,11 @@ const PATTERN: Param = required(
     "Which files, as a .pigeonignore pattern such as /docs/ or *.pdf",
     Kind::Pattern,
 );
+const FOLDER: Param = required(
+    "folder",
+    "The folder of the group, such as videos",
+    Kind::Path,
+);
 const ID: Param = required(
     "id",
     "The item's number in `pigeon aside list`",
@@ -386,6 +391,32 @@ pub const ACTIONS: &[Action] = &[
             PATTERN,
             required("time", "The time, such as 2026-10-01T12:00:00Z", Kind::Time),
         ],
+    ),
+    view(
+        "selection",
+        "places",
+        "List the folders this machine keeps elsewhere, and why any waits",
+        &[],
+        &["folder", "destination", "problem"],
+    ),
+    action(
+        "selection",
+        "place",
+        "Keep a folder at another destination, such as a bigger disk, leaving a link at its place",
+        &[
+            FOLDER,
+            required(
+                "destination",
+                "Where to keep it: an absolute path whose parent folder exists, outside the root and other destinations",
+                Kind::Folder,
+            ),
+        ],
+    ),
+    action(
+        "selection",
+        "unplace",
+        "Bring a placed folder back into the root",
+        &[FOLDER],
     ),
     view(
         "request",

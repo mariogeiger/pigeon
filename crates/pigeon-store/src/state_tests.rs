@@ -8,6 +8,7 @@ use pigeon_core::identity::{GroupSecret, MachineCert, member_key};
 use pigeon_core::name::MemberName;
 use pigeon_core::patch::{Change, Content, ContentHash, Patch};
 use pigeon_core::path::GroupPath;
+use pigeon_core::places::Places;
 use pigeon_core::selection::Cutoff;
 use pigeon_core::statement::member_path;
 
@@ -191,4 +192,16 @@ fn settings_default_until_set() {
     };
     state.set_retention(&retention).unwrap();
     assert_eq!(state.retention().unwrap(), retention);
+    assert_eq!(state.places().unwrap(), Places::default());
+    let mut places = Places::default();
+    let root = std::env::temp_dir().join("root");
+    let destination = std::env::temp_dir().join("disk");
+    places
+        .set(&root, GroupPath::parse("videos").unwrap(), destination)
+        .unwrap();
+    state.set_places(&places).unwrap();
+    assert_eq!(state.places().unwrap(), places);
+    assert_eq!(state.placed().unwrap(), Places::default());
+    state.set_placed(&places).unwrap();
+    assert_eq!(state.placed().unwrap(), places);
 }

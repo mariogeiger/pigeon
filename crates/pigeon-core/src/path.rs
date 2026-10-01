@@ -149,6 +149,14 @@ impl PathKey {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Whether this path is the folder `folder` or lies inside it.
+    #[must_use]
+    pub fn is_within(&self, folder: &PathKey) -> bool {
+        self.0
+            .strip_prefix(&folder.0)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    }
 }
 
 impl TryFrom<String> for GroupPath {

@@ -122,7 +122,7 @@ pub fn install(temporary: &Path, target: &Path, executable: bool, writable: bool
 }
 
 /// Removes the file at `target`, then every folder it leaves empty up to,
-/// but not including, `root`.
+/// but not including, `root` or a link to a placed folder.
 ///
 /// # Errors
 ///
@@ -138,7 +138,11 @@ pub fn remove(root: &Path, target: &Path) -> Result<()> {
     }
     let mut folder = target.parent();
     while let Some(current) = folder {
-        if current == root || !current.starts_with(root) || fs::remove_dir(current).is_err() {
+        if current == root
+            || !current.starts_with(root)
+            || fs::symlink_metadata(current).is_ok_and(|metadata| metadata.is_symlink())
+            || fs::remove_dir(current).is_err()
+        {
             break;
         }
         folder = current.parent();

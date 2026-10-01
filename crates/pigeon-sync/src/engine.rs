@@ -19,6 +19,7 @@ use pigeon_core::ledger::Ledger;
 use pigeon_core::name::MemberName;
 use pigeon_core::patch::{Change, Content, ContentHash, Patch, SignedPatch};
 use pigeon_core::path::{GroupPath, PathKey};
+use pigeon_core::places::Places;
 use pigeon_core::selection::{Cutoff, Rule, Selection};
 use pigeon_core::statement::{MemberStatement, STATEMENTS, member_path};
 use pigeon_net::bind::{bind_internet, bind_local};
@@ -32,7 +33,7 @@ use pigeon_store::state::State;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
-use crate::watch::{Rescan, watch};
+use crate::watch::{Rescan, Watched};
 
 /// How the endpoint finds other machines.
 #[derive(Clone, Debug)]
@@ -154,6 +155,14 @@ pub(crate) struct Work {
     pub tags: Vec<TempTag>,
     pub join: JoinState,
     pub protect_due: bool,
+    /// The folders wanted at other destinations.
+    pub places: Places,
+    /// The folders the disk holds at other destinations.
+    pub placed: Places,
+    /// The folders out of place, with why; nothing under them syncs.
+    pub out_of_place: Vec<(GroupPath, String)>,
+    pub watcher: Option<notify::RecommendedWatcher>,
+    pub watched: Vec<Watched>,
 }
 
 /// Work for the loop from outside it.
@@ -174,6 +183,7 @@ pub(crate) struct Inner {
     pub options: Options,
     pub work: tokio::sync::Mutex<Work>,
     pub wake: mpsc::UnboundedSender<Wake>,
+    pub rescans: mpsc::UnboundedSender<Rescan>,
     pub errors: Mutex<VecDeque<String>>,
     pub started: Instant,
     _mdns: Option<MdnsAddressLookup>,
@@ -429,8 +439,8 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Fails if the state cannot be opened, the root created or watched, or
-    /// the endpoint bound.
+    /// Fails if the state cannot be opened, the root created, or the
+    /// endpoint bound.
     pub async fn start(data: &DataDir, options: Options) -> Result<Self> {
         let config = data.load_config()?;
         let machine = data.machine_key()?;
@@ -476,7 +486,8 @@ impl Engine {
         }
         let (wake, wakes) = mpsc::unbounded_channel();
         let (rescans, rescan_events) = mpsc::unbounded_channel();
-        let watcher = watch(&config.root, rescans)?;
+        let wanted = state.places()?;
+        let laid_out = state.placed()?;
         let inner = Arc::new(Inner {
             data: data.clone(),
             config,
@@ -495,8 +506,14 @@ impl Engine {
                 tags: Vec::new(),
                 join: JoinState::Pending,
                 protect_due: true,
+                places: wanted,
+                placed: laid_out,
+                out_of_place: Vec::new(),
+                watcher: None,
+                watched: Vec::new(),
             }),
             wake,
+            rescans,
             errors: Mutex::new(VecDeque::new()),
             started: Instant::now(),
             _mdns: mdns,
@@ -508,14 +525,7 @@ impl Engine {
         }
         inner.want_peers();
         let (stop, stopped) = oneshot::channel();
-        let task = tokio::spawn(run(
-            inner.clone(),
-            received,
-            rescan_events,
-            wakes,
-            stopped,
-            watcher,
-        ));
+        let task = tokio::spawn(run(inner.clone(), received, rescan_events, wakes, stopped));
         Ok(Self {
             inner,
             stop: Some(stop),
@@ -575,7 +585,6 @@ async fn run(
     mut rescan_events: mpsc::UnboundedReceiver<Rescan>,
     mut wakes: mpsc::UnboundedReceiver<Wake>,
     mut stopped: oneshot::Receiver<()>,
-    _watcher: notify::RecommendedWatcher,
 ) {
     let mut secrets: watch::Receiver<RenewedSecret> = inner.node.secret();
     secrets.mark_changed();
@@ -585,6 +594,7 @@ async fn run(
     let mut last_protect = Instant::now();
     {
         let mut work = inner.work.lock().await;
+        inner.lay_out(&mut work);
         inner.refresh(&mut work, &Rescan::All).await;
         inner.apply_requests(&mut work).await;
     }

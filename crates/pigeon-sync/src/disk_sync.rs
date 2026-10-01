@@ -216,12 +216,18 @@ impl Inner {
         if !work.join.syncs() {
             return;
         }
+        self.lay_out(work);
         let root = self.config.root.clone();
         let under = match rescan {
             Rescan::Under(path) => Some(path.clone()),
             Rescan::All => None,
         };
-        let found = scan(&root, under.as_ref());
+        let placed: Vec<GroupPath> = work
+            .in_place()
+            .into_iter()
+            .map(|place| place.folder)
+            .collect();
+        let found = scan(&root, under.as_ref(), &placed);
         let mut probes: BTreeMap<PathKey, Option<Probe>> = found
             .files
             .into_iter()
@@ -268,6 +274,7 @@ impl Inner {
         if !work.join.syncs() {
             return;
         }
+        self.lay_out(work);
         for key in keys {
             if let Err(error) = self.sync_key(work, key, None).await {
                 self.report(format!("{}: {error:#}", key.as_str()));
@@ -275,7 +282,8 @@ impl Inner {
         }
     }
 
-    /// Brings one path into agreement.
+    /// Brings one path into agreement, unless it lies in a folder out of
+    /// place, whose files are not where pigeon can see them.
     pub(crate) async fn sync_key(
         self: &Arc<Self>,
         work: &mut Work,
@@ -296,6 +304,9 @@ impl Inner {
             };
             Probe::at(&root, path)
         };
+        if work.is_frozen(&probe.path) {
+            return Ok(());
+        }
         let look = self.look(work, key, &probe.path, entry.as_ref());
         let synced_stamp = entry.as_ref().and_then(|entry| entry.synced);
         let target_stamp = look.target.as_ref().map(|version| version.stamp);

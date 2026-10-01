@@ -9,6 +9,7 @@ use pigeon_core::identity::GroupId;
 use pigeon_core::ledger::Ledger;
 use pigeon_core::patch::SignedPatch;
 use pigeon_core::path::{GroupPath, PathKey};
+use pigeon_core::places::{Place, Places};
 use pigeon_core::retention::Retention;
 use pigeon_core::selection::{Rule, Selection};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
@@ -26,6 +27,8 @@ const SETTINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("settings");
 
 const SELECTION: &str = "selection";
 const RETENTION: &str = "retention";
+const PLACES: &str = "places";
+const PLACED: &str = "placed";
 
 /// A patch's key, which sorts patches in stamp order.
 fn stamp_key(stamp: &Stamp) -> [u8; 40] {
@@ -291,6 +294,44 @@ impl State {
     /// Fails if the database cannot be written.
     pub fn set_retention(&self, retention: &Retention) -> Result<()> {
         self.set_setting(RETENTION, retention)
+    }
+
+    /// The folders the machine wants at other destinations.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the database cannot be read.
+    pub fn places(&self) -> Result<Places> {
+        let list: Vec<Place> = self.setting(PLACES)?.unwrap_or_default();
+        Ok(Places::new(list))
+    }
+
+    /// Stores the folders the machine wants at other destinations.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the database cannot be written.
+    pub fn set_places(&self, places: &Places) -> Result<()> {
+        self.set_setting(PLACES, &places.iter().collect::<Vec<_>>())
+    }
+
+    /// The folders the disk holds at other destinations, as last moved.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the database cannot be read.
+    pub fn placed(&self) -> Result<Places> {
+        let list: Vec<Place> = self.setting(PLACED)?.unwrap_or_default();
+        Ok(Places::new(list))
+    }
+
+    /// Records the folders the disk holds at other destinations.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the database cannot be written.
+    pub fn set_placed(&self, placed: &Places) -> Result<()> {
+        self.set_setting(PLACED, &placed.iter().collect::<Vec<_>>())
     }
 }
 

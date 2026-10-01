@@ -80,6 +80,11 @@ the shell's completion script. The daemon keeps its state in
   administrator may create it, pigeon prints the command to run once: on
   macOS, a line in `/etc/synthetic.conf` links `/cheapmo` to a folder of your
   home. `--root` picks another folder.
+- **Places.** `pigeon selection place --folder videos --destination
+  /mnt/big/videos` keeps a folder on another disk and leaves a link at its
+  place, a junction on Windows, so its files keep their paths. While the
+  destination is missing, such as an unplugged disk, the folder waits:
+  nothing in it syncs, and nothing is taken for deleted.
 - **Peer to peer.** Machines connect directly, end-to-end encrypted, over the
   local network or the internet.
 

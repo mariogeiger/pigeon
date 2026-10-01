@@ -36,25 +36,71 @@ pub struct Scan {
     pub skipped: Vec<Skipped>,
 }
 
-/// Walks `root`, or only `under` it when given, following no link.
+/// Walks `root`, or only `under` it when given, following no link but
+/// those at the `placed` folders, which lead to their destinations.
 ///
 /// # Panics
 ///
-/// Panics if the walk leaves `root`, which it cannot.
+/// Panics if a walk leaves `root`, which it cannot.
 #[must_use]
-pub fn scan(root: &Path, under: Option<&GroupPath>) -> Scan {
+pub fn scan(root: &Path, under: Option<&GroupPath>, placed: &[GroupPath]) -> Scan {
     let start = under.map_or_else(
         || root.to_path_buf(),
         |path| crate::disk::fs_path(root, path),
     );
     let mut result = Scan::default();
-    if !start.exists() {
-        return result;
+    let mut found = Vec::new();
+    walk(root, &start, &mut result, &mut found);
+    for folder in placed {
+        if under.is_none_or(|under| folder.is_inside(under.as_str())) {
+            let link = crate::disk::fs_path(root, folder);
+            walk(root, &link, &mut result, &mut found);
+        }
     }
-    let walk = WalkBuilder::new(&start)
+    found.sort_by(|a, b| a.path.as_str().cmp(b.path.as_str()));
+    for file in found {
+        let key = file.path.key();
+        if let Some(first) = result.files.get(&key) {
+            result.skipped.push(Skipped {
+                reason: format!("{} differs only by case from {}", file.path, first.path),
+                location: file.location,
+            });
+        } else {
+            result.files.insert(key, file);
+        }
+    }
+    result
+}
+
+/// Walks `start`, a folder under `root` or a link to one, adding what it
+/// finds. The ignore files of the folders between `root` and `start` apply
+/// as they are, even where a link leads elsewhere.
+fn walk(root: &Path, start: &Path, result: &mut Scan, found: &mut Vec<Found>) {
+    if !start.exists() {
+        return;
+    }
+    let mut builder = WalkBuilder::new(start);
+    let mut above: Vec<&Path> = start
+        .ancestors()
+        .skip(1)
+        .take_while(|folder| folder.starts_with(root))
+        .collect();
+    above.reverse();
+    for folder in above {
+        let file = folder.join(IGNORE_FILE);
+        if file.is_file()
+            && let Some(error) = builder.add_ignore(&file)
+        {
+            result.skipped.push(Skipped {
+                location: file,
+                reason: error.to_string(),
+            });
+        }
+    }
+    let walk = builder
         .standard_filters(false)
         .add_custom_ignore_filename(IGNORE_FILE)
-        .parents(under.is_some())
+        .parents(false)
         .follow_links(false)
         .filter_entry(|entry| {
             !entry
@@ -63,13 +109,12 @@ pub fn scan(root: &Path, under: Option<&GroupPath>) -> Scan {
                 .is_some_and(|name| name.starts_with(TEMPORARY_PREFIX))
         })
         .build();
-    let mut found = Vec::new();
     for entry in walk {
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
                 result.skipped.push(Skipped {
-                    location: start.clone(),
+                    location: start.to_path_buf(),
                     reason: error.to_string(),
                 });
                 continue;
@@ -112,19 +157,6 @@ pub fn scan(root: &Path, under: Option<&GroupPath>) -> Scan {
             Err(error) => result.skipped.push(skip(error.to_string())),
         }
     }
-    found.sort_by(|a, b| a.path.as_str().cmp(b.path.as_str()));
-    for file in found {
-        let key = file.path.key();
-        if let Some(first) = result.files.get(&key) {
-            result.skipped.push(Skipped {
-                reason: format!("{} differs only by case from {}", file.path, first.path),
-                location: file.location,
-            });
-        } else {
-            result.files.insert(key, file);
-        }
-    }
-    result
 }
 
 #[cfg(test)]
@@ -154,7 +186,7 @@ mod tests {
         write(root, "run.log", "not ignored here");
         write(root, ".gitignore", "*.rs\n");
         write(root, "src/.~pigeon-main.rs", "partial");
-        let scan = scan(root, None);
+        let scan = scan(root, None, &[]);
         assert_eq!(
             paths(&scan),
             [
@@ -176,9 +208,9 @@ mod tests {
         write(dir.path(), "b/z.log", "");
         write(dir.path(), ".pigeonignore", "*.log\n");
         let under = GroupPath::parse("b").unwrap();
-        assert_eq!(paths(&scan(dir.path(), Some(&under))), ["b/y"]);
+        assert_eq!(paths(&scan(dir.path(), Some(&under), &[])), ["b/y"]);
         let missing = GroupPath::parse("c").unwrap();
-        assert!(scan(dir.path(), Some(&missing)).files.is_empty());
+        assert!(scan(dir.path(), Some(&missing), &[]).files.is_empty());
     }
 
     #[test]
@@ -189,7 +221,7 @@ mod tests {
             write(dir.path(), "what?.txt", "");
             write(dir.path(), "aux/file", "");
         }
-        let scan = scan(dir.path(), None);
+        let scan = scan(dir.path(), None, &[]);
         assert_eq!(paths(&scan), ["ok.txt"]);
         if cfg!(unix) {
             assert_eq!(scan.skipped.len(), 2);
@@ -201,7 +233,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "Readme.md", "a");
         write(dir.path(), "README.md", "b");
-        let scan = scan(dir.path(), None);
+        let scan = scan(dir.path(), None, &[]);
         if scan.files.len() + scan.skipped.len() == 2 {
             assert_eq!(paths(&scan), ["README.md"]);
             assert!(scan.skipped[0].reason.contains("differs only by case"));
@@ -215,6 +247,42 @@ mod tests {
         write(dir.path(), "real/file", "");
         std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("link")).unwrap();
         std::os::unix::fs::symlink(dir.path().join("real/file"), dir.path().join("flink")).unwrap();
-        assert_eq!(paths(&scan(dir.path(), None)), ["real/file"]);
+        assert_eq!(paths(&scan(dir.path(), None, &[])), ["real/file"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn follows_the_links_of_placed_folders_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::write(root.join(".pigeonignore"), "*.log\n").unwrap();
+        fs::create_dir_all(dir.path().join("disk/videos")).unwrap();
+        fs::write(dir.path().join("disk/videos/v.mp4"), "").unwrap();
+        fs::write(dir.path().join("disk/videos/v.log"), "").unwrap();
+        std::os::unix::fs::symlink(dir.path().join("disk/videos"), root.join("a/videos")).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("disk"), root.join("other")).unwrap();
+        let placed = [GroupPath::parse("a/videos").unwrap()];
+        let paths = |scan: Scan| -> Vec<String> {
+            scan.files
+                .values()
+                .map(|file| file.path.to_string())
+                .collect()
+        };
+        assert_eq!(
+            paths(scan(&root, None, &placed)),
+            [".pigeonignore", "a/videos/v.mp4"]
+        );
+        assert_eq!(paths(scan(&root, None, &[])), [".pigeonignore"]);
+        let under = GroupPath::parse("a").unwrap();
+        assert_eq!(
+            paths(scan(&root, Some(&under), &placed)),
+            ["a/videos/v.mp4"]
+        );
+        let inside = GroupPath::parse("a/videos").unwrap();
+        assert_eq!(
+            paths(scan(&root, Some(&inside), &placed)),
+            ["a/videos/v.mp4"]
+        );
     }
 }

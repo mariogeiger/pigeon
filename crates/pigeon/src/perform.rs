@@ -191,6 +191,7 @@ async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
             to_json(engine.edit(vec![edit], args.mode(), message).await?)
         }
         ("selection", "list") => to_json(engine.selection().await),
+        ("selection", verb @ ("places" | "place" | "unplace")) => place(engine, args, verb).await,
         ("selection", verb) => {
             let cutoff = match verb {
                 "follow" => Cutoff::PlusInfinity,
@@ -232,6 +233,26 @@ async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
         ("retention", "show") => to_json(retention_in_days(&engine.retention()?)),
         ("retention", "set") => set_retention(engine, args).await,
         _ => bail!("{} is not implemented", action.command()),
+    }
+}
+
+/// Lists, places or unplaces folders kept at other destinations.
+async fn place(engine: &Engine, args: &Args, verb: &str) -> Result<Value> {
+    match verb {
+        "places" => to_json(engine.places().await),
+        "place" => {
+            let destination = args
+                .text("destination")
+                .ok_or_else(|| anyhow!("which destination?"))?;
+            engine
+                .place(args.path("folder")?, std::path::Path::new(destination))
+                .await?;
+            Ok(Value::Null)
+        }
+        _ => {
+            engine.unplace(&args.path("folder")?).await?;
+            Ok(Value::Null)
+        }
     }
 }
 
