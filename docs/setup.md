@@ -15,9 +15,10 @@ Install [Rust](https://rustup.rs), then:
 cargo install --git https://github.com/mariogeiger/pigeon pigeon
 ```
 
-To update, run `pigeon update`. It builds the head of pigeon's main branch
-with cargo, in your terminal, in a build folder kept between updates, so
-nothing recompiles while main has not moved. `--path <clone>` builds a
+To update, run `pigeon update`. It brings a clone of pigeon kept in your
+cache folder to the head of the main branch with git, then builds it with
+cargo, in your terminal, in a build folder kept between updates, so only
+what moved recompiles. `--path <clone>` builds a
 local clone of the repository instead. The daemon then restarts onto the
 new program, unless the build left it unchanged, and web pages left open
 offer to reload. Machines whose versions of pigeon cannot talk to each
