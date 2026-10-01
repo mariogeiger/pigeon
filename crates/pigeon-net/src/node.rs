@@ -192,6 +192,7 @@ impl Shared {
             (send, recv, theirs)
         };
         count(&self.connected, remote, true);
+        lock(&self.incompatible).remove(&remote);
         let writer = async {
             let secret = Message::Secret(secrets.borrow_and_update().clone());
             wire::write(&mut send, &secret).await?;
@@ -543,7 +544,7 @@ impl Node {
 
     /// The machines that refused the last dial for speaking no protocol of
     /// this machine's, as they run another version of pigeon, each with
-    /// what asking it which one told.
+    /// what asking it which one told, until a session with them opens.
     #[must_use]
     pub fn incompatible(&self) -> Vec<(MachineId, Heard)> {
         lock(&self.shared.incompatible)

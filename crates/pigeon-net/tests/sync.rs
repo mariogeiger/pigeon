@@ -5,7 +5,8 @@
 //! each from several machines at once, which serve what they hold while
 //! still downloading, and reach each other through the group's relay; a
 //! machine speaking another version of the protocol is reported with the
-//! pigeon it says it runs, or as predating the hello protocol.
+//! pigeon it says it runs, or as predating the hello protocol, until it
+//! updates and opens a session.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -544,6 +545,42 @@ async fn a_machine_speaking_another_version_of_the_protocol_is_reported() {
         router.shutdown().await.unwrap();
     }
     for machine in [a, b] {
+        machine.node.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_machine_reported_incompatible_is_no_longer_once_it_updates_and_dials_in() {
+    let lookup = MemoryLookup::new();
+    let a = Machine::start(first(5), &lookup).await;
+    let key = SecretKey::generate();
+    let older = bind_local(key.clone(), &lookup).await.unwrap();
+    let older_router = Router::builder(older.clone())
+        .accept(b"pigeon/sync/1", Silent)
+        .spawn();
+    a.node.dial(older.id());
+    timeout(Duration::from_secs(10), async {
+        while a.node.incompatible().is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the older machine is reported");
+    older_router.shutdown().await.unwrap();
+    let updated = Machine::on(
+        bind_local(key.clone(), &lookup).await.unwrap(),
+        key,
+        first(5),
+    );
+    updated.node.dial(a.node.id());
+    timeout(Duration::from_secs(10), async {
+        while !a.node.incompatible().is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("once the machine speaks the protocol, it is no longer reported");
+    for machine in [a, updated] {
         machine.node.shutdown().await.unwrap();
     }
 }
