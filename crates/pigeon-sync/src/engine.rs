@@ -539,7 +539,7 @@ impl Engine {
                 machine: machine.public(),
             });
         }
-        let config = ConfigFile::open(dirs, clock.stamp().time)?;
+        let config = ConfigFile::open(dirs)?;
         std::fs::create_dir_all(&config.root)
             .with_context(|| format!("creating {}", config.root.display()))?;
         let cert = secrets

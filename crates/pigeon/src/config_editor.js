@@ -2,10 +2,10 @@
 // highlighted as TOML by a layer drawn under it, which the daemon reads
 // after each keystroke to preview what saving would download, free and
 // freeze, rule by rule; a pin's row offers the times its files have
-// versions at, or any local time, and choosing one rewrites its line, as
-// does a pin line that misses its time, under the error it gets.
-// Save applies the whole text, asking first when it frees space, and
-// refusing when the file changed elsewhere since the editor loaded it.
+// versions at, the present or any local time, and choosing one writes it
+// into its line, as does a pin line that misses its time, under the error
+// it gets. Save applies the whole text, asking first when it frees space,
+// and refusing when the file changed elsewhere since the editor loaded it.
 "use strict";
 (() => {
   const editor = document.getElementById("config");
@@ -156,7 +156,7 @@
     const row = field.closest("[data-start]");
     if (row === null) return;
     if (field.matches("select.pin")) {
-      pin(row, field.value);
+      pin(row, field.value === "now" ? new Date().toISOString() : field.value);
     } else if (field.matches("input.pin-time") && field.value !== "") {
       pin(row, new Date(field.value).toISOString().replace(".000Z", "Z"));
     }

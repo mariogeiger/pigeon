@@ -63,7 +63,7 @@ fn pinned_pattern(rest: &str) -> &str {
     let (when, after) = rest
         .split_once(char::is_whitespace)
         .map_or((rest, ""), |(when, after)| (when, after.trim_start()));
-    if when == "now" || parse_rfc3339(when).is_ok() {
+    if parse_rfc3339(when).is_ok() {
         after
     } else {
         rest
@@ -81,7 +81,7 @@ pub fn unfinished_pins(engine: &Engine, text: &str) -> Vec<Value> {
         .filter_map(|(line, span)| {
             let rest = line.trim_start().strip_prefix("pin")?;
             let pin = rest.is_empty() || rest.starts_with(char::is_whitespace);
-            if !pin || Rule::parse(&line, || 0).is_ok() {
+            if !pin || Rule::parse(&line).is_ok() {
                 return None;
             }
             let pattern = pinned_pattern(rest);
@@ -100,7 +100,7 @@ pub fn unfinished_pins(engine: &Engine, text: &str) -> Vec<Value> {
 /// Fails, saying what in the text is wrong, if it is no configuration, or
 /// if the index cannot be read.
 pub async fn plan(engine: &Engine, text: &str) -> Result<(Config, Preview)> {
-    let (config, _) = Config::parse(text, engine.now()).map_err(|reason| anyhow!("{reason}"))?;
+    let (config, _) = Config::parse(text).map_err(|reason| anyhow!("{reason}"))?;
     let preview = engine
         .preview(config.selection.rules().cloned().collect())
         .await?;
@@ -186,13 +186,13 @@ mod tests {
 
     #[test]
     fn each_selection_line_is_found_in_utf16_units() {
-        let text = "member = \"mario\"\n# é\nselection = [\n    \"follow /a/\",\n    \"pin now /b/\",\n]\n";
+        let text = "member = \"mario\"\n# é\nselection = [\n    \"follow /a/\",\n    \"pin 2026-10-01T12:00:00Z /b/\",\n]\n";
         let spans = spans(text);
         let units: Vec<u16> = text.encode_utf16().collect();
         let line = |[start, end]: [usize; 2]| String::from_utf16(&units[start..end]).unwrap();
         assert_eq!(spans.len(), 2);
         assert_eq!(line(spans[0]), "\"follow /a/\"");
-        assert_eq!(line(spans[1]), "\"pin now /b/\"");
+        assert_eq!(line(spans[1]), "\"pin 2026-10-01T12:00:00Z /b/\"");
         assert!(super::spans("selection = [").is_empty());
     }
 
@@ -200,7 +200,7 @@ mod tests {
     fn a_pin_names_its_pattern_with_or_without_its_time() {
         assert_eq!(pinned_pattern(""), "");
         assert_eq!(pinned_pattern(" /docs/"), "/docs/");
-        assert_eq!(pinned_pattern(" now /my docs/"), "/my docs/");
+        assert_eq!(pinned_pattern(" now /my docs/"), "now /my docs/");
         assert_eq!(pinned_pattern(" 2026-10-01T12:00:00Z /a/"), "/a/");
         assert_eq!(pinned_pattern(" 2026-10-01T12:00:00Z"), "");
     }

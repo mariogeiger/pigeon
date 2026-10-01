@@ -21,7 +21,7 @@ use crate::group_dirs::{GroupDirs, read_if_present, write_private};
 pub const HEADER: &str = "\
 # pigeon's configuration of this group on this machine. Edit it, then apply
 # it with `pigeon daemon reload`. Each selection line is `follow <pattern>`,
-# `pin <RFC 3339 time or now> <pattern>` or `free <pattern>`, the last line
+# `pin <RFC 3339 time> <pattern>` or `free <pattern>`, the last line
 # matching a file deciding it; retention counts days, and its quota is a
 # percentage of the disk. pigeon rewrites this file whole, without other
 # comments, whenever it changes a setting.
@@ -76,14 +76,14 @@ impl Config {
         }
     }
 
-    /// Reads `text`, `now` giving the time of `pin now`, and says whether
-    /// pigeon spells the configuration otherwise: it resolved a `pin now`,
-    /// or made an empty selection follow the member's personal folder.
+    /// Reads `text`, and says whether pigeon spells the configuration
+    /// otherwise: it made an empty selection follow the member's personal
+    /// folder.
     ///
     /// # Errors
     ///
     /// Returns what in the text is wrong.
-    pub fn parse(text: &str, now: u64) -> Result<(Self, bool), String> {
+    pub fn parse(text: &str) -> Result<(Self, bool), String> {
         let spelled: Spelled = toml::from_str(text).map_err(|error| error.to_string())?;
         if !spelled.root.is_absolute() {
             return Err(format!(
@@ -91,16 +91,11 @@ impl Config {
                 spelled.root.display()
             ));
         }
-        let mut resolved = false;
         let rules = spelled
             .selection
             .iter()
             .map(|line| {
-                Rule::parse(line, || {
-                    resolved = true;
-                    now
-                })
-                .map_err(|error| format!("the selection line {line:?}: {error}"))
+                Rule::parse(line).map_err(|error| format!("the selection line {line:?}: {error}"))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let empty = rules.is_empty();
@@ -122,7 +117,7 @@ impl Config {
             retention: spelled.retention,
             places,
         };
-        Ok((config, resolved || empty))
+        Ok((config, empty))
     }
 
     /// The text of the file: the header, then the configuration.
@@ -144,8 +139,8 @@ impl Config {
 }
 
 /// The configuration in `text`, read from `path`.
-fn parse_at(path: &Path, text: &str, now: u64) -> Result<(Config, bool)> {
-    Config::parse(text, now)
+fn parse_at(path: &Path, text: &str) -> Result<(Config, bool)> {
+    Config::parse(text)
         .map_err(|reason| StoreError::Invalid(format!("{}: {reason}", path.display())))
 }
 
@@ -157,16 +152,16 @@ fn render_at(path: &Path, config: &Config) -> Result<String> {
 }
 
 impl GroupDirs {
-    /// Reads the group's configuration, `now` giving the time of `pin now`.
+    /// Reads the group's configuration.
     ///
     /// # Errors
     ///
     /// Fails, naming the file and what in it is wrong, if it is missing or
     /// invalid.
-    pub fn load_config(&self, now: u64) -> Result<Config> {
+    pub fn load_config(&self) -> Result<Config> {
         let path = self.config_path();
         let text = std::fs::read_to_string(&path).map_err(StoreError::io(&path))?;
-        Ok(parse_at(&path, &text, now)?.0)
+        Ok(parse_at(&path, &text)?.0)
     }
 }
 
@@ -180,17 +175,17 @@ pub struct ConfigFile {
 }
 
 impl ConfigFile {
-    /// Reads the configuration of `group`, `now` giving the time of `pin
-    /// now`, and writes it back if pigeon spells it otherwise.
+    /// Reads the configuration of `group`, and writes it back if pigeon
+    /// spells it otherwise.
     ///
     /// # Errors
     ///
     /// Fails, naming the file and what in it is wrong, if it is missing or
     /// invalid, or cannot be written back.
-    pub fn open(group: &GroupDirs, now: u64) -> Result<Self> {
+    pub fn open(group: &GroupDirs) -> Result<Self> {
         let path = group.config_path();
         let text = std::fs::read_to_string(&path).map_err(StoreError::io(&path))?;
-        let (config, respelled) = parse_at(&path, &text, now)?;
+        let (config, respelled) = parse_at(&path, &text)?;
         let mut file = Self { path, text, config };
         if respelled {
             file.save(file.config.clone())?;

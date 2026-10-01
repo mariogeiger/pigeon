@@ -4,6 +4,14 @@ All notable user-visible changes to pigeon are documented here. While the
 version is 0.x, a change that breaks compatibility increments the second
 number, and any other change the third.
 
+## 0.4.0 — 2026-10-01
+
+### Changed
+
+- A pin in `config.toml` names its time in RFC 3339: `pin now` no longer
+  reads, so that the file says the same whenever it is applied. The config
+  editor's "now" writes the present time into the line instead.
+
 ## 0.3.1 — 2026-10-01
 
 ### Added

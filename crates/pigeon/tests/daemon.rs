@@ -729,7 +729,7 @@ async fn the_config_editor_previews_a_text_and_saves_it_whole() {
     );
     assert!(panel.contains("free: -1 file, -6 B"), "{panel}");
 
-    let pinning = text.replace("\"follow +alice/\"", "\"pin now +alice/\"");
+    let pinning = text.replace("\"follow +alice/\"", "\"pin 2026-01-01T00:00:00Z +alice/\"");
     let preview = peer
         .call("config", "preview", json!({"text": pinning}))
         .await
@@ -740,7 +740,7 @@ async fn the_config_editor_previews_a_text_and_saves_it_whole() {
     let span = &preview["rules"][0]["span"];
     let start = usize::try_from(span[0].as_u64().unwrap()).unwrap();
     let end = usize::try_from(span[1].as_u64().unwrap()).unwrap();
-    assert_eq!(&pinning[start..end], "\"pin now +alice/\"");
+    assert_eq!(&pinning[start..end], "\"pin 2026-01-01T00:00:00Z +alice/\"");
     let (_, pinned) = editor_preview(&peer, &pinning).await;
     assert!(pinned["panel"].as_str().unwrap().contains(r#"class="pin""#));
     let (status, invalid) = editor_preview(&peer, &text.replace("follow +alice/", "keep x")).await;

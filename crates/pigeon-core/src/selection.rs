@@ -4,7 +4,7 @@
 //! path literally, and a new exact rule drops the exact rules it masks,
 //! while a selection replaced whole keeps its rules as given. A rule reads
 //! and prints as one line: `follow /docs/`, `pin <RFC 3339 time> /report/`
-//! or `pin now /report/`, and `free *.iso`.
+//! and `free *.iso`.
 
 use std::fmt;
 
@@ -53,23 +53,23 @@ fn word(text: &str) -> (&str, &str) {
 }
 
 impl Rule {
-    /// Reads the rule `line` prints, `now` giving the time of `pin now`;
-    /// it is called only then.
+    /// Reads the rule `line` prints.
     ///
     /// # Errors
     /// Returns why the line is no rule.
-    pub fn parse(line: &str, now: impl FnOnce() -> u64) -> Result<Self, String> {
+    pub fn parse(line: &str) -> Result<Self, String> {
         let (mode, rest) = word(line);
         let (cutoff, pattern) = match mode {
             "follow" => (Cutoff::PlusInfinity, rest),
             "free" => (Cutoff::MinusInfinity, rest),
             "pin" => {
                 let (when, pattern) = word(rest);
-                let time = match when {
-                    "now" => now(),
-                    "" => return Err("pin needs a time: now or an RFC 3339 time".to_owned()),
-                    time => parse_rfc3339(time)?,
-                };
+                if when.is_empty() {
+                    return Err(
+                        "pin needs a time in RFC 3339, such as 2026-10-01T12:00:00Z".to_owned()
+                    );
+                }
+                let time = parse_rfc3339(when)?;
                 (Cutoff::At(time), pattern)
             }
             _ => return Err(format!("{mode:?} is not a mode: write follow, pin or free")),
@@ -364,13 +364,13 @@ mod tests {
                 cutoff,
             };
             let line = rule.to_string();
-            assert_eq!(Rule::parse(&line, || unreachable!()), Ok(rule), "{line}");
+            assert_eq!(Rule::parse(&line), Ok(rule), "{line}");
         }
         assert_eq!(
-            Rule::parse("  pin   now  /report/", || 42),
+            Rule::parse("  pin   2026-10-01T12:00:00Z  /report/"),
             Ok(Rule {
                 pattern: "/report/".into(),
-                cutoff: Cutoff::At(42),
+                cutoff: Cutoff::At(1_790_856_000 << 32),
             })
         );
         for (line, error) in [
@@ -378,10 +378,11 @@ mod tests {
             ("follow", "needs a pattern"),
             ("pin", "needs a time"),
             ("pin yesterday /a/", "RFC 3339"),
+            ("pin now /a/", "RFC 3339"),
             ("free !a", "negated"),
             ("follow /a{b/", "gitignore"),
         ] {
-            let reason = Rule::parse(line, || 0).unwrap_err();
+            let reason = Rule::parse(line).unwrap_err();
             assert!(reason.contains(error), "{line}: {reason}");
         }
     }

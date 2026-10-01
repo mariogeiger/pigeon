@@ -8,10 +8,9 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use pigeon_core::clock::ntp_time;
 use pigeon_core::name::MemberName;
 use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_store::config::{Config, ConfigFile};
@@ -38,7 +37,7 @@ const HEARING: Duration = Duration::from_secs(30);
 /// The configuration of `data` once `member` claims it, following their
 /// personal folder.
 fn claimed(dirs: &GroupDirs, member: MemberName) -> Result<Config> {
-    let mut config = dirs.load_config(ntp_time(SystemTime::now()))?;
+    let mut config = dirs.load_config()?;
     config.selection.set(Rule {
         pattern: format!("{}/", member.tag()),
         cutoff: Cutoff::PlusInfinity,
@@ -324,12 +323,11 @@ impl Daemon {
     pub async fn reload(&self, yes: bool) -> Result<Vec<Value>> {
         let mut groups = self.groups.write().await;
         let names = self.home.group_names()?;
-        let now = ntp_time(SystemTime::now());
         let mut changes = Vec::new();
         let mut freed = Vec::new();
         for name in &names {
             let dirs = self.home.group(name);
-            dirs.load_config(now)?;
+            dirs.load_config()?;
             let Some(engine) = groups.get(name) else {
                 continue;
             };

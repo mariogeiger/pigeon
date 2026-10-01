@@ -184,8 +184,8 @@ selection = [
 ]
 ```
 
-`pin now` pins files at the time the file is applied, and
-`pigeon selection times --pattern /report/` lists the times of the versions
+Each pin names its time in RFC 3339, so that the file says the same
+whenever it is applied, and `pigeon selection times --pattern /report/` lists the times of the versions
 of the files a pattern matches: pinning at each holds something new.
 `pigeon config preview` counts the files and bytes held now and after
 applying the file, and what applying it would download, free and freeze,

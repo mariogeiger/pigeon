@@ -88,7 +88,7 @@ fn an_old_data_directory_upgrades_once_and_keeps_every_setting() {
     for old in ["config.json", "machine.key", "config.toml"] {
         assert!(!group.data().join(old).exists(), "{old} is gone");
     }
-    let config = group.load_config(0).unwrap();
+    let config = group.load_config().unwrap();
     assert_eq!(config.member.as_str(), "mario");
     let rules: Vec<String> = config.selection.rules().map(Rule::to_string).collect();
     assert_eq!(rules[0], "follow +mario/");

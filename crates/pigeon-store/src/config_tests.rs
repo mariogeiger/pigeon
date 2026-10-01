@@ -55,7 +55,7 @@ fn a_configuration_reads_back_as_pigeon_writes_it() {
         "{text}"
     );
     assert!(text.contains("[[places]]\nfolder = \"videos\"\n"), "{text}");
-    let (read, respelled) = Config::parse(&text, 0).unwrap();
+    let (read, respelled) = Config::parse(&text).unwrap();
     assert!(!respelled);
     assert_eq!(read.member, config.member);
     assert_eq!(read.root, config.root);
@@ -66,9 +66,9 @@ fn a_configuration_reads_back_as_pigeon_writes_it() {
 }
 
 #[test]
-fn a_hand_written_configuration_takes_defaults_and_resolves_pin_now() {
+fn a_hand_written_configuration_takes_defaults_and_refuses_pin_now() {
     let root = std::env::temp_dir().join("g");
-    let (bare, respelled) = Config::parse(&written(&root, ""), 5).unwrap();
+    let (bare, respelled) = Config::parse(&written(&root, "")).unwrap();
     assert!(respelled, "an empty selection follows the personal folder");
     assert_eq!(
         rules(&bare),
@@ -77,15 +77,18 @@ fn a_hand_written_configuration_takes_defaults_and_resolves_pin_now() {
     assert_eq!(bare.retention, Retention::default());
     let text = written(
         &root,
-        "# mine\nselection = [\"pin now /a/\", \"free *.iso\"]\n[retention]\nquota = 3\n",
+        "# mine\nselection = [\"pin 2026-10-01T12:00:00Z /a/\", \"free *.iso\"]\n[retention]\nquota = 3\n",
     );
-    let (config, respelled) = Config::parse(&text, 42).unwrap();
-    assert!(respelled, "pin now takes the time of reading");
-    assert_eq!(rules(&config)[0].cutoff, Cutoff::At(42));
+    let (config, respelled) = Config::parse(&text).unwrap();
+    assert!(!respelled);
+    assert_eq!(rules(&config)[0].cutoff, Cutoff::At(1_790_856_000 << 32));
     assert_eq!(config.retention.quota_percent, 3);
     assert_eq!(config.retention.daily, Retention::default().daily);
     let followed = written(&root, "selection = [\"follow /a/\"]\n");
-    assert!(!Config::parse(&followed, 0).unwrap().1);
+    assert!(!Config::parse(&followed).unwrap().1);
+    let now = written(&root, "selection = [\"pin now /a/\"]\n");
+    let reason = Config::parse(&now).unwrap_err();
+    assert!(reason.contains("RFC 3339"), "{reason}");
 }
 
 #[test]
@@ -112,7 +115,7 @@ fn an_invalid_configuration_says_what_is_wrong() {
             "places",
         ),
     ] {
-        let reason = Config::parse(&text, 0).unwrap_err();
+        let reason = Config::parse(&text).unwrap_err();
         assert!(reason.contains(error), "{text}: {reason}");
     }
 }
@@ -123,14 +126,14 @@ fn pigeon_writes_back_what_it_completes_and_never_over_unread_edits() {
     let group = GroupDirs::new(dir.path().join("config"), dir.path().join("data"));
     let root = std::env::temp_dir().join("g");
     write_private(&group.config_path(), written(&root, "").as_bytes()).unwrap();
-    let mut file = ConfigFile::open(&group, 0).unwrap();
+    let mut file = ConfigFile::open(&group).unwrap();
     let on_disk = std::fs::read_to_string(group.config_path()).unwrap();
     assert_eq!(on_disk, file.text());
     assert!(on_disk.contains("follow +mario/"), "{on_disk}");
     let mut config = Config::clone(&file);
     config.retention.every = 2;
     file.save(config.clone()).unwrap();
-    assert_eq!(group.load_config(0).unwrap().retention.every, 2);
+    assert_eq!(group.load_config().unwrap().retention.every, 2);
     std::fs::write(
         group.config_path(),
         on_disk.replace("every = 1", "every = 9"),
@@ -138,11 +141,11 @@ fn pigeon_writes_back_what_it_completes_and_never_over_unread_edits() {
     .unwrap();
     let error = file.save(config).unwrap_err().to_string();
     assert!(error.contains("pigeon daemon reload"), "{error}");
-    assert_eq!(group.load_config(0).unwrap().retention.every, 9);
-    let reopened = ConfigFile::open(&group, 0).unwrap();
+    assert_eq!(group.load_config().unwrap().retention.every, 9);
+    let reopened = ConfigFile::open(&group).unwrap();
     assert_eq!(reopened.retention.every, 9);
     let invalid = group.config_path();
     std::fs::write(&invalid, "member = 1\n").unwrap();
-    let error = group.load_config(0).unwrap_err().to_string();
+    let error = group.load_config().unwrap_err().to_string();
     assert!(error.starts_with(&invalid.display().to_string()), "{error}");
 }

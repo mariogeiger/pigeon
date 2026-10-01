@@ -13,11 +13,9 @@ mod root;
 mod tree;
 
 use std::io::IsTerminal;
-use std::time::SystemTime;
 
 use anyhow::{Context, Result, anyhow, bail};
 use dialoguer::console::Term;
-use pigeon_core::clock::ntp_time;
 use pigeon_core::path::GroupPath;
 use pigeon_core::statement::STATEMENTS;
 use pigeon_store::config::Config;
@@ -157,8 +155,7 @@ fn run_daemon(home: &Home, list: &mut Checklist) -> Result<()> {
 fn keep_every_history(home: &Home, group: &str) -> Result<()> {
     let shown = call(home, "config", "show", json!({ "group": group }))?;
     let text = shown["text"].as_str().unwrap_or_default();
-    let (mut config, _) =
-        Config::parse(text, ntp_time(SystemTime::now())).map_err(|reason| anyhow!("{reason}"))?;
+    let (mut config, _) = Config::parse(text).map_err(|reason| anyhow!("{reason}"))?;
     config.retention.everything = true;
     let text = config.render().map_err(|reason| anyhow!("{reason}"))?;
     let version = &shown["version"];
