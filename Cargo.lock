@@ -3092,7 +3092,7 @@ dependencies = [
 
 [[package]]
 name = "pigeon"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3120,7 +3120,7 @@ dependencies = [
 
 [[package]]
 name = "pigeon-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "ignore",
@@ -3135,7 +3135,7 @@ dependencies = [
 
 [[package]]
 name = "pigeon-net"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bao-tree",
@@ -3156,7 +3156,7 @@ dependencies = [
 
 [[package]]
 name = "pigeon-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "data-encoding",
@@ -3178,7 +3178,7 @@ dependencies = [
 
 [[package]]
 name = "pigeon-sync"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "iroh",
