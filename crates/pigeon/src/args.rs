@@ -60,13 +60,16 @@ impl Args {
         let help = format!("see `{} --help`", action.command());
         let mut checked = Map::new();
         for (name, value) in values {
-            if value.is_null() || value.as_str() == Some("") {
-                continue;
-            }
             let param = action
                 .param(&name)
-                .or((action.scope == Scope::Group && name == GROUP.name).then_some(&GROUP))
-                .ok_or_else(|| anyhow!("{} takes no --{name}: {help}", action.command()))?;
+                .or((action.scope == Scope::Group && name == GROUP.name).then_some(&GROUP));
+            let empty =
+                value.as_str() == Some("") && param.is_none_or(|param| param.kind != Kind::Rules);
+            if value.is_null() || empty {
+                continue;
+            }
+            let param =
+                param.ok_or_else(|| anyhow!("{} takes no --{name}: {help}", action.command()))?;
             let value = normalize(param, value).map_err(|error| anyhow!("{error}: {help}"))?;
             checked.insert(name, value);
         }

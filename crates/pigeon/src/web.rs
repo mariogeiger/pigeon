@@ -1,17 +1,18 @@
 //! The web UI's routes: each page fetches its data through the catalog's
 //! views, or from the engine where it compares contents, each form posts
-//! to `/act/<noun>/<verb>`, which runs the action as the API does, and a
-//! group's event stream tells its pages when to fetch themselves again.
+//! to `/act/<noun>/<verb>`, which runs the action as the API does, the
+//! selection editor previews its draft, and a group's event stream tells
+//! its pages when to fetch themselves again.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::{Multipart, Path, Query, State};
+use axum::extract::{Form, Multipart, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::response::{Html, IntoResponse, Json, Redirect, Response};
 use axum::routing::{get, post};
 use data_encoding::BASE64;
 use maud::{Markup, html};
@@ -26,6 +27,7 @@ use crate::files_page;
 use crate::form::{BACK, Fill, form};
 use crate::group_pages::{self, RequestCard};
 use crate::pages::{self, Side, action, diff, layout};
+use crate::selection_page;
 
 /// Why a page cannot be shown, and where to go back to.
 struct Failure {
@@ -270,31 +272,31 @@ async fn members(State(app): State<Arc<App>>, Path(group): Path<String>) -> Page
 }
 
 async fn selection(State(app): State<Arc<App>>, Path(group): Path<String>) -> Page {
-    let rules = view(&app, "selection", "list", json!({ "group": group })).await?;
+    let rules = with_engine(&app, &group, async |engine| engine.selection().await).await?;
+    let files = view(&app, "file", "list", json!({ "group": group })).await?;
     let places = view(&app, "selection", "places", json!({ "group": group })).await?;
-    let back = format!("/g/{group}/selection");
-    let fill = Fill {
-        group: Some(&group),
-        ..Fill::default()
+    let version = pigeon_core::selection::version(&rules);
+    Ok(html_page(&selection_page::selection(
+        &group, &rules, &version, &files, &places,
+    )))
+}
+
+/// What saving the draft in the form field `rules` would change, as the
+/// pieces the editor shows.
+async fn selection_preview(
+    State(app): State<Arc<App>>,
+    Path(group): Path<String>,
+    Form(form): Form<HashMap<String, String>>,
+) -> Response {
+    let rules = form.get("rules").cloned().unwrap_or_default();
+    let args = json!({ "group": group, "rules": rules });
+    let Value::Object(args) = args else {
+        unreachable!("the arguments are an object")
     };
-    let forms = html! {
-        @for verb in ["follow", "download", "unfollow", "pin"] {
-            (form(action("selection", verb), &back, fill))
-        }
-        h2 { "Places" }
-        (pages::table(action("selection", "places"), &places, &|_| None))
-        @for verb in ["place", "unplace"] {
-            (form(action("selection", verb), &back, fill))
-        }
-    };
-    let page = pages::listing(
-        &group,
-        "Selection",
-        action("selection", "list"),
-        &rules,
-        &forms,
-    );
-    Ok(html_page(&page))
+    match call(&app, "selection", "preview", args).await {
+        Ok(preview) => Json(selection_page::preview_parts(&group, &preview)).into_response(),
+        Err((status, message)) => (status, Json(json!({ "error": message }))).into_response(),
+    }
 }
 
 async fn retention(State(app): State<Arc<App>>, Path(group): Path<String>) -> Page {
@@ -357,13 +359,23 @@ async fn events(State(app): State<Arc<App>>, Path(group): Path<String>) -> Respo
         .into_response()
 }
 
-/// The script that keeps a group's pages live.
-async fn live_script() -> Response {
+/// A script of the web UI.
+fn script(source: &'static str) -> Response {
     (
         [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        include_str!("live.js"),
+        source,
     )
         .into_response()
+}
+
+/// The script that keeps a group's pages live.
+async fn live_script() -> Response {
+    script(include_str!("live.js"))
+}
+
+/// The script of the selection editor.
+async fn selection_script() -> Response {
+    script(include_str!("selection.js"))
 }
 
 /// Whether `back` is a page of this server, never another site.
@@ -448,10 +460,12 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/g/{group}/aside", get(aside))
         .route("/g/{group}/members", get(members))
         .route("/g/{group}/selection", get(selection))
+        .route("/g/{group}/selection/preview", post(selection_preview))
         .route("/g/{group}/retention", get(retention))
         .route("/g/{group}/raw", get(raw))
         .route("/g/{group}/events", get(events))
         .route("/live.js", get(live_script))
+        .route("/selection.js", get(selection_script))
         .route("/act/{noun}/{verb}", post(act))
 }
 

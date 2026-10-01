@@ -14,6 +14,7 @@ mod publish;
 mod rebind;
 pub mod reconcile;
 mod relay;
+mod selection_change;
 mod set_aside;
 mod statements;
 pub mod views;
@@ -22,3 +23,6 @@ pub mod watch;
 pub use edit::{Edit, Edited};
 pub use engine::{Engine, JoinState, Network, Options};
 pub use layout::PlaceView;
+pub use selection_change::{
+    Amount, Changed, Delta, DeltaFiles, LISTED, OwnFreed, Preview, RuleEffect,
+};

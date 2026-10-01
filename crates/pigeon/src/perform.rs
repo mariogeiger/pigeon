@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use crate::args::Args;
 use crate::catalog::{GROUP, Scope};
 use crate::daemon::Daemon;
+use crate::draft;
 
 fn to_json(value: impl Serialize) -> Result<Value> {
     Ok(serde_json::to_value(value)?)
@@ -174,7 +175,15 @@ async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
             Ok(Value::Null)
         }
         ("file", verb) => on_files(engine, args, verb).await,
-        ("selection", "list") => to_json(engine.selection().await),
+        ("selection", "list") => Ok(Value::String(draft::format(&engine.selection().await))),
+        ("selection", "preview") => {
+            draft::preview(engine, args.text("rules").unwrap_or_default()).await
+        }
+        ("selection", "set") => {
+            let rules = draft::rules(args.text("rules").unwrap_or_default(), engine.now())?;
+            engine.set_selection(rules, args.text("version")).await?;
+            Ok(Value::Null)
+        }
         ("selection", verb @ ("places" | "place" | "unplace")) => place(engine, args, verb).await,
         ("selection", verb) => {
             let cutoff = match verb {

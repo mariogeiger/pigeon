@@ -24,6 +24,9 @@ pub enum Kind {
     Choice(&'static [&'static str]),
     /// On or off, off by default.
     Flag,
+    /// Selection rules, one per line such as `follow /docs/`, where no
+    /// rule at all is a value too: a local file on the command line.
+    Rules,
 }
 
 /// One argument of an action.
@@ -125,6 +128,11 @@ const PATTERN: Param = required(
     "pattern",
     "Which files, as a .pigeonignore pattern such as /docs/ or *.pdf",
     Kind::Pattern,
+);
+const RULES: Param = required(
+    "rules",
+    "A file of rules, or - for standard input: one per line, such as `follow /docs/`, `frozen now /report/`, `frozen 2026-10-01T12:00:00Z /old/` or `free *.iso`",
+    Kind::Rules,
 );
 const FOLDER: Param = required(
     "folder",
@@ -385,9 +393,29 @@ pub const ACTIONS: &[Action] = &[
     view(
         "selection",
         "list",
-        "List the selection's rules; the last matching rule wins",
+        "List the selection's rules, one per line as `selection set` reads them; the last matching rule wins",
         &[],
-        &["pattern", "cutoff"],
+        &[],
+    ),
+    view(
+        "selection",
+        "preview",
+        "Show what replacing the selection with rules would download, free and freeze here",
+        &[RULES],
+        &[],
+    ),
+    action(
+        "selection",
+        "set",
+        "Replace the whole selection with rules, kept as given",
+        &[
+            RULES,
+            optional(
+                "version",
+                "The version `selection preview` showed: refuse if the selection changed since",
+                Kind::Text,
+            ),
+        ],
     ),
     action(
         "selection",

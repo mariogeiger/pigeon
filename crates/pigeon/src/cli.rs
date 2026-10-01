@@ -20,7 +20,7 @@ fn param_arg(param: &Param) -> Arg {
     match param.kind {
         Kind::Flag => arg.action(ArgAction::SetTrue),
         Kind::Choice(choices) => arg.value_parser(PossibleValuesParser::new(choices)),
-        Kind::Bytes => arg.value_hint(ValueHint::FilePath).value_name("FILE"),
+        Kind::Bytes | Kind::Rules => arg.value_hint(ValueHint::FilePath).value_name("FILE"),
         Kind::Folder => arg.value_hint(ValueHint::DirPath).value_name("FOLDER"),
         Kind::Number => arg.value_name("NUMBER"),
         Kind::Text | Kind::Secret | Kind::Path | Kind::Pattern | Kind::Time => arg,
@@ -109,8 +109,8 @@ fn interactive() -> bool {
     std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
 }
 
-/// Reads the local file `name`, or standard input for `-`, as base64.
-fn read_content(name: &str) -> Result<String> {
+/// Reads the local file `name`, or standard input for `-`.
+fn read_local(name: &str) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     if name == "-" {
         std::io::stdin()
@@ -119,7 +119,7 @@ fn read_content(name: &str) -> Result<String> {
     } else {
         bytes = std::fs::read(name).with_context(|| format!("reading {name}"))?;
     }
-    Ok(BASE64.encode(&bytes))
+    Ok(bytes)
 }
 
 /// Asks the person at the terminal for `param`.
@@ -164,10 +164,11 @@ pub fn arguments(action: &Action, matches: &ArgMatches, ask: bool) -> Result<Map
                 param.name
             ),
         };
-        let value = if param.kind == Kind::Bytes {
-            read_content(&value)?
-        } else {
-            value
+        let value = match param.kind {
+            Kind::Bytes => BASE64.encode(&read_local(&value)?),
+            Kind::Rules => String::from_utf8(read_local(&value)?)
+                .with_context(|| format!("--{}: {value} is not UTF-8 text", param.name))?,
+            _ => value,
         };
         args.insert(param.name.to_owned(), Value::String(value));
     }

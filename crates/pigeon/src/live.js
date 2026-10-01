@@ -1,6 +1,7 @@
 // Keeps a group's pages live: each event of the group's stream fetches the
 // page again and swaps its <main>, unless the person is typing, reading an
-// open form or answering a question; follow boxes post the selection,
+// open form or answering a question, keeping the parts marked data-keep,
+// and tells the page through a groupchange event; follow boxes post the selection,
 // asking first whether an unfollowed copy stays; countdowns tick; forms
 // marked data-confirm ask before they publish.
 "use strict";
@@ -40,6 +41,10 @@
     const page = new DOMParser().parseFromString(text, "text/html");
     const fresh = page.querySelector("main");
     if (fresh === null) return;
+    for (const kept of fresh.querySelectorAll("[data-keep][id]")) {
+      const current = document.getElementById(kept.id);
+      if (current !== null) kept.replaceWith(current);
+    }
     document.querySelector("main").replaceWith(fresh);
     document.title = page.title;
     prepare(fresh);
@@ -123,6 +128,9 @@
   if (group !== undefined) {
     const events = new EventSource(`/g/${encodeURIComponent(group)}/events`);
     events.onopen = refresh;
-    events.onmessage = refresh;
+    events.onmessage = () => {
+      document.dispatchEvent(new Event("groupchange"));
+      refresh();
+    };
   }
 })();

@@ -1,5 +1,5 @@
-//! What a person can ask of the engine besides editing the tree: change
-//! the selection and the retention, publish waiting edits at once, file and
+//! What a person can ask of the engine besides editing the tree and the
+//! selection: change the retention, publish waiting edits at once, file and
 //! answer requests, and resolve set-aside items.
 
 use std::sync::Arc;
@@ -8,13 +8,11 @@ use anyhow::{Result, bail};
 use pigeon_core::patch::Change;
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::retention::Retention;
-use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_core::statement::{Decision, Mode};
-use pigeon_store::disk::{self, fs_path};
+use pigeon_store::disk::fs_path;
 
 use crate::disk_sync::{Probe, file_stat};
 use crate::engine::{Engine, Inner, JoinState, Work};
-use crate::watch::Rescan;
 
 impl Inner {
     pub(crate) fn ensure_writable(&self, work: &Work, path: &GroupPath) -> Result<()> {
@@ -79,35 +77,6 @@ impl Engine {
         if !changing.is_empty() {
             bail!("still changing, so waiting anew: {}", changing.join(", "));
         }
-        Ok(())
-    }
-
-    /// Makes `rule` the last rule of the selection. A rule that stops
-    /// holding files also removes the held copies nobody modified.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the pattern is invalid or the state cannot be written.
-    pub async fn set_rule(&self, rule: Rule) -> Result<()> {
-        let inner = &self.inner;
-        let mut work = inner.work.lock().await;
-        work.selection.set(rule)?;
-        inner.state.set_selection(&work.selection)?;
-        for entry in inner.state.index(None)? {
-            if work.selection.cutoff(&entry.path) != Cutoff::MinusInfinity {
-                continue;
-            }
-            let location = fs_path(&inner.config.root, &entry.path);
-            let stat = file_stat(&location);
-            let untouched = entry.seen.map(|seen| seen.stat) == stat;
-            if untouched && !work.pending.contains_key(&entry.path.key()) {
-                if stat.is_some() {
-                    disk::remove(&inner.config.root, &location)?;
-                }
-                inner.state.update_index([(&entry.path.key(), None)])?;
-            }
-        }
-        inner.refresh(&mut work, &Rescan::All).await;
         Ok(())
     }
 

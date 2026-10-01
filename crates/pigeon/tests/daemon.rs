@@ -347,10 +347,7 @@ async fn web_forms_run_their_action_and_return() {
     assert_eq!(answer.status, 303, "{}", answer.body);
     assert_eq!(answer.location.as_deref(), Some("/g/cheapmo/selection"));
     let rules = peer.call("selection", "list", json!({})).await.unwrap();
-    assert_eq!(
-        rules[1],
-        json!({"pattern": "/docs/", "cutoff": "PlusInfinity"})
-    );
+    assert_eq!(rules, json!("follow @alice/\nfollow /docs/\n"));
     let page = peer.page("/g/cheapmo/selection").await;
     assert!(page.contains("/docs/"));
     let set = peer
@@ -381,6 +378,7 @@ fn dummy(kind: Kind, peer: &Peer) -> Value {
         Kind::Pattern => json!("/dummy/"),
         Kind::Folder => json!(peer.root("dummy")),
         Kind::Bytes => json!(base64("dummy")),
+        Kind::Rules => json!("follow /dummy/"),
         Kind::Number => json!(0),
         Kind::Time => json!("2026-01-01T00:00:00Z"),
         Kind::Choice(choices) => json!(choices[0]),
@@ -564,17 +562,128 @@ async fn group_pages_follow_files_and_hear_each_change() {
         .await
         .unwrap();
     let rules = peer.call("selection", "list", json!({})).await.unwrap();
-    let patterns: Vec<&str> = rules
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|rule| rule["pattern"].as_str().unwrap())
-        .collect();
-    assert_eq!(patterns, ["@alice/", "/@alice/"]);
+    assert_eq!(rules, json!("follow @alice/\nfollow /@alice/\n"));
     assert_eq!(
         peer.call("file", "pending", json!({})).await.unwrap(),
         json!([])
     );
     let error = peer.call("file", "publish", json!({})).await.unwrap_err();
     assert!(error.contains("no edit waits"), "{error}");
+}
+
+/// What the selection editor of the group cheapmo shows of `draft`.
+async fn editor_preview(peer: &Peer, draft: &str) -> Value {
+    let encoded = draft
+        .replace('/', "%2F")
+        .replace('\n', "%0A")
+        .replace(' ', "+");
+    let answer = peer
+        .send(
+            "POST",
+            "/g/cheapmo/selection/preview",
+            vec![peer.cookie()],
+            Some((
+                "application/x-www-form-urlencoded".to_owned(),
+                format!("rules={encoded}").into_bytes(),
+            )),
+        )
+        .await;
+    assert_eq!(answer.status, 200, "{}", answer.body);
+    serde_json::from_str(&answer.body).unwrap()
+}
+
+#[tokio::test]
+async fn the_selection_editor_previews_a_draft_and_saves_it_whole() {
+    let lookup = MemoryLookup::new();
+    let peer = Peer::start(&lookup).await;
+    peer.call(
+        "group",
+        "create",
+        json!({"name": "cheapmo", "member": "alice", "password": "pa", "root": peer.root("cheapmo")}),
+    )
+    .await
+    .unwrap();
+    eventually("alice joined", async || peer.joined().await).await;
+    peer.call(
+        "file",
+        "write",
+        json!({"path": "@alice/notes.txt", "content": base64("hello\n")}),
+    )
+    .await
+    .unwrap();
+    let notes = std::path::Path::new(&peer.root("cheapmo")).join("@alice/notes.txt");
+    eventually("the notes are on disk", async || notes.exists()).await;
+    let page = peer.page("/g/cheapmo/selection").await;
+    for part in [
+        r#"<section id="editor" class="editor" data-keep"#,
+        r#"<script src="/selection.js" defer></script>"#,
+        r#"<option value="/@alice/notes.txt">"#,
+        r#"<option value="/@alice/">"#,
+        "<h2>Places</h2>",
+    ] {
+        assert!(page.contains(part), "{part}: {page}");
+    }
+    let script = peer
+        .send("GET", "/selection.js", vec![peer.cookie()], None)
+        .await;
+    assert_eq!(script.status, 200);
+    assert!(script.body.contains("/selection/preview"));
+
+    let parts = editor_preview(&peer, "free @alice/\nkeep x\n").await;
+    assert_eq!(
+        parts["rows"][0],
+        json!({"effect": "matches 1 file · decides 1 (6 B)", "masked": false})
+    );
+    assert!(
+        parts["rows"][1]["error"]
+            .as_str()
+            .unwrap()
+            .contains("not a mode")
+    );
+    assert_eq!(parts["save"], "Save: -6 B");
+    assert!(parts["confirm"].is_string());
+    let panel = parts["panel"].as_str().unwrap();
+    assert!(
+        panel.contains("warning: <code>@alice/</code> will no longer be here"),
+        "{panel}"
+    );
+    assert!(panel.contains("free: -1 file, -6 B"), "{panel}");
+
+    let preview = peer
+        .call("selection", "preview", json!({"rules": "free @alice/\n"}))
+        .await
+        .unwrap();
+    assert_eq!(preview["version"], parts["version"]);
+    assert_eq!(preview["after"], json!({"files": 0, "bytes": 0}));
+    let error = peer
+        .call(
+            "selection",
+            "set",
+            json!({"rules": "free @alice/\n", "version": "stale"}),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.contains("changed since"), "{error}");
+    let error = peer
+        .call("selection", "set", json!({"rules": "keep x\n"}))
+        .await
+        .unwrap_err();
+    assert!(error.contains("line 1: "), "{error}");
+    peer.call(
+        "selection",
+        "set",
+        json!({"rules": "free @alice/\n", "version": preview["version"]}),
+    )
+    .await
+    .unwrap();
+    let rules = peer.call("selection", "list", json!({})).await.unwrap();
+    assert_eq!(rules, json!("free @alice/\n"));
+    assert!(!notes.exists());
+    peer.call("selection", "set", json!({"rules": ""}))
+        .await
+        .unwrap();
+    assert_eq!(
+        peer.call("selection", "list", json!({})).await.unwrap(),
+        json!("")
+    );
 }

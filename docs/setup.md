@@ -138,7 +138,33 @@ pigeon selection pin --pattern /report/ --time 2026-10-01T12:00:00Z
 and `unfollow` stops syncing them, keeping the files unless `--free`
 removes them. `pin` holds files as they were at a past time.
 
-In the web UI, the Files page gives each file and folder a box: checked
+To edit every rule at once, write them one per line, the last matching
+rule winning, and preview them before saving:
+
+```sh
+pigeon selection list > rules.txt
+cat rules.txt
+# follow @mario/
+# frozen 2026-10-01T12:00:00Z /report/
+# free *.iso
+pigeon selection preview --rules rules.txt
+pigeon selection set --rules rules.txt --version <the version the preview showed>
+```
+
+`frozen now` freezes files at the time of saving. The preview counts the
+files and bytes held now and after saving, and what saving would download,
+free and freeze, with the rule that decides each file. `set` replaces the
+whole selection, keeping the rules as written, and with `--version` it
+refuses if the selection changed since the preview. A modified copy not yet
+published is never removed.
+
+The web UI's Selection page edits a draft of the rules the same way: each
+row tells how many files its rule matches and decides, the preview beside
+it updates on each keystroke and as files arrive, and nothing changes
+until Save, which asks first when it frees space. If the selection changes
+elsewhere meanwhile, a banner offers to reload it or keep the draft.
+
+The Files page gives each file and folder a box: checked
 when followed, mixed when only part of a folder is. Unchecking asks whether
 to keep the current copy, frozen, or free the space. A rule set this way
 replaces the earlier rules for the paths inside it; hand-written patterns

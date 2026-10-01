@@ -1,9 +1,10 @@
 //! How results read: the fields an action's columns name, each cell as
-//! short text, and the whole result as text for the command line.
+//! short text, and the whole result as text for the command line, nested
+//! objects indented under their names.
 
 use std::fmt::Write;
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::catalog::Action;
 
@@ -34,14 +35,14 @@ pub fn size(bytes: u64) -> String {
     }
 }
 
-/// One value as a table cell: flags as yes or nothing, sizes in units,
-/// nested values as compact JSON.
+/// One value as a table cell: flags as yes or nothing, sizes and byte
+/// counts in units, nested values as compact JSON.
 #[must_use]
 pub fn cell(column: &str, value: &Value) -> String {
     match value {
         Value::Null | Value::Bool(false) => String::new(),
         Value::Bool(true) => "yes".to_owned(),
-        Value::Number(number) if column.ends_with("size") => {
+        Value::Number(number) if column.ends_with("size") || column.ends_with("bytes") => {
             number.as_u64().map_or_else(|| number.to_string(), size)
         }
         Value::Number(number) => number.to_string(),
@@ -91,6 +92,56 @@ fn table(columns: &[&str], items: &[Value]) -> String {
     out
 }
 
+/// `fields` as aligned lines, `indent` spaces in, each nested object or
+/// list of objects under its name and one level further in.
+fn outline(fields: &Map<String, Value>, indent: usize, out: &mut String) {
+    let flat = |value: &Value| match value {
+        Value::Object(_) => false,
+        Value::Array(items) => !items.iter().any(Value::is_object),
+        _ => true,
+    };
+    let width = fields
+        .iter()
+        .filter(|(_, value)| flat(value))
+        .map(|(name, _)| name.len())
+        .max()
+        .unwrap_or(0);
+    for (name, value) in fields {
+        match value {
+            _ if flat(value) => {
+                let line = format!("{:indent$}{name:width$}  {}", "", cell(name, value));
+                out.push_str(line.trim_end());
+                out.push('\n');
+            }
+            Value::Object(inner) => {
+                let _ = writeln!(out, "{:indent$}{name}", "");
+                outline(inner, indent + 2, out);
+            }
+            Value::Array(items) => {
+                let _ = writeln!(out, "{:indent$}{name}", "");
+                for item in items {
+                    match item {
+                        Value::Object(inner) => {
+                            let _ = writeln!(out, "{:width$}-", "", width = indent + 2);
+                            outline(inner, indent + 4, out);
+                        }
+                        other => {
+                            let _ = writeln!(
+                                out,
+                                "{:width$}- {}",
+                                "",
+                                cell(name, other),
+                                width = indent + 2
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// The result of `action` as text for a person.
 #[must_use]
 pub fn text(action: &Action, result: &Value) -> String {
@@ -99,13 +150,11 @@ pub fn text(action: &Action, result: &Value) -> String {
         Value::Array(items) if items.is_empty() => "nothing\n".to_owned(),
         Value::Array(items) if !action.columns.is_empty() => table(action.columns, items),
         Value::Object(fields) => {
-            let width = fields.keys().map(String::len).max().unwrap_or(0);
             let mut out = String::new();
-            for (name, value) in fields {
-                let _ = writeln!(out, "{name:width$}  {}", cell(name, value));
-            }
+            outline(fields, 0, &mut out);
             out
         }
+        Value::String(text) if text.is_empty() || text.ends_with('\n') => text.clone(),
         other => format!("{}\n", cell("", other)),
     }
 }
@@ -143,6 +192,24 @@ mod tests {
         assert_eq!(
             super::text(find("group", "key").unwrap(), &key),
             "key  cheapmo-abc\n"
+        );
+    }
+
+    #[test]
+    fn nested_objects_read_indented_under_their_names() {
+        let preview = json!({
+            "version": "ab",
+            "now": {"files": 2, "bytes": 2048},
+            "rules": [{"rule": "follow /a/", "matches": 2}, {"rule": "free *.iso", "matches": 0}],
+        });
+        assert_eq!(
+            text(find("selection", "preview").unwrap(), &preview),
+            "now\n  bytes  2.0 KB\n  files  2\nrules\n  -\n    matches  2\n    rule     follow /a/\n  -\n    matches  0\n    rule     free *.iso\nversion  ab\n"
+        );
+        let rules = json!("follow /a/\nfree *.iso\n");
+        assert_eq!(
+            text(find("selection", "list").unwrap(), &rules),
+            "follow /a/\nfree *.iso\n"
         );
     }
 }

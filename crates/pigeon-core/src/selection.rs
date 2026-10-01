@@ -1,7 +1,8 @@
 //! Selections: rules that map a gitignore pattern to a cutoff time, the last
 //! matching rule winning, which say which version of each file a machine
 //! holds. The statements folder is always followed. Exact patterns name one
-//! path literally, and a new exact rule drops the exact rules it masks.
+//! path literally, and a new exact rule drops the exact rules it masks,
+//! while a selection replaced whole keeps its rules as given.
 
 use std::fmt;
 
@@ -81,7 +82,7 @@ pub fn matches(matcher: &Gitignore, path: &GroupPath) -> bool {
 pub fn exact_pattern(path: &GroupPath) -> String {
     let mut pattern = String::from("/");
     for character in path.as_str().chars() {
-        if matches!(character, '[' | ']' | '*' | '?' | '\\') {
+        if matches!(character, '[' | ']' | '{' | '}' | '*' | '?' | '\\') {
             pattern.push('\\');
         }
         pattern.push(character);
@@ -116,7 +117,7 @@ impl Scope {
         while let Some(character) = characters.next() {
             match character {
                 '\\' => path.push(characters.next()?),
-                '*' | '?' | '[' | ']' => return None,
+                '*' | '?' | '[' | ']' | '{' | '}' => return None,
                 _ => path.push(character),
             }
         }
@@ -132,6 +133,14 @@ impl Scope {
             .is_some_and(|rest| rest.starts_with('/'));
         inside || (other.path == self.path && (other.folder || !self.folder))
     }
+}
+
+/// A digest of `rules`, which changes whenever they do.
+#[must_use]
+pub fn version<'a>(rules: impl IntoIterator<Item = &'a Rule>) -> String {
+    let rules: Vec<&Rule> = rules.into_iter().collect();
+    let bytes = serde_json::to_vec(&rules).unwrap_or_default();
+    blake3::hash(&bytes).to_hex()[..16].to_owned()
 }
 
 /// A machine's selection: its rules, compiled.
@@ -151,6 +160,18 @@ impl Selection {
             selection.set(rule)?;
         }
         Ok(selection)
+    }
+
+    /// Compiles `rules` and keeps them as given, masked ones included.
+    ///
+    /// # Errors
+    /// Returns the first invalid pattern.
+    pub fn exactly(rules: impl IntoIterator<Item = Rule>) -> Result<Self, PatternError> {
+        let rules = rules
+            .into_iter()
+            .map(|rule| compile(&rule.pattern).map(|matcher| (rule, matcher)))
+            .collect::<Result<_, _>>()?;
+        Ok(Self { rules })
     }
 
     /// Makes `rule` the last rule, replacing any rule with the same pattern.
@@ -177,6 +198,33 @@ impl Selection {
         self.rules.iter().map(|(rule, _)| rule)
     }
 
+    /// The version of the rules, as `version` gives it.
+    #[must_use]
+    pub fn version(&self) -> String {
+        version(self.rules())
+    }
+
+    /// The positions of the rules that match `path`, in order.
+    pub fn matching<'a>(&'a self, path: &'a GroupPath) -> impl Iterator<Item = usize> + 'a {
+        self.rules
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, matcher))| matches(matcher, path))
+            .map(|(index, _)| index)
+    }
+
+    /// The position of the rule that decides `path`: the last matching
+    /// one, none for statements, which are always followed.
+    #[must_use]
+    pub fn decider(&self, path: &GroupPath) -> Option<usize> {
+        if path.is_inside(STATEMENTS) {
+            return None;
+        }
+        self.rules
+            .iter()
+            .rposition(|(_, matcher)| matches(matcher, path))
+    }
+
     /// The cutoff of `path`: that of the last matching rule, $-\infty$ when
     /// none matches, and $+\infty$ for statements.
     #[must_use]
@@ -184,11 +232,8 @@ impl Selection {
         if path.is_inside(STATEMENTS) {
             return Cutoff::PlusInfinity;
         }
-        self.rules
-            .iter()
-            .rev()
-            .find(|(_, matcher)| matches(matcher, path))
-            .map_or(Cutoff::MinusInfinity, |(rule, _)| rule.cutoff)
+        self.decider(path)
+            .map_or(Cutoff::MinusInfinity, |index| self.rules[index].0.cutoff)
     }
 }
 
@@ -231,6 +276,27 @@ mod tests {
             selection.cutoff(&path(".pigeon/members/x")),
             Cutoff::PlusInfinity
         );
+    }
+
+    #[test]
+    fn the_decider_is_the_last_of_the_matching_rules() {
+        let rule = |pattern: &str| Rule {
+            pattern: pattern.into(),
+            cutoff: Cutoff::PlusInfinity,
+        };
+        let selection = Selection::exactly([rule("/a/"), rule("*.x"), rule("/a/")]).unwrap();
+        let file = path("a/b.x");
+        assert_eq!(selection.matching(&file).collect::<Vec<_>>(), [0, 1, 2]);
+        assert_eq!(selection.decider(&file), Some(2));
+        assert_eq!(selection.decider(&path("c")), None);
+        assert_eq!(selection.decider(&path(".pigeon/members/x")), None);
+        let other = Selection::exactly([rule("/a/"), rule("*.x")]).unwrap();
+        assert_ne!(selection.version(), other.version());
+        assert_eq!(
+            other.version(),
+            Selection::new(other.rules().cloned()).unwrap().version()
+        );
+        assert_eq!(other.version(), version(other.rules()));
     }
 
     #[test]
@@ -280,6 +346,9 @@ mod tests {
         let matcher = compile(&pattern).unwrap();
         assert!(matches(&matcher, &file));
         assert!(!matches(&matcher, &path("a/b c.txt")));
+        let braced = path("a{b,c}.txt");
+        let matcher = compile(&exact_pattern(&braced)).unwrap();
+        assert!(matches(&matcher, &braced) && !matches(&matcher, &path("ab.txt")));
         assert_eq!(
             Scope::of(&pattern),
             Some(Scope {
@@ -297,7 +366,9 @@ mod tests {
                 folder: true
             })
         );
-        for glob in ["*.pdf", "a/", "/a/*", "/a?", "/[ab]/", "@mario/", "/"] {
+        for glob in [
+            "*.pdf", "a/", "/a/*", "/a?", "/[ab]/", "/{a,b}", "@mario/", "/",
+        ] {
             assert_eq!(Scope::of(glob), None, "{glob}");
         }
     }
@@ -328,17 +399,13 @@ mod tests {
             .map(|rule| rule.pattern.as_str())
             .collect();
         assert_eq!(patterns, ["*.pdf", "/a", "/ab.txt", "/b/", "/a/"]);
-        let mut unpruned = Selection::default();
-        for each in earlier
-            .into_iter()
-            .chain([rule("/a/", Cutoff::PlusInfinity)])
-        {
-            unpruned
-                .rules
-                .retain(|(old, _)| old.pattern != each.pattern);
-            let matcher = compile(&each.pattern).unwrap();
-            unpruned.rules.push((each, matcher));
-        }
+        let unpruned = Selection::exactly(
+            earlier
+                .into_iter()
+                .chain([rule("/a/", Cutoff::PlusInfinity)]),
+        )
+        .unwrap();
+        assert_eq!(unpruned.rules().count(), 7);
         assert_eq!(cutoffs(&selection), cutoffs(&unpruned));
         assert_ne!(cutoffs(&selection), before);
         selection.set(rule("/a", Cutoff::MinusInfinity)).unwrap();
