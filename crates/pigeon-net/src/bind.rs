@@ -1,13 +1,14 @@
-//! Binding a group's endpoint: over the internet with iroh's relays and
-//! address lookup plus local-network discovery limited to the group, or on
-//! this host alone with an in-memory lookup, for tests.
+//! Binding a group's endpoint: over the internet with iroh's address lookup
+//! plus local-network discovery limited to the group, or on this host alone
+//! with an in-memory lookup, for tests. Both start with no relay, which the
+//! node then chooses.
 
 use std::fmt::Write;
 
 use anyhow::Result;
 use iroh::address_lookup::MemoryLookup;
 use iroh::endpoint::{RelayMode, presets};
-use iroh::{Endpoint, SecretKey};
+use iroh::{Endpoint, RelayMap, SecretKey};
 use iroh_mdns_address_lookup::MdnsAddressLookup;
 use pigeon_core::identity::GroupId;
 
@@ -37,6 +38,7 @@ pub async fn bind_internet(
         .build(secret.public())?;
     let endpoint = Endpoint::builder(presets::N0)
         .secret_key(secret)
+        .relay_mode(RelayMode::Custom(RelayMap::empty()))
         .address_lookup(mdns.clone())
         .bind()
         .await?;
@@ -52,7 +54,7 @@ pub async fn bind_internet(
 pub async fn bind_local(secret: SecretKey, lookup: &MemoryLookup) -> Result<Endpoint> {
     let endpoint = Endpoint::builder(presets::Minimal)
         .secret_key(secret)
-        .relay_mode(RelayMode::Disabled)
+        .relay_mode(RelayMode::Custom(RelayMap::empty()))
         .address_lookup(lookup.clone())
         .bind()
         .await?;

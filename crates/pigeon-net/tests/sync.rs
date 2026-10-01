@@ -3,13 +3,15 @@
 //! learns nothing unless the member list recognizes it, recognized machines
 //! receive the latest secret, and blobs move only between admitted machines,
 //! each from several machines at once, which serve what they hold while
-//! still downloading.
+//! still downloading, and reach each other through the group's relay.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bao_tree::ChunkNum;
 use iroh::address_lookup::MemoryLookup;
+use iroh::endpoint::{RelayMode, presets};
+use iroh::{Endpoint, EndpointAddr, RelayMap, RelayUrl};
 use iroh_base::SecretKey;
 use iroh_blobs::Hash;
 use iroh_blobs::protocol::{ChunkRanges, GetRequest};
@@ -23,6 +25,7 @@ use pigeon_core::name::MemberName;
 use pigeon_core::patch::{Change, Content, ContentHash, Patch, SignedPatch};
 use pigeon_core::statement::member_path;
 use pigeon_net::bind::bind_local;
+use pigeon_net::relay::{relay_url, serve_relay};
 use pigeon_net::wire::{Patches, Vector};
 use pigeon_net::{Log, Node, Received};
 use tokio::sync::mpsc;
@@ -89,6 +92,37 @@ impl Machine {
     async fn start(secret: RenewedSecret, lookup: &MemoryLookup) -> Self {
         let key = SecretKey::generate();
         let endpoint = bind_local(key.clone(), lookup).await.unwrap();
+        Self::on(endpoint, key, secret)
+    }
+
+    /// Starts a machine that `lookup` knows only through `relay`.
+    async fn relayed(secret: RenewedSecret, lookup: &MemoryLookup, relay: &RelayUrl) -> Self {
+        let key = SecretKey::generate();
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .secret_key(key.clone())
+            .relay_mode(RelayMode::Custom(RelayMap::empty()))
+            .address_lookup(lookup.clone())
+            .bind()
+            .await
+            .unwrap();
+        let machine = Self::on(endpoint, key, secret);
+        machine
+            .node
+            .use_relays(&RelayMap::from(relay.clone()))
+            .await;
+        timeout(Duration::from_secs(10), async {
+            while machine.node.home_relay().as_ref() != Some(relay) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the machine reaches the relay");
+        lookup
+            .add_endpoint_info(EndpointAddr::new(machine.node.id()).with_relay_url(relay.clone()));
+        machine
+    }
+
+    fn on(endpoint: Endpoint, key: SecretKey, secret: RenewedSecret) -> Self {
         let log = Arc::new(Held(Mutex::new(Ledger::new(group()))));
         let blobs = MemStore::new();
         let name = MemberName::parse("mario").unwrap();
@@ -392,6 +426,41 @@ async fn a_machine_serves_what_it_holds_while_still_downloading() {
         .unwrap();
     c.holds(tag.hash(), &data).await;
     for machine in [a, b, c] {
+        machine.node.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn machines_known_only_by_the_groups_relay_reach_each_other() {
+    let server = serve_relay("127.0.0.1:0".parse().unwrap(), None)
+        .await
+        .unwrap();
+    let url = relay_url(&server, "127.0.0.1").unwrap();
+    let lookup = MemoryLookup::new();
+    let a = Machine::relayed(first(5), &lookup, &url).await;
+    let b = Machine::relayed(first(5), &lookup, &url).await;
+    let data = varied(1 << 20);
+    let tag = a.blobs.add_bytes(data.clone()).temp_tag().await.unwrap();
+    b.meet(&a).await;
+    let fetched = b.node.fetch(tag.hash(), vec![a.node.id()]);
+    timeout(Duration::from_secs(20), fetched)
+        .await
+        .unwrap()
+        .unwrap();
+    b.holds(tag.hash(), &data).await;
+    let other = serve_relay("127.0.0.1:0".parse().unwrap(), None)
+        .await
+        .unwrap();
+    let moved = relay_url(&other, "127.0.0.1").unwrap();
+    b.node.use_relays(&RelayMap::from(moved.clone())).await;
+    timeout(Duration::from_secs(10), async {
+        while b.node.home_relay() != Some(moved.clone()) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the machine moves to the new relay");
+    for machine in [a, b] {
         machine.node.shutdown().await.unwrap();
     }
 }

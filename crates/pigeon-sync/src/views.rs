@@ -28,6 +28,8 @@ pub struct Status {
     pub root: std::path::PathBuf,
     pub join: JoinState,
     pub peers: Vec<MachineId>,
+    /// The relay that carries what no direct connection can, once reached.
+    pub relay: Option<String>,
     /// Edits waiting to settle.
     pub pending: usize,
     /// Blobs being fetched.
@@ -128,6 +130,7 @@ impl Engine {
             root: inner.config.root.clone(),
             join: work.join.clone(),
             peers: inner.node.peers(),
+            relay: inner.node.home_relay().map(|url| url.to_string()),
             pending: work.pending.len(),
             fetching: work.fetching.len(),
             patches: inner.ledger.lock().patches().count(),

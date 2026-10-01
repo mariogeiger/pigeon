@@ -3,7 +3,8 @@
 //! freeze and change through requests, concurrent edits of one member keep
 //! the later, a taken name joins nothing, and edits through actions publish
 //! or request each file under its own rule, the quota drops history, and
-//! keeping history keeps the past versions of others' files too.
+//! keeping history keeps the past versions of others' files too, and every
+//! machine follows the relay the group names.
 
 mod common;
 
@@ -12,6 +13,7 @@ use pigeon_core::path::GroupPath;
 use pigeon_core::retention::Retention;
 use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_core::statement::{Decision, Mode};
+use pigeon_net::relay::{relay_url, serve_relay};
 use pigeon_store::aside::Reason;
 use pigeon_sync::{Edit, JoinState};
 
@@ -446,6 +448,31 @@ async fn keeping_history_keeps_past_versions_of_others_files() {
     for machine in machines {
         machine.engine.shutdown().await.unwrap();
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_machine_follows_the_relay_the_group_names() {
+    let mut machines = group(&[("alice", "a"), ("bob", "b")]).await;
+    joined(&machines).await;
+    let server = serve_relay("127.0.0.1:0".parse().unwrap(), None)
+        .await
+        .unwrap();
+    let url = relay_url(&server, "127.0.0.1").unwrap().to_string();
+    let alice = &machines[0].engine;
+    let wrong = alice.set_relay(Some("no url")).await.unwrap_err();
+    assert_eq!(wrong.to_string(), "no url is no relay URL");
+    alice.set_relay(Some(&url)).await.unwrap();
+    for machine in &machines {
+        eventually("the machine reaches the group's relay", || async {
+            machine.engine.status().await.relay.as_deref() == Some(url.as_str())
+        })
+        .await;
+    }
+    let bob = machines.pop().unwrap().restart().await;
+    eventually("a restarted machine follows it at once", || async {
+        bob.engine.status().await.relay.as_deref() == Some(url.as_str())
+    })
+    .await;
 }
 
 #[cfg(unix)]

@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 pigeon-core.workspace = true
+pigeon-net.workspace = true
 pigeon-store.workspace = true
 pigeon-sync.workspace = true
 anyhow.workspace = true

@@ -21,7 +21,7 @@ use pigeon_core::patch::{Change, Content, ContentHash, Patch, SignedPatch};
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::places::Places;
 use pigeon_core::selection::{Cutoff, Rule, Selection};
-use pigeon_core::statement::{MemberStatement, STATEMENTS, member_path};
+use pigeon_core::statement::{MemberStatement, STATEMENTS, is_relay_path, member_path};
 use pigeon_net::bind::{bind_internet, bind_local};
 use pigeon_net::wire::{Patches, Vector};
 use pigeon_net::{Log, Node, Received};
@@ -593,6 +593,7 @@ async fn run(
     let mut last_rescan = Instant::now();
     let mut last_protect = Instant::now();
     {
+        inner.follow_relay().await;
         let mut work = inner.work.lock().await;
         inner.lay_out(&mut work);
         inner.refresh(&mut work, &Rescan::All).await;
@@ -608,8 +609,15 @@ async fn run(
                 }
             }
             Some(patches) = received.recv() => {
+                let relayed = patches.patches.iter().any(|signed| {
+                    signed.patch.changes.iter().any(|change| is_relay_path(&change.path))
+                });
                 let mut work = inner.work.lock().await;
                 inner.receive(&mut work, patches).await;
+                drop(work);
+                if relayed {
+                    inner.follow_relay().await;
+                }
             }
             Some(rescan) = rescan_events.recv() => {
                 let mut rescans = vec![rescan];
@@ -628,6 +636,7 @@ async fn run(
                 inner.refresh_keys(&mut work, &keys).await;
                 if keys.iter().any(|key| key.as_str().starts_with(STATEMENTS)) {
                     inner.apply_requests(&mut work).await;
+                    inner.follow_relay().await;
                 }
             }
             _ = ticks.tick() => {

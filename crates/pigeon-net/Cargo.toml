@@ -14,8 +14,10 @@ bao-tree.workspace = true
 iroh.workspace = true
 iroh-blobs.workspace = true
 iroh-mdns-address-lookup.workspace = true
+iroh-relay.workspace = true
 n0-future.workspace = true
 postcard.workspace = true
+rustls.workspace = true
 serde.workspace = true
 tokio.workspace = true
 

@@ -259,6 +259,16 @@ pub const ACTIONS: &[Action] = &[
     ),
     action(
         "group",
+        "relay",
+        "Name the relay that carries, for every machine of the group, what no direct connection can",
+        &[optional(
+            "url",
+            "The URL `pigeon relay` printed; leave it out for iroh's public relays",
+            Kind::Text,
+        )],
+    ),
+    action(
+        "group",
         "leave",
         "Leave the group: your name stays taken, this machine keeps its files but stops syncing, and the others renew the group key",
         &[],

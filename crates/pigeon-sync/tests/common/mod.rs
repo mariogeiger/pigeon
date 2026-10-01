@@ -175,11 +175,22 @@ pub async fn group(members: &[(&str, &str)]) -> Vec<Machine> {
     machines
 }
 
-/// Waits until every machine's member joined.
+/// Waits until every machine's member joined, as every machine sees it.
 pub async fn joined(machines: &[Machine]) {
+    let mut names = Vec::new();
     for machine in machines {
         eventually("the member joins", || async {
             machine.engine.status().await.join == JoinState::Joined
+        })
+        .await;
+        names.push(machine.engine.status().await.member);
+    }
+    for machine in machines {
+        eventually("every machine knows every member", || async {
+            let members = machine.engine.members();
+            names
+                .iter()
+                .all(|name| members.iter().any(|member| member.name == *name))
         })
         .await;
     }

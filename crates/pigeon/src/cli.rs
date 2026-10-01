@@ -1,7 +1,7 @@
 //! The command line: `pigeon <noun> <verb>` commands generated from the
 //! catalog, which prompt for a missing argument only when a terminal is
 //! attached and otherwise call the daemon's API; plus the commands that run
-//! the daemon, link to the web UI, and complete the shell.
+//! the daemon, serve a relay, link to the web UI, and complete the shell.
 
 use std::io::{IsTerminal, Read};
 
@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 
 use crate::catalog::{ACTIONS, Action, GROUP, Kind, NOUNS, Param, Scope, find};
 use crate::home::Home;
-use crate::{client, render, serve};
+use crate::{client, relay, render, serve};
 
 fn param_arg(param: &Param) -> Arg {
     let arg = Arg::new(param.name).long(param.name).help(param.about);
@@ -69,6 +69,28 @@ pub fn command() -> Command {
                     .help("The localhost port, any free one by default")
                     .value_parser(clap::value_parser!(u16))
                     .default_value("0"),
+            ),
+    )
+    .subcommand(
+        Command::new("relay")
+            .about("Serve the group's relay, which carries as ciphertext what machines cannot send directly")
+            .arg(
+                Arg::new("hostname")
+                    .long("hostname")
+                    .required(true)
+                    .help("The name or address other machines reach this one at"),
+            )
+            .arg(
+                Arg::new("contact")
+                    .long("contact")
+                    .help("An email Let's Encrypt may warn: serve HTTPS on port 443 with its certificate"),
+            )
+            .arg(
+                Arg::new("port")
+                    .long("port")
+                    .help("The HTTP port, which Let's Encrypt needs at 80")
+                    .value_parser(clap::value_parser!(u16))
+                    .default_value("80"),
             ),
     )
     .subcommand(Command::new("ui").about("Print the link that opens the web UI"))
@@ -167,6 +189,16 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
         "daemon" => {
             let port = noun_matches.get_one::<u16>("port").copied().unwrap_or(0);
             tokio::runtime::Runtime::new()?.block_on(serve::run(home, port))
+        }
+        "relay" => {
+            let hostname = noun_matches
+                .get_one::<String>("hostname")
+                .ok_or_else(|| anyhow!("pigeon relay needs --hostname"))?;
+            let contact = noun_matches
+                .get_one::<String>("contact")
+                .map(String::as_str);
+            let port = noun_matches.get_one::<u16>("port").copied().unwrap_or(80);
+            tokio::runtime::Runtime::new()?.block_on(relay::run(&home, hostname, contact, port))
         }
         "ui" => {
             let address = home.address()?;

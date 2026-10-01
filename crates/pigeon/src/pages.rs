@@ -183,8 +183,9 @@ pub fn fields(value: &Value) -> Markup {
     }
 }
 
-/// How a group stands here, its key, and, unless the member belongs, why
-/// and the form to claim a name or log in with a new password.
+/// How a group stands here, its key, the form that names the group's
+/// relay, and, unless the member belongs, why and the form to claim a name
+/// or log in with a new password.
 #[must_use]
 pub fn overview(group: &str, status: &Value, key: &str) -> Markup {
     let back = format!("/g/{group}");
@@ -204,6 +205,11 @@ pub fn overview(group: &str, status: &Value, key: &str) -> Markup {
             h2 { "Group key" }
             p { "Share it with a new member so that their machine can join." }
             textarea readonly rows="3" cols="80" { (key) }
+        }
+        section {
+            h2 { "Relay" }
+            p { "Machines that cannot connect directly talk through a relay, which sees only ciphertext: iroh's public relays, or the group's own, served by " code { "pigeon relay" } "." }
+            (form(action("group", "relay"), &back, fill))
         }
     };
     layout(group, Some(group), &body)

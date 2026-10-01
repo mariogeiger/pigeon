@@ -165,6 +165,10 @@ async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
             engine.exclude(&member(args)?).await?;
             Ok(Value::Null)
         }
+        ("group", "relay") => {
+            engine.set_relay(args.text("url")).await?;
+            Ok(Value::Null)
+        }
         ("group", "leave") => {
             engine.exclude(&engine.status().await.member).await?;
             Ok(Value::Null)

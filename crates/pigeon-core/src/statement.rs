@@ -1,6 +1,6 @@
 //! Statements: the signed files in the hidden drop folder `.pigeon` that
-//! record members, rebindings, requests, and decisions, with their paths
-//! and bodies.
+//! record members, rebindings, requests, decisions, and the group's relay,
+//! with their paths and bodies.
 
 use iroh_base::PublicKey;
 use serde::{Deserialize, Serialize};
@@ -98,6 +98,27 @@ pub fn decision_path(request: &GroupPath) -> GroupPath {
         .expect("request names are portable")
 }
 
+/// The file of the relay choice made in the patch stamped `stamp`; the
+/// latest choice holds.
+///
+/// # Panics
+/// Never: every part of the path is portable by construction.
+#[must_use]
+pub fn relay_path(stamp: &Stamp) -> GroupPath {
+    GroupPath::parse(&format!("{STATEMENTS}/{RELAYS}/{}.json", stamp.label()))
+        .expect("labels are portable")
+}
+
+const RELAYS: &str = "relays";
+
+/// Whether `path` lies where relay choices do.
+#[must_use]
+pub fn is_relay_path(path: &GroupPath) -> bool {
+    path.as_str()
+        .to_lowercase()
+        .starts_with(&format!("{STATEMENTS}/{RELAYS}/"))
+}
+
 /// What a member file says: the key its name is bound to.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct MemberStatement {
@@ -110,6 +131,13 @@ pub struct MemberStatement {
 pub struct RebindStatement {
     pub name: MemberName,
     pub key: Option<PublicKey>,
+}
+
+/// What a relay file says: the URL of the relay the group's machines use
+/// when they cannot connect directly, or none for iroh's public relays.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct RelayStatement {
+    pub url: Option<String>,
 }
 
 /// Whether a request waits for acceptance or needs none.
@@ -187,5 +215,15 @@ mod tests {
         assert!(is_rebind_path(&stray));
         assert_eq!(rebind_of_path(&stray), None);
         assert!(!is_rebind_path(&member_path(&name)));
+    }
+
+    #[test]
+    fn relay_paths_lie_in_their_folder() {
+        let stamp = Stamp {
+            time: 7,
+            machine: iroh_base::SecretKey::from_bytes(&[1; 32]).public(),
+        };
+        assert!(is_relay_path(&relay_path(&stamp)));
+        assert!(!is_relay_path(&request_path(&stamp)));
     }
 }

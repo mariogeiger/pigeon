@@ -2,7 +2,8 @@
 //! machines the member list recognizes or that prove they know the group
 //! secret, keeps a sync session with every machine it reaches, passes the
 //! latest group secret to recognized machines, and serves and fetches blobs
-//! among admitted machines, each from several machines at once.
+//! among admitted machines, each from several machines at once, through the
+//! relays it is told to use when no direct connection works.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
@@ -10,9 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-use iroh::Endpoint;
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
+use iroh::{Endpoint, RelayMap, RelayUrl};
 use iroh_blobs::api::Store;
 use iroh_blobs::provider::events::{
     AbortReason, ConnectMode, EventMask, EventSender, ProviderMessage,
@@ -61,6 +62,7 @@ struct Shared {
     connected: Counts,
     admitted: Mutex<HashSet<MachineId>>,
     wanted: Mutex<BTreeSet<MachineId>>,
+    relays: tokio::sync::Mutex<Vec<RelayUrl>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -316,6 +318,7 @@ impl Node {
             connected: Counts::default(),
             admitted: Mutex::default(),
             wanted: Mutex::default(),
+            relays: tokio::sync::Mutex::default(),
         });
         let pool = ConnectionPool::new(
             endpoint.clone(),
@@ -421,6 +424,35 @@ impl Node {
                 }
             }
         });
+    }
+
+    /// Makes `relays` the only relays that carry this node's traffic when no
+    /// direct connection works.
+    pub async fn use_relays(&self, relays: &RelayMap) {
+        let mut held = self.shared.relays.lock().await;
+        let wanted: Vec<_> = relays.relays();
+        for config in &wanted {
+            if !held.contains(&config.url) {
+                self.endpoint()
+                    .insert_relay(config.url.clone(), config.clone())
+                    .await;
+            }
+        }
+        for url in held.iter() {
+            if !wanted.iter().any(|config| config.url == *url) {
+                self.endpoint().remove_relay(url).await;
+            }
+        }
+        *held = wanted
+            .into_iter()
+            .map(|config| config.url.clone())
+            .collect();
+    }
+
+    /// The relay this machine is reachable through, once it reached one.
+    #[must_use]
+    pub fn home_relay(&self) -> Option<RelayUrl> {
+        self.endpoint().addr().relay_urls().next().cloned()
     }
 
     /// The machines with an open session.

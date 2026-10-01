@@ -95,7 +95,13 @@ the shell's completion script. The daemon keeps its state in
   serves them while their owners' machines are off. The CLI manages it over
   SSH.
 - **Peer to peer.** Machines connect directly, end-to-end encrypted, over the
-  local network or the internet.
+  local network or the internet. When no direct connection works, a relay
+  that sees only ciphertext carries the traffic: iroh's public relays, or
+  the group's own. `pigeon relay --hostname relay.example.org --contact
+  you@example.org` serves one, with a Let's Encrypt certificate, on a
+  machine reachable on ports 80 and 443, such as the server; `pigeon group
+  relay --url https://relay.example.org` then has every machine of the
+  group use it.
 - **Many sources at once.** A file arrives in pieces from every machine that
   holds it, even one still downloading it, so the fastest machines deliver the
   most and machines downloading together trade pieces.
