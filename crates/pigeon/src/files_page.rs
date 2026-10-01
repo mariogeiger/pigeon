@@ -1,11 +1,9 @@
 //! The web UI's Files page: the whole group as one tree, whose folders
 //! `files.js` opens and closes in place. Each row has a box that follows
 //! it, checked when every file under it is followed and mixed when only
-//! some are, its size, owner, time and state, and a menu of what can be
-//! done to it. The edits waiting here show with the time left, the drafts
-//! other machines announce show greyed with their author, and two drafts
-//! of one path warn both members, telling the later one it will be set
-//! aside.
+//! some are, its size, owner, time and statuses, one emoji each, which a
+//! legend below the tree explains, and a menu of what can be done to it.
+//! The drafts other machines announce show greyed with their author.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,6 +12,7 @@ use pigeon_core::path::GroupPath;
 use pigeon_core::selection::{exact_pattern, folder_pattern};
 use serde_json::Value;
 
+use crate::file_status::{countdown, file_status, folder_status, legend};
 use crate::file_tree::{self, Facts, Folder, Followed, Leaf, Row};
 use crate::form::form;
 use crate::group_pages::{encode, file_link, fill};
@@ -32,17 +31,6 @@ fn state(followed: Followed) -> &'static str {
 /// Whether the selection follows the file `item` describes.
 fn follows(item: &Value) -> bool {
     item["cutoff"] == "PlusInfinity"
-}
-
-/// Seconds as minutes and seconds.
-fn clock(seconds: u64) -> String {
-    format!("{}:{:02}", seconds / 60, seconds % 60)
-}
-
-/// A countdown that `live.js` ticks.
-fn countdown(seconds: &Value) -> Markup {
-    let seconds = seconds.as_u64().unwrap_or_default();
-    html! { span data-due=(seconds) { (clock(seconds)) } }
 }
 
 /// One path of the group: its published file, the edit of it waiting
@@ -132,55 +120,6 @@ pub fn waiting_note(group: &str, back: &str, path: &str, waiting: &Value) -> Mar
         @if waiting["deleted"] == true { "deletion " }
         "waiting · published in " (countdown(&waiting["due_in"]))
         (publish_button(group, back, path, waiting["freezes"] == true))
-    }
-}
-
-/// The other drafts of the path `item` waits at, and whether this
-/// machine's copy will be set aside.
-fn rivals(item: &Value) -> Markup {
-    let rivals = item["rivals"]
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or_default();
-    html! {
-        @for rival in rivals {
-            span class="warning" {
-                "⚠ " (rival["author"].as_str().unwrap_or_default()) " is also adding "
-                (rival["path"].as_str().unwrap_or_default()) ", published in "
-                (countdown(&rival["due_in"]))
-            }
-        }
-        @if item["here"] == true && rivals.iter().any(|rival| rival["wins"] == true) {
-            span class="warning" { "Your copy will be set aside: rename it to keep both." }
-        }
-    }
-}
-
-/// What a file's state cell says: whether this machine holds it and is
-/// up to date, whether one may write it, its waiting edit, and the drafts
-/// of it other machines announced.
-fn file_state(entry: &Entry) -> Markup {
-    html! {
-        @if let Some(file) = entry.file {
-            @if file["held"] == false { span class="mark" { "not here" } " " }
-            @if file["outdated"] == true { span class="mark" { "outdated" } " " }
-            @if file["cutoff"]["At"].is_u64() { span class="mark" { "frozen copy" } " " }
-            @if file["writable"] == false {
-                span title="Only its owner writes it: changes become requests" { "🔒" } " "
-            }
-        }
-        @if let Some(waiting) = entry.waiting {
-            @if waiting["deleted"] == true { "deletion " }
-            "waiting · " (countdown(&waiting["due_in"]))
-            (rivals(waiting))
-        }
-        @for draft in &entry.drafts {
-            @if entry.waiting.is_none() {
-                (draft["author"].as_str().unwrap_or_default()) " is adding · "
-                (countdown(&draft["due_in"]))
-                (rivals(draft))
-            }
-        }
     }
 }
 
@@ -362,7 +301,7 @@ fn row(
                     td { (size(summary.size)) }
                     td {}
                     td { @if let Some(time) = &summary.time { (short_time(time)) } }
-                    td { @if summary.waiting > 0 { (summary.waiting) " waiting" } }
+                    td { (folder_status(summary.waiting)) }
                     td { (menu_button("folder", path, Some(folder), None, member)) }
                 }
             }
@@ -386,7 +325,7 @@ fn row(
                     td { (size(facts.size)) }
                     td { (owner.unwrap_or_default()) }
                     td { @if let Some(time) = facts.time { (short_time(time)) } }
-                    td { (file_state(entry)) }
+                    td { (file_status(entry.file, entry.waiting, &entry.drafts)) }
                     td { @if item.is_some() { (menu_button("file", path, None, Some(entry), member)) } }
                 }
             }
@@ -429,12 +368,13 @@ pub fn files(group: &str, member: &str, under: &str, files: &Value, waiting: &Va
                 td { (size(tree.summary.size)) }
                 td {}
                 td { @if let Some(time) = &tree.summary.time { (short_time(time)) } }
-                td { @if tree.summary.waiting > 0 { (tree.summary.waiting) " waiting" } }
+                td { (folder_status(tree.summary.waiting)) }
                 td { (menu_button("root", "", Some(&tree), None, member)) }
             }
             @for one in &rows { (row(group, member, under, one, &open)) }
         }
         @if tree.is_empty() { p { "Nothing yet." } }
+        (legend())
         (dialogs(group, &back))
         script src="/files.js" defer {}
     };
@@ -478,7 +418,9 @@ mod tests {
                 .contains(r#"data-pattern="/docs/a.txt" data-state="checked" checked"#)
         );
         assert!(page.contains(r#"data-pattern="/docs/\[x\].txt" data-state="unchecked">"#));
-        assert!(page.contains("frozen copy"));
+        assert!(row_of(&page, "docs/[x].txt").contains("🧊"));
+        assert!(!row_of(&page, "docs/a.txt").contains(r#"class="status""#));
+        assert!(page.contains(r#"<ul class="legend">"#));
         assert!(!row_of(&page, "docs").contains("hidden"));
         assert!(row_of(&page, "docs/all").contains("hidden"));
         assert!(row_of(&page, "docs/all/b.txt").contains("hidden"));
@@ -514,9 +456,9 @@ mod tests {
             {"path": "+alice/c.txt", "here": true, "due_in": 192, "freezes": true, "deleted": false, "cutoff": "MinusInfinity", "size": 5},
         ]);
         let page = files("cheapmo", "alice", "", &list, &waiting).into_string();
-        assert!(page.contains(r#"waiting · <span data-due="2">0:02</span>"#));
+        assert!(page.contains(r#"⏳ <span data-due="2">0:02</span>"#));
         assert!(page.contains(r#"<span data-due="192">3:12</span>"#));
-        assert!(row_of(&page, "+alice/new").contains("1 waiting"));
+        assert!(row_of(&page, "+alice/new").contains("⏳ 1"));
         assert!(page.contains("3 edits wait to be published."));
         assert_eq!(page.matches("data-confirm=").count(), 1, "{page}");
         assert!(row_of(&page, "+alice").contains(r#"data-waiting="3" data-freezes="true""#));
@@ -539,16 +481,15 @@ mod tests {
         ]);
         let page = files("cheapmo", "alice", "", &json!([]), &waiting).into_string();
         let mine = row_of(&page, "inbox/Report.txt");
-        assert!(mine.contains(
-            r#"⚠ bob is also adding inbox/report.txt, published in <span data-due="42">0:42</span>"#
-        ));
-        assert!(mine.contains("Your copy will be set aside: rename it to keep both."));
+        assert!(mine.contains(r#"🛑 bob <span data-due="42">0:42</span>"#));
+        assert!(mine.contains("rename it to keep both"));
         let theirs = row_of(&page, "inbox/report.txt");
         assert!(theirs.contains(r#"class="draft""#));
-        assert!(theirs.contains(r#"bob is adding · <span data-due="42">0:42</span>"#));
+        assert!(theirs.contains(r#"✍️ bob <span data-due="42">0:42</span>"#));
+        assert!(theirs.contains(r#"⚠️ alice <span data-due="200">3:20</span>"#));
         assert!(theirs.contains("<td>bob</td>") && theirs.contains("7 B"));
         assert!(!theirs.contains("checkbox") && !theirs.contains("⋯"));
         assert!(!theirs.contains("set aside"));
-        assert!(!page.contains("edits wait to be published"));
+        assert!(!page.contains("edits wait to be published."));
     }
 }

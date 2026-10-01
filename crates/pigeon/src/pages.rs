@@ -35,7 +35,8 @@ table.tree td { padding-top: .1rem; padding-bottom: .1rem; }
 table.tree button.twist, table.tree button.more { border: 0; background: none; padding: 0; font: inherit; cursor: pointer; }
 table.tree tr.draft { color: #888; }
 table.tree tr.target { background: #ffd; }
-table.tree .warning { display: block; color: #a50; }
+table.tree .status { white-space: nowrap; margin-right: .5em; cursor: help; }
+ul.legend { list-style: none; padding: 0; font-size: 13px; color: #555; columns: 2; }
 table.tree form.action, table.tree div[data-confirm] { display: inline; }
 dialog .choices { display: flex; flex-direction: column; align-items: start; gap: .25rem; margin-bottom: .5rem; }
 dialog .choices form { margin: 0; }

@@ -10,6 +10,7 @@ pub mod cli;
 pub mod client;
 pub mod daemon;
 pub mod draft;
+mod file_status;
 pub mod file_tree;
 mod files_page;
 mod form;

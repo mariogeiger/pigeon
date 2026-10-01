@@ -190,6 +190,9 @@ or free the space. A rule set this way replaces the earlier rules for the
 paths inside it; hand-written patterns such as `*.pdf` stay. Each row's ⋯
 renames, replaces, adds, deletes, downloads once or publishes now, and
 turns a change to a file one may not write into a request to its owner.
+Each status is one emoji, which a legend under the tree explains: ⏬ on
+its way, 🧊 frozen copy, 🔒 changes become requests, ⏳ and 🗑️ an edit or a
+deletion waiting, ✍️ another member's draft, ⚠️ and 🛑 rival drafts.
 Drafts other members are adding to drop folders show greyed, with their
 author and the time left; when two members add the same path, both are
 warned, and the one whose copy will be set aside is told to rename it.
