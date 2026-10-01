@@ -196,12 +196,12 @@ fn follow(home: &Home, list: &mut Checklist, membership: &Membership) -> Result<
         })
         .map(|file| {
             let path = file["path"].as_str().unwrap_or_default().to_owned();
-            let locked = path.split('/').rev().skip(1).any(|folder| folder == tag);
+            let mine = path.split('/').rev().skip(1).any(|folder| folder == tag);
             File {
                 size: file["content"]["size"].as_u64().unwrap_or(0),
                 followed: file["cutoff"] == "PlusInfinity",
                 held: file["held"].as_bool().unwrap_or(false),
-                locked,
+                own: mine,
                 path,
             }
         })
@@ -213,22 +213,24 @@ fn follow(home: &Home, list: &mut Checklist, membership: &Membership) -> Result<
     let Some(chosen) = tree.choose(&term)? else {
         return list.set(FOLLOW, Mark::Skipped, "unchanged");
     };
+    let free = chosen.unchecked_here > 0
+        && {
+            let question = format!(
+                "{} files you unchecked are on this machine ({}): keep them, frozen, or free the space?",
+                chosen.unchecked_here,
+                render::size(chosen.unchecked_bytes)
+            );
+            let choices = ["Keep a frozen copy".to_owned(), "Free the space".to_owned()];
+            ask::choose(&term, &question, &choices)? == 1
+        };
     for (pattern, follows) in &chosen.toggles {
+        let args = if *follows {
+            json!({ "group": group, "pattern": pattern })
+        } else {
+            json!({ "group": group, "pattern": pattern, "free": free })
+        };
         let verb = if *follows { "follow" } else { "unfollow" };
-        call(
-            home,
-            "selection",
-            verb,
-            json!({ "group": group, "pattern": pattern }),
-        )?;
-    }
-    if chosen.toggles.iter().any(|(_, follows)| !follows) {
-        call(
-            home,
-            "selection",
-            "follow",
-            json!({ "group": group, "pattern": own }),
-        )?;
+        call(home, "selection", verb, args)?;
     }
     list.set(
         FOLLOW,

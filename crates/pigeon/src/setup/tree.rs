@@ -2,8 +2,8 @@
 //! follows: folders open and close, a box checks a file or all those in a
 //! folder, the total shows what following them downloads, and each toggle
 //! becomes the follow or unfollow rule the web UI's Files page makes, on
-//! the same tree of folders that page draws. Files inside the member's own
-//! `+name` folders stay followed.
+//! the same tree of folders that page draws, the member's own files marked
+//! as theirs.
 
 use std::collections::BTreeSet;
 use std::fmt::Write;
@@ -22,15 +22,18 @@ pub struct File {
     pub size: u64,
     pub followed: bool,
     pub held: bool,
-    /// Whether it is the member's own, and so always followed.
-    pub locked: bool,
+    /// Whether it lies in one of the member's own `+name` folders.
+    pub own: bool,
 }
 
 /// What one chose: the rules the toggles made, in order, a pattern and
-/// whether it follows, and what the followed files download.
+/// whether it follows, what the followed files download, and how many
+/// files this machine holds that one stopped following, and their bytes.
 pub struct Chosen {
     pub toggles: Vec<(String, bool)>,
     pub download: u64,
+    pub unchecked_here: usize,
+    pub unchecked_bytes: u64,
 }
 
 /// A visible line of the tree: a folder or a file, what the files it
@@ -74,10 +77,12 @@ impl Leaf for File {
     }
 }
 
-/// The files, which folders are open, the line under the cursor, and the
-/// rules the toggles made, in order: a pattern and whether it follows.
+/// The files, whether each was followed at first, which folders are open,
+/// the line under the cursor, and the rules the toggles made, in order: a
+/// pattern and whether it follows.
 pub struct Tree {
     files: Vec<File>,
+    followed_at_first: Vec<bool>,
     open: BTreeSet<String>,
     cursor: usize,
     changes: Vec<(String, bool)>,
@@ -87,11 +92,21 @@ impl Tree {
     #[must_use]
     pub fn new(files: Vec<File>) -> Self {
         Self {
+            followed_at_first: files.iter().map(|file| file.followed).collect(),
             files,
             open: BTreeSet::new(),
             cursor: 0,
             changes: Vec::new(),
         }
+    }
+
+    /// The files this machine holds that were followed and no longer are.
+    fn unchecked_here(&self) -> impl Iterator<Item = &File> {
+        self.files
+            .iter()
+            .zip(&self.followed_at_first)
+            .filter(|(file, was)| **was && !file.followed && file.held)
+            .map(|(file, _)| file)
     }
 
     /// The lines shown: each folder, and what open folders hold.
@@ -107,7 +122,7 @@ impl Tree {
                     folder: true,
                     size: folder.summary.size,
                     followed: folder.summary.followed(),
-                    own: folder.leaves().all(|file| file.locked),
+                    own: folder.leaves().all(|file| file.own),
                 },
                 Row::File { leaf, depth } => Line {
                     path: leaf.path.clone(),
@@ -119,7 +134,7 @@ impl Tree {
                     } else {
                         Followed::None
                     }),
-                    own: leaf.locked,
+                    own: leaf.own,
                 },
             })
             .collect()
@@ -136,7 +151,7 @@ impl Tree {
     }
 
     /// Follows the files of the line under the cursor, or unfollows them
-    /// if all are followed, the member's own excepted.
+    /// if all are followed.
     fn toggle(&mut self) {
         let Some(line) = self.lines().into_iter().nth(self.cursor) else {
             return;
@@ -144,15 +159,13 @@ impl Tree {
         let follow = self
             .files
             .iter()
-            .any(|file| line.covers(&file.path) && !file.locked && !file.followed);
-        let mut changed = false;
+            .any(|file| line.covers(&file.path) && !file.followed);
         for file in &mut self.files {
-            if line.covers(&file.path) && !file.locked {
+            if line.covers(&file.path) {
                 file.followed = follow;
-                changed = true;
             }
         }
-        if let (true, Ok(path)) = (changed, GroupPath::parse(&line.path)) {
+        if let Ok(path) = GroupPath::parse(&line.path) {
             let pattern = if line.folder {
                 folder_pattern(&path)
             } else {
@@ -236,6 +249,8 @@ impl Tree {
                 Ok(Key::Enter) => {
                     break Ok(Some(Chosen {
                         download: self.to_download(),
+                        unchecked_here: self.unchecked_here().count(),
+                        unchecked_bytes: self.unchecked_here().map(|file| file.size).sum(),
                         toggles: std::mem::take(&mut self.changes),
                     }));
                 }
@@ -259,7 +274,7 @@ mod tests {
             size,
             followed,
             held: followed,
-            locked: path.contains("+mario/"),
+            own: path.contains("+mario/"),
         }
     }
 
@@ -295,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn toggling_a_folder_follows_or_unfollows_all_but_the_members_own() {
+    fn toggling_a_folder_follows_or_unfollows_everything_in_it() {
         let mut tree = tree();
         let docs = |tree: &Tree| tree.lines()[0].check();
         assert_eq!(docs(&tree), "[-]");
@@ -303,8 +318,9 @@ mod tests {
         assert_eq!(docs(&tree), "[x]");
         assert_eq!(tree.to_download(), 320);
         tree.press(&Key::Char(' '));
-        assert_eq!(docs(&tree), "[-]");
+        assert_eq!(docs(&tree), "[ ]");
         assert_eq!(tree.to_download(), 0);
+        assert_eq!(tree.unchecked_here().count(), 1);
         tree.press(&Key::ArrowDown);
         tree.press(&Key::Char(' '));
         assert_eq!(tree.to_download(), 1);
@@ -319,17 +335,27 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_of_the_members_own_files_cannot_be_unfollowed() {
+    fn the_members_own_folder_is_marked_and_toggles_like_any_other() {
         let mut tree = tree();
         tree.press(&Key::ArrowRight);
         tree.press(&Key::ArrowDown);
-        tree.press(&Key::Char(' '));
-        assert!(tree.changes.is_empty());
         let drawn = tree.render(40);
         assert!(
             drawn.contains("\n›   ▸ [x] +mario/  5 B  (yours)\n"),
             "{drawn}"
         );
-        assert!(drawn.ends_with("\nTo download: 0 B\n"), "{drawn}");
+        tree.press(&Key::Char(' '));
+        assert_eq!(tree.changes, [("/docs/+mario/".to_owned(), false)]);
+        assert!(
+            tree.render(40)
+                .contains("\n›   ▸ [ ] +mario/  5 B  (yours)\n")
+        );
+        let unchecked: Vec<&str> = tree
+            .unchecked_here()
+            .map(|file| file.path.as_str())
+            .collect();
+        assert_eq!(unchecked, ["docs/+mario/a.txt"]);
+        tree.press(&Key::Char(' '));
+        assert_eq!(tree.unchecked_here().count(), 0);
     }
 }
