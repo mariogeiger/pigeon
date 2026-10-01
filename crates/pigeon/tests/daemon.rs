@@ -269,6 +269,47 @@ async fn two_daemons_share_files_and_answer_requests() {
 }
 
 #[tokio::test]
+async fn joining_with_a_wrong_password_names_the_command_that_logs_in() {
+    let lookup = MemoryLookup::new();
+    let a = Peer::start(&lookup).await;
+    let b = Peer::start(&lookup).await;
+    let created = a
+        .call(
+            "group",
+            "create",
+            json!({"name": "cheapmo", "member": "alice", "password": "pa", "root": a.root("cheapmo")}),
+        )
+        .await
+        .unwrap();
+    assert!(a.joined().await);
+    let key = created["key"].as_str().unwrap();
+    let error = b
+        .call(
+            "group",
+            "join",
+            json!({"key": key, "member": "alice", "password": "wrong", "root": b.root("cheapmo")}),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error.contains("the name alice is taken by another password"),
+        "{error}"
+    );
+    assert!(
+        error.contains("`pigeon member claim --group cheapmo --member alice`"),
+        "{error}"
+    );
+    b.call(
+        "member",
+        "claim",
+        json!({"member": "alice", "password": "pa"}),
+    )
+    .await
+    .unwrap();
+    assert!(b.joined().await);
+}
+
+#[tokio::test]
 async fn web_forms_run_their_action_and_return() {
     let lookup = MemoryLookup::new();
     let peer = Peer::start(&lookup).await;

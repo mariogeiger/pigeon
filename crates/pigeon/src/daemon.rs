@@ -1,9 +1,11 @@
 //! The groups running on this machine: one engine per group, started from
 //! the data directories in the pigeon folder, and created when the user
-//! founds or joins a group.
+//! founds or joins a group, which then waits for the group's verdict on
+//! the member's name.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use pigeon_core::name::MemberName;
@@ -15,6 +17,10 @@ use tokio::sync::{RwLock, RwLockReadGuard};
 
 use crate::home::Home;
 use crate::shared_root::{create_root, shared_root};
+
+/// How long, beyond the time a new machine listens, joining waits for the
+/// group's verdict on the name.
+const VERDICT: Duration = Duration::from_secs(30);
 
 /// Every group on this machine.
 pub struct Daemon {
@@ -82,8 +88,8 @@ impl Daemon {
     ///
     /// # Errors
     ///
-    /// Fails if the key or name is invalid, the group exists here, or it
-    /// does not start.
+    /// Fails if the key or name is invalid, the group exists here, it does
+    /// not start, or it refuses the name.
     pub async fn join(
         &self,
         key: &str,
@@ -115,15 +121,46 @@ impl Daemon {
         let data = self.home.group(&name);
         let machine = data.machine_key()?;
         data.save_config(&GroupConfig::join(key, member, password, root, &machine))?;
-        match Engine::start(&data, self.options.clone()).await {
+        let key = match Engine::start(&data, self.options.clone()).await {
             Ok(engine) => {
                 let key = engine.group_key();
-                groups.insert(name, engine);
-                Ok(key)
+                groups.insert(name.clone(), engine);
+                key
             }
             Err(error) => {
                 let _ = std::fs::remove_dir_all(data.path());
-                Err(error)
+                return Err(error);
+            }
+        };
+        drop(groups);
+        self.verdict(&name).await?;
+        Ok(key)
+    }
+
+    /// Waits until the group accepts or refuses the name of this machine's
+    /// member in `group`, or a while longer than a new machine listens,
+    /// and fails, naming the command to run next, if it refuses.
+    async fn verdict(&self, group: &str) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + self.options.join_delay + VERDICT;
+        loop {
+            let status = {
+                let groups = self.groups.read().await;
+                let engine = groups.get(group).ok_or_else(|| {
+                    anyhow!("no group {group} on this machine: see `pigeon group list`")
+                })?;
+                engine.status().await
+            };
+            match status.join {
+                JoinState::Pending if tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                JoinState::Pending | JoinState::Joined => return Ok(()),
+                JoinState::Taken(reason)
+                | JoinState::Rebound(reason)
+                | JoinState::Excluded(reason) => bail!(
+                    "{reason}: if {member} is your name, run `pigeon member claim --group {group} --member {member}` with your password; otherwise claim another name the same way",
+                    member = status.member
+                ),
             }
         }
     }
@@ -135,7 +172,8 @@ impl Daemon {
     /// # Errors
     ///
     /// Fails if the group is unknown, the member has already joined, the
-    /// name is invalid, or the group does not restart.
+    /// name is invalid, the group does not restart, or it refuses the
+    /// name.
     pub async fn claim(&self, group: &str, member: &str, password: &str) -> Result<()> {
         let member = MemberName::parse(member).context("the member name")?;
         let mut groups = self.groups.write().await;
@@ -166,7 +204,8 @@ impl Daemon {
             })
             .await?;
         groups.insert(group.to_owned(), engine);
-        Ok(())
+        drop(groups);
+        self.verdict(group).await
     }
 
     /// Gives this machine's member in `group` a new password, then logs

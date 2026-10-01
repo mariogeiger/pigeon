@@ -82,8 +82,10 @@ pigeon group join --key <the key> --member alice
 ```
 
 with the same name and password on all of them. Keep the machine that gave
-the key online until the newcomer has joined. `pigeon group status` shows
-whether the member joined, or why the name is taken.
+the key online until the newcomer has joined. `pigeon group join` waits for
+the group's answer. If the name belongs to another password, it says so
+and prints the `pigeon member claim` command that logs in with the right
+one.
 
 To manage members:
 
