@@ -591,7 +591,10 @@ async fn group_pages_follow_files_and_hear_each_change() {
     .unwrap();
     drop(next_event(lines).await);
     let page = peer.page("/g/cheapmo/files?under=%2Balice").await;
-    assert!(page.contains("frozen copy"), "{page}");
+    assert!(
+        page.contains(r#"title="a copy kept here, frozen: it no longer syncs">🧊"#),
+        "{page}"
+    );
     let page = peer.page("/g/cheapmo/files").await;
     assert!(page.contains(r#"data-pattern="/+alice/" data-state="unchecked">"#));
     peer.call("selection", "follow", json!({"pattern": "/+alice/"}))
