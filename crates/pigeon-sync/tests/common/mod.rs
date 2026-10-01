@@ -49,6 +49,62 @@ impl Machine {
             .unwrap();
         Self { engine, ..self }
     }
+
+    /// Logs this machine in again with `password`, as after a password
+    /// change.
+    pub async fn log_in(self, password: &str) -> Self {
+        self.engine.shutdown().await.unwrap();
+        let config = self.data.load_config().unwrap();
+        let config = config.log_in(
+            config.member.clone(),
+            password,
+            &self.data.machine_key().unwrap(),
+        );
+        self.data.save_config(&config).unwrap();
+        let engine = Engine::start(&self.data, self.options.clone())
+            .await
+            .unwrap();
+        Self { engine, ..self }
+    }
+
+    /// Starts another machine on the same network, joining with `key`.
+    pub async fn join_with(&self, key: &str, member: &str, password: &str) -> Machine {
+        start(
+            key.parse().unwrap(),
+            member,
+            password,
+            tempfile::tempdir().unwrap(),
+            self.options.clone(),
+        )
+        .await
+    }
+}
+
+async fn start(
+    key: GroupKey,
+    member: &str,
+    password: &str,
+    dir: TempDir,
+    options: Options,
+) -> Machine {
+    let data = DataDir::new(dir.path().join("data"));
+    let root = dir.path().join("root");
+    let config = GroupConfig::join(
+        key,
+        MemberName::parse(member).unwrap(),
+        password,
+        root.clone(),
+        &data.machine_key().unwrap(),
+    );
+    data.save_config(&config).unwrap();
+    let engine = Engine::start(&data, options.clone()).await.unwrap();
+    Machine {
+        engine,
+        root,
+        data,
+        options,
+        _dir: dir,
+    }
 }
 
 pub fn make_writable(path: &Path) {
@@ -86,36 +142,14 @@ pub async fn group(members: &[(&str, &str)]) -> Vec<Machine> {
         .iter()
         .map(|_| tempfile::tempdir().unwrap())
         .collect();
-    let datas: Vec<DataDir> = dirs
-        .iter()
-        .map(|dir| {
-            let path = dir.path().join("data");
-            std::fs::create_dir_all(&path).unwrap();
-            DataDir::new(path)
-        })
-        .collect();
-    let first: MachineId = datas[0].machine_key().unwrap().public();
+    let first: MachineId = DataDir::new(dirs[0].path().join("data"))
+        .machine_key()
+        .unwrap()
+        .public();
     let key = GroupKey::generate(MemberName::parse("friends").unwrap(), vec![first]);
     let mut machines = Vec::new();
-    for ((dir, data), (member, password)) in dirs.into_iter().zip(datas).zip(members) {
-        let root = dir.path().join("root");
-        let config = GroupConfig::join(
-            key.clone(),
-            MemberName::parse(member).unwrap(),
-            password,
-            root.clone(),
-            &data.machine_key().unwrap(),
-        );
-        data.save_config(&config).unwrap();
-        let options = options(&lookup);
-        let engine = Engine::start(&data, options.clone()).await.unwrap();
-        machines.push(Machine {
-            engine,
-            root,
-            data,
-            options,
-            _dir: dir,
-        });
+    for (dir, (member, password)) in dirs.into_iter().zip(members) {
+        machines.push(start(key.clone(), member, password, dir, options(&lookup)).await);
     }
     machines
 }

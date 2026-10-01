@@ -183,8 +183,8 @@ pub fn fields(value: &Value) -> Markup {
     }
 }
 
-/// How a group stands here, its key, and the form to claim another name
-/// after losing one.
+/// How a group stands here, its key, and, unless the member belongs, why
+/// and the form to claim a name or log in with a new password.
 #[must_use]
 pub fn overview(group: &str, status: &Value, key: &str) -> Markup {
     let back = format!("/g/{group}");
@@ -195,7 +195,9 @@ pub fn overview(group: &str, status: &Value, key: &str) -> Markup {
     let body = html! {
         (fields(status))
         @if status["join"]["state"] != "joined" {
-            p class="mark" { "This machine has not joined yet." }
+            p class="mark" {
+                (status["join"]["reason"].as_str().unwrap_or("This machine has not joined yet."))
+            }
             (form(action("member", "claim"), &back, fill))
         }
         section {

@@ -6,13 +6,13 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result, ensure};
 use iroh::endpoint::{RecvStream, SendStream};
 use pigeon_core::clock::MachineId;
-use pigeon_core::identity::GroupId;
+use pigeon_core::identity::{GroupId, MachineCert, RenewedSecret};
 use pigeon_core::patch::SignedPatch;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// The protocol's name on the wire.
-pub const SYNC_ALPN: &[u8] = b"pigeon/sync/1";
+pub const SYNC_ALPN: &[u8] = b"pigeon/sync/2";
 
 /// The largest message either side accepts.
 pub const MAX_MESSAGE: usize = 64 << 20;
@@ -20,17 +20,28 @@ pub const MAX_MESSAGE: usize = 64 << 20;
 /// The latest patch time known from each machine.
 pub type Vector = BTreeMap<MachineId, u64>;
 
-/// The first message each side sends: which group it belongs to, a proof
-/// that it knows the group secret, and which patches it already holds.
+/// The first message each side sends: which group it belongs to, the
+/// certificate of its machine, a proof that it knows the group secret, and
+/// which patches it already holds.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hello {
     pub group: GroupId,
+    pub cert: MachineCert,
     pub admission: [u8; 32],
     pub vector: Vector,
 }
 
-/// Every later message: patches the other side may lack.
+/// Patches the other side may lack.
 pub type Patches = Vec<SignedPatch>;
+
+/// Every later message.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Message {
+    Patches(Patches),
+    /// The group secret the sender holds, for a machine the member list
+    /// recognizes.
+    Secret(RenewedSecret),
+}
 
 /// Writes one message.
 ///

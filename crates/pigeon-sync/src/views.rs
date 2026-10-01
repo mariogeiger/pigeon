@@ -79,11 +79,20 @@ impl From<&Version> for VersionView {
     }
 }
 
+/// A member, with the key their name is bound to, none once excluded, and
+/// who last rebound it and when.
 #[derive(Clone, Debug, Serialize)]
 pub struct MemberView {
     pub name: MemberName,
-    pub key: iroh_base::PublicKey,
+    pub key: Option<iroh_base::PublicKey>,
     pub joined: String,
+    pub rebound: Option<RebindingView>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct RebindingView {
+    pub by: MemberName,
+    pub time: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -137,6 +146,7 @@ impl Engine {
     #[must_use]
     pub fn group_key(&self) -> String {
         let mut key = self.inner.config.key.clone();
+        key.secret = self.inner.node.secret().borrow().secret.clone();
         if !key.bootstrap.contains(&self.inner.me()) {
             key.bootstrap.insert(0, self.inner.me());
         }
@@ -234,6 +244,10 @@ impl Engine {
                 name: name.clone(),
                 key: member.key,
                 joined: member.joined.rfc3339(),
+                rebound: member.rebound.as_ref().map(|rebinding| RebindingView {
+                    by: rebinding.by.clone(),
+                    time: rebinding.stamp.rfc3339(),
+                }),
             })
             .collect()
     }

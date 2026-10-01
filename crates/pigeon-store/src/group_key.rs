@@ -1,13 +1,13 @@
 //! The group key: the string members share to admit a new machine. It holds
-//! the group's name, its secret, and machines to dial first, in base32 so
-//! that it survives chat apps and terminals.
+//! the group's name and identity, its current secret, and machines to dial
+//! first, in base32 so that it survives chat apps and terminals.
 
 use std::fmt;
 use std::str::FromStr;
 
 use data_encoding::BASE32_NOPAD;
 use pigeon_core::clock::MachineId;
-use pigeon_core::identity::GroupSecret;
+use pigeon_core::identity::{GroupId, GroupSecret};
 use pigeon_core::name::MemberName;
 
 /// Everything a new machine needs to find and join a group.
@@ -16,8 +16,23 @@ pub struct GroupKey {
     /// The group's name, which also names its root folder; it follows the
     /// rules of member names so that it is valid in any path.
     pub name: MemberName,
+    /// The identity every signature commits to, which never changes.
+    pub group: GroupId,
+    /// The secret that admits new machines, which each exclusion renews.
     pub secret: GroupSecret,
     pub bootstrap: Vec<MachineId>,
+}
+
+/// A fresh random group secret.
+///
+/// # Panics
+///
+/// Panics if the operating system has no source of randomness.
+#[must_use]
+pub fn random_secret() -> GroupSecret {
+    let mut secret = [0; 32];
+    getrandom::fill(&mut secret).expect("the system provides randomness");
+    GroupSecret(secret)
 }
 
 /// Why a string is not a group key.
@@ -36,18 +51,14 @@ pub enum GroupKeyError {
 }
 
 impl GroupKey {
-    /// A key for a new group, with a fresh random secret.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the operating system has no source of randomness.
+    /// A key for a new group, whose identity derives from its first secret.
     #[must_use]
     pub fn generate(name: MemberName, bootstrap: Vec<MachineId>) -> Self {
-        let mut secret = [0; 32];
-        getrandom::fill(&mut secret).expect("the system provides randomness");
+        let secret = random_secret();
         Self {
             name,
-            secret: GroupSecret(secret),
+            group: secret.id(),
+            secret,
             bootstrap,
         }
     }
@@ -55,7 +66,8 @@ impl GroupKey {
 
 impl fmt::Display for GroupKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut bytes = self.secret.0.to_vec();
+        let mut bytes = self.group.0.to_vec();
+        bytes.extend_from_slice(&self.secret.0);
         for machine in &self.bootstrap {
             bytes.extend_from_slice(machine.as_bytes());
         }
@@ -79,18 +91,21 @@ impl FromStr for GroupKey {
         let bytes = BASE32_NOPAD
             .decode(encoded.to_ascii_uppercase().as_bytes())
             .map_err(|_| GroupKeyError::Encoding)?;
-        if bytes.len() < 32 || bytes.len() % 32 != 0 {
+        if bytes.len() < 64 || bytes.len() % 32 != 0 {
             return Err(GroupKeyError::Length);
         }
-        let (secret, machines) = bytes.split_at(32);
-        let (chunks, _) = machines.as_chunks::<32>();
-        let bootstrap = chunks
+        let (chunks, _) = bytes.as_chunks::<32>();
+        let [group, secret, machines @ ..] = chunks else {
+            return Err(GroupKeyError::Length);
+        };
+        let bootstrap = machines
             .iter()
             .map(|chunk| MachineId::from_bytes(chunk).map_err(|_| GroupKeyError::Machine))
             .collect::<Result<_, _>>()?;
         Ok(Self {
             name,
-            secret: GroupSecret(secret.try_into().expect("32 bytes")),
+            group: GroupId(*group),
+            secret: GroupSecret(*secret),
             bootstrap,
         })
     }
@@ -134,6 +149,17 @@ mod tests {
                 pigeon_core::name::NameError::Character('C')
             ))
         );
+    }
+
+    #[test]
+    fn a_renewed_secret_keeps_the_group_identity() {
+        let mut key = GroupKey::generate(name("g"), Vec::new());
+        let group = key.group;
+        key.secret = random_secret();
+        let parsed: GroupKey = key.to_string().parse().unwrap();
+        assert_eq!(parsed.group, group);
+        assert_ne!(parsed.secret.id(), group);
+        assert_eq!(parsed, key);
     }
 
     #[test]

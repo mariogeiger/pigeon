@@ -225,13 +225,22 @@ async fn aside(State(app): State<Arc<App>>, Path(group): Path<String>) -> Page {
 
 async fn members(State(app): State<Arc<App>>, Path(group): Path<String>) -> Page {
     let list = view(&app, "member", "list", json!({ "group": group })).await?;
-    let page = pages::listing(
-        &group,
-        "Members",
-        action("member", "list"),
-        &list,
-        &html! {},
-    );
+    let back = format!("/g/{group}/members");
+    let fill = Fill {
+        group: Some(&group),
+        ..Fill::default()
+    };
+    let forms = html! {
+        @for (noun, verb) in [
+            ("member", "password"),
+            ("member", "reset"),
+            ("member", "exclude"),
+            ("group", "leave"),
+        ] {
+            (form(action(noun, verb), &back, fill))
+        }
+    };
+    let page = pages::listing(&group, "Members", action("member", "list"), &list, &forms);
     Ok(html_page(&page))
 }
 

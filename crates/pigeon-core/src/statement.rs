@@ -1,5 +1,6 @@
 //! Statements: the signed files in the hidden drop folder `.pigeon` that
-//! record members, requests, and decisions, with their paths and bodies.
+//! record members, rebindings, requests, and decisions, with their paths
+//! and bodies.
 
 use iroh_base::PublicKey;
 use serde::{Deserialize, Serialize};
@@ -29,6 +30,54 @@ pub fn member_of_path(path: &GroupPath) -> Option<MemberName> {
     MemberName::parse(name).ok()
 }
 
+/// The file whose creation, in the patch stamped `stamp`, binds `name` to
+/// `key`, the key of a new password, or to none, which excludes the member.
+///
+/// # Panics
+/// Never: every part of the path is portable by construction.
+#[must_use]
+pub fn rebind_path(rebind: &RebindStatement, stamp: &Stamp) -> GroupPath {
+    let key = rebind
+        .key
+        .map_or_else(|| NO_KEY.to_owned(), |key| key.to_string());
+    GroupPath::parse(&format!(
+        "{STATEMENTS}/{REBINDS}/{}/{}-{key}",
+        rebind.name,
+        stamp.label()
+    ))
+    .expect("names, labels and keys are portable")
+}
+
+const REBINDS: &str = "rebinds";
+const NO_KEY: &str = "none";
+
+/// Whether `path` lies where rebinding files do.
+#[must_use]
+pub fn is_rebind_path(path: &GroupPath) -> bool {
+    path.as_str()
+        .to_lowercase()
+        .starts_with(&format!("{STATEMENTS}/{REBINDS}/"))
+}
+
+/// The rebinding a file at `path` states, if `path` is a well-formed
+/// rebinding file.
+#[must_use]
+pub fn rebind_of_path(path: &GroupPath) -> Option<RebindStatement> {
+    let lower = path.as_str().to_lowercase();
+    let rest = lower.strip_prefix(&format!("{STATEMENTS}/{REBINDS}/"))?;
+    let (name, file) = rest.split_once('/')?;
+    let (_, key) = file.rsplit_once('-')?;
+    let key = if key == NO_KEY {
+        None
+    } else {
+        Some(key.parse().ok()?)
+    };
+    Some(RebindStatement {
+        name: MemberName::parse(name).ok()?,
+        key,
+    })
+}
+
 /// The file of the request stamped `stamp`.
 ///
 /// # Panics
@@ -54,6 +103,13 @@ pub fn decision_path(request: &GroupPath) -> GroupPath {
 pub struct MemberStatement {
     pub name: MemberName,
     pub key: PublicKey,
+}
+
+/// What a rebinding file says: the key a name is now bound to, if any.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct RebindStatement {
+    pub name: MemberName,
+    pub key: Option<PublicKey>,
 }
 
 /// Whether a request waits for acceptance or needs none.
@@ -106,5 +162,30 @@ mod tests {
             member_of_path(&GroupPath::parse(".pigeon/requests/x").unwrap()),
             None
         );
+    }
+
+    #[test]
+    fn rebind_paths_round_trip() {
+        let stamp = Stamp {
+            time: 7,
+            machine: iroh_base::SecretKey::from_bytes(&[1; 32]).public(),
+        };
+        let name = MemberName::parse("bob").unwrap();
+        for key in [
+            None,
+            Some(iroh_base::SecretKey::from_bytes(&[2; 32]).public()),
+        ] {
+            let rebind = RebindStatement {
+                name: name.clone(),
+                key,
+            };
+            let path = rebind_path(&rebind, &stamp);
+            assert!(is_rebind_path(&path));
+            assert_eq!(rebind_of_path(&path), Some(rebind));
+        }
+        let stray = GroupPath::parse(".pigeon/rebinds/bob/notes.txt").unwrap();
+        assert!(is_rebind_path(&stray));
+        assert_eq!(rebind_of_path(&stray), None);
+        assert!(!is_rebind_path(&member_path(&name)));
     }
 }

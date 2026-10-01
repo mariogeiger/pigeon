@@ -375,3 +375,40 @@ async fn every_action_of_the_catalog_is_carried_out() {
         }
     }
 }
+
+#[tokio::test]
+async fn a_new_password_keeps_this_machine_in_and_leaving_takes_it_out() {
+    let lookup = MemoryLookup::new();
+    let peer = Peer::start(&lookup).await;
+    peer.call(
+        "group",
+        "create",
+        json!({"name": "cheapmo", "member": "alice", "password": "pa", "root": peer.root("cheapmo")}),
+    )
+    .await
+    .unwrap();
+    eventually("alice joined", async || peer.joined().await).await;
+    let page = peer.page("/g/cheapmo/members").await;
+    for verb in [
+        "member/password",
+        "member/reset",
+        "member/exclude",
+        "group/leave",
+    ] {
+        assert!(page.contains(&format!(r#"action="/act/{verb}""#)), "{verb}");
+    }
+    peer.call("member", "password", json!({"password": "new"}))
+        .await
+        .unwrap();
+    assert!(peer.joined().await);
+    let members = peer.call("member", "list", json!({})).await.unwrap();
+    assert_eq!(members[0]["rebound"]["by"], "alice");
+    peer.call("group", "leave", json!({})).await.unwrap();
+    let status = peer.call("group", "status", json!({})).await.unwrap();
+    assert_eq!(
+        status["join"],
+        json!({"state": "excluded", "reason": "alice left the group"})
+    );
+    let page = peer.page("/g/cheapmo").await;
+    assert!(page.contains("alice left the group"));
+}

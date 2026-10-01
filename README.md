@@ -64,6 +64,13 @@ the shell's completion script. The daemon keeps its state in
 - **Requests.** To change a file you do not own, you propose or force the
   change from the web interface or the command line, and the owner's machine
   applies it.
+- **Members.** A name and password make a member on any machine. A member
+  changes their password with `pigeon member password`, after which their
+  other machines log in with `pigeon member claim`; any member resets
+  someone's password with `pigeon member reset` or excludes them with
+  `pigeon member exclude`, and `pigeon group leave` excludes oneself. The
+  name stays taken, and excluding renews the group key: machines the member
+  list recognizes keep working, while the old key admits no new machine.
 - **Subscriptions.** Everyone sees the whole tree, in the web interface or the
   command line; each machine downloads only the folders it subscribes to, and
   single files on demand.

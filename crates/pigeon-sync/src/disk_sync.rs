@@ -20,7 +20,7 @@ use pigeon_store::disk::{self, Stat, fs_path};
 use pigeon_store::index::{IndexEntry, Seen, observe};
 use pigeon_store::scan::scan;
 
-use crate::engine::{Inner, JoinState, Pending, Wake, Work, now};
+use crate::engine::{Inner, Pending, Wake, Work, now};
 use crate::reconcile::{Disk, Lost, Step, View, reconcile};
 use crate::watch::Rescan;
 
@@ -151,7 +151,7 @@ struct Look {
 impl Inner {
     /// Whether this machine may publish a change at `path` now.
     pub(crate) fn writable(&self, ledger: &Ledger, work: &Work, path: &GroupPath) -> bool {
-        if matches!(work.join, JoinState::Taken(_))
+        if !work.join.syncs()
             || path.is_inside(STATEMENTS)
             || matches!(work.selection.cutoff(path), Cutoff::At(_))
         {
@@ -213,7 +213,7 @@ impl Inner {
     /// Compares every path the scan, the index, and, for the whole root,
     /// the ledger know with the ledger.
     pub(crate) async fn refresh(self: &Arc<Self>, work: &mut Work, rescan: &Rescan) {
-        if matches!(work.join, JoinState::Taken(_)) {
+        if !work.join.syncs() {
             return;
         }
         let root = self.config.root.clone();
@@ -265,7 +265,7 @@ impl Inner {
 
     /// Compares the given paths with the ledger.
     pub(crate) async fn refresh_keys(self: &Arc<Self>, work: &mut Work, keys: &[PathKey]) {
-        if matches!(work.join, JoinState::Taken(_)) {
+        if !work.join.syncs() {
             return;
         }
         for key in keys {

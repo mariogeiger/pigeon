@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use iroh_base::SecretKey;
-use pigeon_core::identity::{MachineCert, member_key};
+use pigeon_core::identity::{MachineCert, Renewal, RenewedSecret, member_key};
 use pigeon_core::name::MemberName;
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +17,9 @@ use crate::group_key::GroupKey;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupConfig {
     pub key: GroupKey,
+    /// The renewal that made the key's secret, none for the first secret.
+    #[serde(default)]
+    pub renewal: Option<Renewal>,
     pub member: MemberName,
     pub root: PathBuf,
     pub cert: MachineCert,
@@ -33,15 +36,46 @@ impl GroupConfig {
         root: PathBuf,
         machine: &SecretKey,
     ) -> Self {
-        let group = key.secret.id();
-        let member_secret = member_key(&group, &member, password);
-        let cert = MachineCert::issue(&group, member.clone(), &member_secret, machine.public());
+        let member_secret = member_key(&key.group, &member, password);
+        let cert = MachineCert::issue(&key.group, member.clone(), &member_secret, machine.public());
         Self {
             key,
+            renewal: None,
             member,
             root,
             cert,
         }
+    }
+
+    /// The same machine and member in the same group, certified anew by
+    /// `password`: logging in after a password change.
+    #[must_use]
+    pub fn log_in(&self, member: MemberName, password: &str, machine: &SecretKey) -> Self {
+        Self {
+            renewal: self.renewal,
+            ..Self::join(
+                self.key.clone(),
+                member,
+                password,
+                self.root.clone(),
+                machine,
+            )
+        }
+    }
+
+    /// The group secret this machine holds and its renewal.
+    #[must_use]
+    pub fn secret(&self) -> RenewedSecret {
+        RenewedSecret {
+            secret: self.key.secret.clone(),
+            renewal: self.renewal,
+        }
+    }
+
+    /// Adopts `secret` as the current group secret.
+    pub fn renew(&mut self, secret: RenewedSecret) {
+        self.key.secret = secret.secret;
+        self.renewal = secret.renewal;
     }
 }
 
@@ -189,7 +223,7 @@ mod tests {
         data.save_config(&config).unwrap();
         let loaded = data.load_config().unwrap();
         assert_eq!(loaded, config);
-        assert!(loaded.cert.is_valid(&loaded.key.secret.id()));
+        assert!(loaded.cert.is_valid(&loaded.key.group));
         assert_eq!(loaded.cert.machine, machine.public());
     }
 

@@ -115,6 +115,7 @@ const PASSWORD: Param = required(
     "Your personal password, the same on each of your machines",
     Kind::Secret,
 );
+const WHO: Param = required("member", "The member's name", Kind::Text);
 const ROOT: Param = optional(
     "root",
     "The group's folder on this machine, by default one named after the group in your home folder",
@@ -251,18 +252,45 @@ pub const ACTIONS: &[Action] = &[
         &[],
         &[],
     ),
+    action(
+        "group",
+        "leave",
+        "Leave the group: your name stays taken, this machine keeps its files but stops syncing, and the others renew the group key",
+        &[],
+    ),
     view(
         "member",
         "list",
         "List the members",
         &[],
-        &["name", "joined", "key"],
+        &["name", "joined", "key", "rebound.by", "rebound.time"],
     ),
     action(
         "member",
         "claim",
-        "Claim another name for this machine after losing one",
+        "Claim a name for this machine after losing one, or log it in with a new password",
         &[MEMBER, PASSWORD],
+    ),
+    action(
+        "member",
+        "password",
+        "Change your password; your other machines then log in with it",
+        &[required("password", "Your new password", Kind::Secret)],
+    ),
+    action(
+        "member",
+        "reset",
+        "Give another member a new password, which you then tell them",
+        &[
+            WHO,
+            required("password", "Their new password", Kind::Secret),
+        ],
+    ),
+    action(
+        "member",
+        "exclude",
+        "Exclude a member: the name stays taken, their files stay readable but frozen, and the group key is renewed",
+        &[WHO],
     ),
     view(
         "file",

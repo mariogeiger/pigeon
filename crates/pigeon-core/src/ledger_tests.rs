@@ -1,11 +1,13 @@
 //! Tests of the ledger's guarantees: one writer per file, earliest claims,
-//! freezing, joining, concurrent changes, and convergence in any order.
+//! freezing, joining, rebinding, concurrent changes, and convergence in any
+//! order.
 
 use iroh_base::SecretKey;
 
 use super::*;
 use crate::identity::{GroupSecret, MachineCert, member_key};
 use crate::patch::{ContentHash, Patch};
+use crate::statement::rebind_path;
 
 struct Machine {
     group: GroupId,
@@ -61,6 +63,15 @@ impl Machine {
 
     fn join(&self, time: u64) -> SignedPatch {
         let path = member_path(&self.cert.name);
+        self.patch(time, vec![change(path.as_str(), Some(0), None)], None)
+    }
+
+    fn rebind(&self, time: u64, name: &str, key: Option<PublicKey>) -> SignedPatch {
+        let rebind = RebindStatement {
+            name: MemberName::parse(name).unwrap(),
+            key,
+        };
+        let path = rebind_path(&rebind, &self.stamp(time));
         self.patch(time, vec![change(path.as_str(), Some(0), None)], None)
     }
 }
@@ -287,6 +298,8 @@ fn every_arrival_order_gives_the_same_tree() {
         ),
         mario.patch(5, vec![change("@mario/y", None, None)], None),
         bob.patch(6, vec![change("@bob/z", Some(4), None)], None),
+        bob.rebind(7, "mario", None),
+        mario.patch(8, vec![change("@mario/w", Some(5), None)], None),
     ];
     let reference = {
         let mut ledger = Ledger::new(group());
@@ -321,6 +334,7 @@ fn every_arrival_order_gives_the_same_tree() {
         }
     }
     assert_eq!(reference.head(&key("x")).unwrap().owner.as_str(), "bob");
+    assert!(reference.head(&key("@mario/w")).is_none());
 }
 
 #[test]
@@ -356,4 +370,133 @@ fn a_forged_patch_is_refused() {
         Ledger::new(group()).insert(forged),
         Err(SignatureError::Patch)
     );
+}
+
+#[test]
+fn a_new_password_rebinds_the_name_and_retires_the_old_key() {
+    let old = machine("mario", "old", 1);
+    let new = machine("mario", "new", 2);
+    let mut ledger = Ledger::new(group());
+    ledger.insert(old.join(1)).unwrap();
+    ledger
+        .insert(old.patch(2, vec![change("@mario/a", Some(1), None)], None))
+        .unwrap();
+    let early = new.patch(3, vec![change("@mario/b", Some(1), None)], None);
+    ledger.insert(early.clone()).unwrap();
+    assert_eq!(
+        rejection(&ledger, early.stamp()),
+        Rejection::OtherKey(old.cert.name.clone())
+    );
+    ledger
+        .insert(old.rebind(4, "mario", Some(new.cert.member)))
+        .unwrap();
+    assert!(ledger.recognizes(&new.cert));
+    assert!(!ledger.recognizes(&old.cert));
+    let stale = old.patch(5, vec![change("@mario/a", Some(2), None)], None);
+    ledger.insert(stale.clone()).unwrap();
+    assert_eq!(
+        rejection(&ledger, stale.stamp()),
+        Rejection::OtherKey(old.cert.name.clone())
+    );
+    let edit = new.patch(6, vec![change("@mario/a", Some(3), None)], None);
+    ledger.insert(edit.clone()).unwrap();
+    assert!(ledger.outcome(&edit.stamp()).unwrap().is_ok());
+    let member = &ledger.members()[&old.cert.name];
+    assert_eq!(member.joined, old.stamp(1));
+    assert_eq!(member.rebound.as_ref().unwrap().by.as_str(), "mario");
+    assert_eq!(ledger.last_exclusion(), None);
+}
+
+#[test]
+fn any_member_resets_a_password_or_excludes_without_a_vote() {
+    let mario = machine("mario", "a", 1);
+    let bob = machine("bob", "b", 2);
+    let reset = machine("mario", "given", 3);
+    let mut ledger = Ledger::new(group());
+    ledger.insert(mario.join(1)).unwrap();
+    ledger.insert(bob.join(2)).unwrap();
+    ledger
+        .insert(mario.patch(3, vec![change("@mario/a", Some(1), None)], None))
+        .unwrap();
+    ledger
+        .insert(bob.rebind(4, "mario", Some(reset.cert.member)))
+        .unwrap();
+    assert!(ledger.recognizes(&reset.cert));
+    assert_eq!(
+        ledger.members()[&mario.cert.name]
+            .rebound
+            .as_ref()
+            .unwrap()
+            .by
+            .as_str(),
+        "bob"
+    );
+    let exclusion = bob.rebind(5, "mario", None);
+    ledger.insert(exclusion.clone()).unwrap();
+    assert_eq!(ledger.last_exclusion(), Some(exclusion.stamp()));
+    assert!(!ledger.recognizes(&reset.cert));
+    for patch in [
+        reset.patch(6, vec![change("@mario/a", Some(2), None)], None),
+        mario.join(7),
+    ] {
+        ledger.insert(patch.clone()).unwrap();
+        assert_eq!(
+            rejection(&ledger, patch.stamp()),
+            Rejection::Excluded(mario.cert.name.clone())
+        );
+    }
+    let head = ledger.head(&key("@mario/a")).unwrap();
+    assert_eq!(
+        (head.owner.as_str(), head.content),
+        ("mario", Some(content(1)))
+    );
+    let intrusion = bob.patch(8, vec![change("@mario/b", Some(1), None)], None);
+    ledger.insert(intrusion.clone()).unwrap();
+    assert!(matches!(
+        rejection(&ledger, intrusion.stamp()),
+        Rejection::NotOwner { .. }
+    ));
+    let impostor = machine("mario", "z", 4);
+    ledger.insert(impostor.join(9)).unwrap();
+    assert!(ledger.members()[&mario.cert.name].key.is_none());
+}
+
+#[test]
+fn a_rebinding_names_a_member_and_a_key() {
+    let mario = machine("mario", "a", 1);
+    let mut ledger = Ledger::new(group());
+    ledger.insert(mario.join(1)).unwrap();
+    let unknown = mario.rebind(2, "nobody", None);
+    ledger.insert(unknown.clone()).unwrap();
+    assert!(matches!(
+        rejection(&ledger, unknown.stamp()),
+        Rejection::UnknownMember(_)
+    ));
+    let stray = mario.patch(
+        3,
+        vec![change(".pigeon/rebinds/mario/notes.txt", Some(1), None)],
+        None,
+    );
+    ledger.insert(stray.clone()).unwrap();
+    assert!(matches!(
+        rejection(&ledger, stray.stamp()),
+        Rejection::Malformed(_)
+    ));
+    assert!(ledger.recognizes(&mario.cert));
+}
+
+#[test]
+fn an_earlier_exclusion_undoes_what_the_excluded_member_did_after_it() {
+    let mario = machine("mario", "a", 1);
+    let bob = machine("bob", "b", 2);
+    let late_edit = mario.patch(5, vec![change("@mario/a", Some(1), None)], None);
+    let exclusion = bob.rebind(4, "mario", None);
+    let mut ledger = Ledger::new(group());
+    ledger.insert(mario.join(1)).unwrap();
+    ledger.insert(bob.join(2)).unwrap();
+    ledger.insert(late_edit.clone()).unwrap();
+    assert!(ledger.head(&key("@mario/a")).is_some());
+    ledger.insert(exclusion.clone()).unwrap();
+    assert!(ledger.head(&key("@mario/a")).is_none());
+    assert_eq!(ledger.last_exclusion(), Some(exclusion.stamp()));
 }

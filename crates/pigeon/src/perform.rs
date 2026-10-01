@@ -5,7 +5,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
+use pigeon_core::name::MemberName;
 use pigeon_core::retention::Retention;
 use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_core::statement::Decision;
@@ -97,14 +98,19 @@ pub async fn perform(daemon: &Daemon, args: &Args) -> Result<Value> {
                 .await?;
             Ok(json!({ "key": key }))
         }
-        ("member", "claim") => {
+        ("member", verb @ ("claim" | "password")) => {
             let group = {
                 let groups = daemon.groups().await;
                 choose(&groups, args.text(GROUP.name))?.0.to_owned()
             };
-            daemon
-                .claim(&group, args.required("member")?, args.required("password")?)
-                .await?;
+            let password = args.required("password")?;
+            if verb == "claim" {
+                daemon
+                    .claim(&group, args.required("member")?, password)
+                    .await?;
+            } else {
+                daemon.set_password(&group, password).await?;
+            }
             Ok(Value::Null)
         }
         _ if action.scope == Scope::Group => {
@@ -130,6 +136,11 @@ fn retention_in_days(retention: &Retention) -> Value {
     })
 }
 
+/// The member a call names.
+fn member(args: &Args) -> Result<MemberName> {
+    MemberName::parse(args.required("member")?).context("the member name")
+}
+
 /// Carries out a call on one group.
 async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
     let action = args.action;
@@ -144,6 +155,20 @@ async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
         ("group", "status") => to_json(engine.status().await),
         ("group", "key") => Ok(json!({ "key": engine.group_key() })),
         ("member", "list") => to_json(engine.members()),
+        ("member", "reset") => {
+            engine
+                .set_password(&member(args)?, args.required("password")?)
+                .await?;
+            Ok(Value::Null)
+        }
+        ("member", "exclude") => {
+            engine.exclude(&member(args)?).await?;
+            Ok(Value::Null)
+        }
+        ("group", "leave") => {
+            engine.exclude(&engine.status().await.member).await?;
+            Ok(Value::Null)
+        }
         ("file", "list") => {
             let under = args.text("under").map(|_| args.path("under")).transpose()?;
             to_json(engine.list(under.as_ref()).await?)
@@ -205,28 +230,31 @@ async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
             Ok(json!({ "requests": requests }))
         }
         ("retention", "show") => to_json(retention_in_days(&engine.retention()?)),
-        ("retention", "set") => {
-            let mut retention = engine.retention()?;
-            let days = |name: &str, current: u64| {
-                args.optional_number(name)
-                    .map_or(current, |days| days.saturating_mul(DAY))
-            };
-            retention.every = days("every", retention.every);
-            retention.daily = days("daily", retention.daily);
-            retention.weekly = days("weekly", retention.weekly);
-            retention.before_deletion = days("deletion", retention.before_deletion);
-            if let Some(quota) = args.optional_number("quota") {
-                retention.quota_percent = u8::try_from(quota)
-                    .ok()
-                    .filter(|percent| *percent <= 100)
-                    .ok_or_else(|| anyhow!("--quota is a percentage, from 0 to 100"))?;
-            }
-            if let Some(switch) = args.text("everything") {
-                retention.everything = switch == "on";
-            }
-            engine.set_retention(&retention).await?;
-            to_json(retention_in_days(&retention))
-        }
+        ("retention", "set") => set_retention(engine, args).await,
         _ => bail!("{} is not implemented", action.command()),
     }
+}
+
+/// Changes the retention by the arguments given, keeping the others.
+async fn set_retention(engine: &Engine, args: &Args) -> Result<Value> {
+    let mut retention = engine.retention()?;
+    let days = |name: &str, current: u64| {
+        args.optional_number(name)
+            .map_or(current, |days| days.saturating_mul(DAY))
+    };
+    retention.every = days("every", retention.every);
+    retention.daily = days("daily", retention.daily);
+    retention.weekly = days("weekly", retention.weekly);
+    retention.before_deletion = days("deletion", retention.before_deletion);
+    if let Some(quota) = args.optional_number("quota") {
+        retention.quota_percent = u8::try_from(quota)
+            .ok()
+            .filter(|percent| *percent <= 100)
+            .ok_or_else(|| anyhow!("--quota is a percentage, from 0 to 100"))?;
+    }
+    if let Some(switch) = args.text("everything") {
+        retention.everything = switch == "on";
+    }
+    engine.set_retention(&retention).await?;
+    to_json(retention_in_days(&retention))
 }

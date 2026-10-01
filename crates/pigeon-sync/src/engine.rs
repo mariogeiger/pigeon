@@ -1,7 +1,8 @@
 //! The engine of one group on one machine: it opens the group's state,
 //! binds its endpoint, and runs the one loop that receives patches, follows
 //! the root's changes, publishes settled edits, joins the member to the
-//! group, and keeps the blobs it needs from garbage collection.
+//! group, renews and keeps the group secret, and keeps the blobs it needs
+//! from garbage collection.
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -13,8 +14,9 @@ use iroh_base::SecretKey;
 use iroh_blobs::api::TempTag;
 use iroh_mdns_address_lookup::MdnsAddressLookup;
 use pigeon_core::clock::{Clock, MachineId, Stamp, ntp_time};
-use pigeon_core::identity::GroupId;
+use pigeon_core::identity::{GroupId, MachineCert, Renewal, RenewedSecret};
 use pigeon_core::ledger::Ledger;
+use pigeon_core::name::MemberName;
 use pigeon_core::patch::{Change, Content, ContentHash, Patch, SignedPatch};
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::selection::{Cutoff, Rule, Selection};
@@ -25,8 +27,9 @@ use pigeon_net::{Log, Node, Received};
 use pigeon_store::blobs::Blobs;
 use pigeon_store::config::{DataDir, GroupConfig};
 use pigeon_store::disk::Stat;
+use pigeon_store::group_key::random_secret;
 use pigeon_store::state::State;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::watch::{Rescan, watch};
@@ -76,7 +79,8 @@ impl Default for Options {
     }
 }
 
-/// Whether the member belongs to the group yet.
+/// Whether the member belongs to the group, as this machine's certificate
+/// says.
 #[derive(Clone, PartialEq, Eq, Debug, serde::Serialize)]
 #[serde(rename_all = "lowercase", tag = "state", content = "reason")]
 pub enum JoinState {
@@ -85,6 +89,18 @@ pub enum JoinState {
     Joined,
     /// Another password holds the name, or a folder claims it.
     Taken(String),
+    /// The name was bound to a new password, which logs this machine in.
+    Rebound(String),
+    /// The member left or was excluded.
+    Excluded(String),
+}
+
+impl JoinState {
+    /// Whether the machine keeps its root in agreement with the ledger.
+    #[must_use]
+    pub fn syncs(&self) -> bool {
+        matches!(self, Self::Pending | Self::Joined)
+    }
 }
 
 /// The ledger, shared with the network sessions.
@@ -107,6 +123,14 @@ impl Log for SharedLedger {
             .into_iter()
             .cloned()
             .collect()
+    }
+
+    fn recognizes(&self, cert: &MachineCert) -> bool {
+        self.lock().recognizes(cert)
+    }
+
+    fn last_exclusion(&self) -> Option<Stamp> {
+        self.lock().last_exclusion()
     }
 }
 
@@ -138,6 +162,7 @@ pub(crate) enum Wake {
 }
 
 pub(crate) struct Inner {
+    pub data: DataDir,
     pub config: GroupConfig,
     pub group: GroupId,
     pub machine: SecretKey,
@@ -215,10 +240,22 @@ impl Inner {
         let ledger = self.ledger.lock();
         let name = &self.config.member;
         if let Some(member) = ledger.members().get(name) {
-            return if member.key == self.config.cert.member {
-                JoinState::Joined
-            } else {
-                JoinState::Taken(format!("the name {name} is taken by another password"))
+            let by = member.rebound.as_ref().map(|rebinding| &rebinding.by);
+            return match (member.key, by) {
+                (Some(key), _) if key == self.config.cert.member => JoinState::Joined,
+                (Some(_), None) => {
+                    JoinState::Taken(format!("the name {name} is taken by another password"))
+                }
+                (Some(_), Some(by)) => JoinState::Rebound(format!(
+                    "{by} gave {name} a new password: log this machine in with it through `pigeon member claim`"
+                )),
+                (None, Some(by)) if by == name => {
+                    JoinState::Excluded(format!("{name} left the group"))
+                }
+                (None, by) => JoinState::Excluded(format!(
+                    "{} excluded {name} from the group",
+                    by.map_or("a member", MemberName::as_str)
+                )),
             };
         }
         let own_file = member_path(name).key();
@@ -300,12 +337,43 @@ impl Inner {
         self.node.publish(fresh);
         self.want_peers();
         work.join = self.join_state();
+        self.renew_secret(work);
         let keys: Vec<PathKey> = keys.into_iter().collect();
         self.refresh_keys(work, &keys).await;
         if keys.iter().any(|key| key.as_str().starts_with(STATEMENTS)) {
             self.apply_requests(work).await;
         }
         work.protect_due = true;
+    }
+
+    /// Draws a new group secret if a member was excluded since the one held
+    /// was made, unless this machine's member no longer belongs.
+    pub(crate) fn renew_secret(&self, work: &Work) {
+        if work.join != JoinState::Joined {
+            return;
+        }
+        let Some(exclusion) = self.ledger.lock().last_exclusion() else {
+            return;
+        };
+        if self.node.secret().borrow().predates(exclusion) {
+            let _ = self.node.offer(RenewedSecret {
+                secret: random_secret(),
+                renewal: Some(Renewal {
+                    after: exclusion,
+                    by: self.me(),
+                }),
+            });
+        }
+    }
+
+    /// Keeps the group secret the node holds in the configuration.
+    fn save_secret(&self, secret: RenewedSecret) -> Result<()> {
+        let mut config = self.data.load_config()?;
+        if secret.supersedes(&config.secret()) {
+            config.renew(secret);
+            self.data.save_config(&config)?;
+        }
+        Ok(())
     }
 
     /// Keeps sessions open with every machine the ledger or the key names.
@@ -369,7 +437,7 @@ impl Engine {
         std::fs::create_dir_all(&config.root)
             .with_context(|| format!("creating {}", config.root.display()))?;
         let state = State::open(&data.state_path())?;
-        let group = config.key.secret.id();
+        let group = config.key.group;
         let ledger = state.ledger(group)?;
         let clock = Clock::new(machine.public(), options.max_drift);
         if let Some(time) = ledger.vector().get(&machine.public()) {
@@ -397,7 +465,9 @@ impl Engine {
         };
         let (node, received) = Node::spawn(
             endpoint,
-            config.key.secret.clone(),
+            group,
+            config.cert.clone(),
+            config.secret(),
             ledger.clone(),
             blobs.store(),
         );
@@ -408,6 +478,7 @@ impl Engine {
         let (rescans, rescan_events) = mpsc::unbounded_channel();
         let watcher = watch(&config.root, rescans)?;
         let inner = Arc::new(Inner {
+            data: data.clone(),
             config,
             group,
             machine,
@@ -430,7 +501,11 @@ impl Engine {
             started: Instant::now(),
             _mdns: mdns,
         });
-        inner.work.lock().await.join = inner.join_state();
+        {
+            let mut work = inner.work.lock().await;
+            work.join = inner.join_state();
+            inner.renew_secret(&work);
+        }
         inner.want_peers();
         let (stop, stopped) = oneshot::channel();
         let task = tokio::spawn(run(
@@ -502,6 +577,8 @@ async fn run(
     mut stopped: oneshot::Receiver<()>,
     _watcher: notify::RecommendedWatcher,
 ) {
+    let mut secrets: watch::Receiver<RenewedSecret> = inner.node.secret();
+    secrets.mark_changed();
     let mut ticks = tokio::time::interval(inner.options.tick);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut last_rescan = Instant::now();
@@ -514,6 +591,12 @@ async fn run(
     loop {
         tokio::select! {
             _ = &mut stopped => return,
+            Ok(()) = secrets.changed() => {
+                let secret = secrets.borrow_and_update().clone();
+                if let Err(error) = inner.save_secret(secret) {
+                    inner.report(format!("keeping the group secret: {error}"));
+                }
+            }
             Some(patches) = received.recv() => {
                 let mut work = inner.work.lock().await;
                 inner.receive(&mut work, patches).await;

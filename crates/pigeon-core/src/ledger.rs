@@ -1,5 +1,6 @@
 //! The ledger: every known patch, folded in stamp order into the accepted
-//! versions of each path, the member list, and the names that folders claim.
+//! versions of each path, the member list with each name's current key, and
+//! the names that folders claim.
 //! Each patch is accepted or rejected as a whole against the state it lands
 //! on, so every machine holding the same patches computes the same tree.
 
@@ -10,11 +11,13 @@ use iroh_base::PublicKey;
 
 use crate::clock::{MachineId, Stamp};
 use crate::folder::{Folder, classify};
-use crate::identity::GroupId;
+use crate::identity::{GroupId, MachineCert};
 use crate::name::MemberName;
 use crate::patch::{Change, Content, SignatureError, SignedPatch};
 use crate::path::{GroupPath, PathKey};
-use crate::statement::{member_of_path, member_path};
+use crate::statement::{
+    RebindStatement, is_rebind_path, member_of_path, member_path, rebind_of_path,
+};
 
 /// One accepted state of a path.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -34,11 +37,20 @@ impl Version {
     }
 }
 
-/// A name bound to a member key by its earliest valid claim.
+/// A name, bound to a member key by its earliest valid claim and since
+/// then by its last rebinding, or to none once the member is excluded.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Member {
-    pub key: PublicKey,
+    pub key: Option<PublicKey>,
     pub joined: Stamp,
+    pub rebound: Option<Rebinding>,
+}
+
+/// The patch that last rebound a name, and who signed it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Rebinding {
+    pub stamp: Stamp,
+    pub by: MemberName,
 }
 
 /// Why a patch cannot be accepted, phrased for the person who made it.
@@ -54,6 +66,10 @@ pub enum Rejection {
     OtherKey(MemberName),
     #[error("a folder @{0} already claims the name {0}: choose another name")]
     ClaimedByFolder(MemberName),
+    #[error("{0} no longer belongs to this group")]
+    Excluded(MemberName),
+    #[error("{0} must be named <stamp>-<key or none> in a member's rebinding folder")]
+    Malformed(GroupPath),
     #[error("{path} is {owner}'s member file: only {owner} writes it")]
     ForeignMemberFile { path: GroupPath, owner: MemberName },
     #[error("{path} belongs to {owner}: propose the change as a request")]
@@ -68,6 +84,8 @@ struct Effects {
     keys: Vec<PathKey>,
     claims: Vec<(MemberName, isize)>,
     joined: Option<MemberName>,
+    rebound: Vec<(MemberName, Member)>,
+    excluded: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -83,12 +101,21 @@ struct State {
     files: HashMap<PathKey, Vec<Version>>,
     members: BTreeMap<MemberName, Member>,
     claims: HashMap<MemberName, usize>,
+    exclusions: BTreeSet<Stamp>,
 }
 
 /// One validated change and the member who owns its path.
 struct Planned<'a> {
     change: &'a Change,
     owner: MemberName,
+}
+
+/// What an acceptable patch does: whether it joins its author, its changes,
+/// and the names it rebinds.
+struct Plan<'a> {
+    joins: bool,
+    changes: Vec<Planned<'a>>,
+    rebinds: Vec<RebindStatement>,
 }
 
 impl State {
@@ -103,10 +130,10 @@ impl State {
         changes: &[Change],
     ) -> Result<bool, Rejection> {
         if let Some(member) = self.members.get(name) {
-            return if member.key == *key {
-                Ok(false)
-            } else {
-                Err(Rejection::OtherKey(name.clone()))
+            return match member.key {
+                Some(bound) if bound == *key => Ok(false),
+                Some(_) => Err(Rejection::OtherKey(name.clone())),
+                None => Err(Rejection::Excluded(name.clone())),
             };
         }
         let own_file = member_path(name).key();
@@ -128,12 +155,21 @@ impl State {
         key: &PublicKey,
         changes: &'a [Change],
         applies: bool,
-    ) -> Result<(bool, Vec<Planned<'a>>), Rejection> {
+    ) -> Result<Plan<'a>, Rejection> {
         let joins = self.check_author(author, key, changes)?;
         let is_member =
             |name: &MemberName| self.members.contains_key(name) || (joins && name == author);
         let mut planned = Vec::new();
+        let mut rebinds = Vec::new();
         for change in changes {
+            if is_rebind_path(&change.path) && change.content.is_some() {
+                let rebind = rebind_of_path(&change.path)
+                    .ok_or_else(|| Rejection::Malformed(change.path.clone()))?;
+                if !is_member(&rebind.name) {
+                    return Err(Rejection::UnknownMember(rebind.name));
+                }
+                rebinds.push(rebind);
+            }
             if let Some(owner) = member_of_path(&change.path)
                 && owner != *author
             {
@@ -164,7 +200,11 @@ impl State {
             }
             planned.push(Planned { change, owner });
         }
-        Ok((joins, planned))
+        Ok(Plan {
+            joins,
+            changes: planned,
+            rebinds,
+        })
     }
 
     fn fold(&mut self, signed: &SignedPatch) {
@@ -177,19 +217,20 @@ impl State {
             patch.applies.is_some(),
         ) {
             Err(rejection) => Outcome::Rejected(rejection),
-            Ok((joins, planned)) => {
+            Ok(plan) => {
                 let mut effects = Effects::default();
-                if joins {
+                if plan.joins {
                     self.members.insert(
                         cert.name.clone(),
                         Member {
-                            key: cert.member,
+                            key: Some(cert.member),
                             joined: patch.stamp,
+                            rebound: None,
                         },
                     );
                     effects.joined = Some(cert.name.clone());
                 }
-                for Planned { change, owner } in planned {
+                for Planned { change, owner } in plan.changes {
                     let key = change.path.key();
                     let was_live = self.head(&key).is_some_and(Version::is_live);
                     let delta = isize::from(change.content.is_some()) - isize::from(was_live);
@@ -210,6 +251,24 @@ impl State {
                         applies: patch.applies.clone(),
                     });
                     effects.keys.push(key);
+                }
+                for rebind in plan.rebinds {
+                    let member = self
+                        .members
+                        .get_mut(&rebind.name)
+                        .expect("the plan checked that the name is a member");
+                    effects.rebound.push((rebind.name, member.clone()));
+                    member.key = rebind.key;
+                    member.rebound = Some(Rebinding {
+                        stamp: patch.stamp,
+                        by: cert.name.clone(),
+                    });
+                    if rebind.key.is_none() {
+                        effects.excluded = true;
+                    }
+                }
+                if effects.excluded {
+                    self.exclusions.insert(patch.stamp);
                 }
                 Outcome::Accepted(effects)
             }
@@ -235,6 +294,12 @@ impl State {
             if *count == 0 {
                 self.claims.remove(&name);
             }
+        }
+        for (name, previous) in effects.rebound.into_iter().rev() {
+            self.members.insert(name, previous);
+        }
+        if effects.excluded {
+            self.exclusions.remove(stamp);
         }
         if let Some(name) = effects.joined {
             self.members.remove(&name);
@@ -387,6 +452,23 @@ impl Ledger {
     #[must_use]
     pub fn members(&self) -> &BTreeMap<MemberName, Member> {
         &self.state.members
+    }
+
+    /// Whether `cert` names a member key its name is bound to now: whether
+    /// the member list recognizes the machine it vouches for.
+    #[must_use]
+    pub fn recognizes(&self, cert: &MachineCert) -> bool {
+        self.state
+            .members
+            .get(&cert.name)
+            .is_some_and(|member| member.key == Some(cert.member))
+    }
+
+    /// The stamp of the last accepted patch that excluded a member, after
+    /// which the group secret must be new.
+    #[must_use]
+    pub fn last_exclusion(&self) -> Option<Stamp> {
+        self.state.exclusions.last().copied()
     }
 
     /// The versions of `key` that a later version by another machine

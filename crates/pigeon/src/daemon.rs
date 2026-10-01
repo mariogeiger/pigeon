@@ -131,8 +131,9 @@ impl Daemon {
         }
     }
 
-    /// Makes this machine claim the name `member` in `group` after losing
-    /// its previous claim, and follows the new name's personal folder.
+    /// Makes this machine claim the name `member` in `group` with
+    /// `password`, after losing its previous claim or to log in with a new
+    /// password, and follows the name's personal folder.
     ///
     /// # Errors
     ///
@@ -169,6 +170,26 @@ impl Daemon {
             .await?;
         groups.insert(group.to_owned(), engine);
         Ok(())
+    }
+
+    /// Gives this machine's member in `group` a new password, then logs
+    /// this machine in with it; the member's other machines log in again.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the group is unknown, the member does not belong to it, or
+    /// the group does not restart.
+    pub async fn set_password(&self, group: &str, password: &str) -> Result<()> {
+        let member = {
+            let groups = self.groups.read().await;
+            let engine = groups.get(group).ok_or_else(|| {
+                anyhow!("no group {group} on this machine: see `pigeon group list`")
+            })?;
+            let member = engine.status().await.member;
+            engine.set_password(&member, password).await?;
+            member
+        };
+        self.claim(group, member.as_str(), password).await
     }
 
     /// Stops every group.

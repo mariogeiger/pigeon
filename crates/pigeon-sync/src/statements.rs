@@ -31,7 +31,7 @@ impl Inner {
     }
 
     /// Publishes a statement file with `stamp` as its patch's stamp.
-    async fn publish_statement(
+    pub(crate) async fn publish_statement(
         &self,
         work: &mut Work,
         stamp: pigeon_core::clock::Stamp,

@@ -1,12 +1,12 @@
-//! Keys and certificates: the group secret that admits machines, the member
-//! key derived from a name and password, and the certificate by which a
-//! member vouches for each of their machines.
+//! Keys and certificates: the group secret that admits new machines and its
+//! renewals, the member key derived from a name and password, and the
+//! certificate by which a member vouches for each of their machines.
 
 use argon2::Argon2;
 use iroh_base::{PublicKey, SecretKey, Signature};
 use serde::{Deserialize, Serialize};
 
-use crate::clock::MachineId;
+use crate::clock::{MachineId, Stamp};
 use crate::name::MemberName;
 
 /// The secret shared by a group's members; knowing it admits a new machine.
@@ -38,6 +38,36 @@ impl GroupSecret {
 impl std::fmt::Debug for GroupSecret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("GroupSecret(..)")
+    }
+}
+
+/// When a group secret replaced the one before: after the exclusion stamped
+/// `after`, drawn by the machine `by`. Renewals order totally, so machines
+/// that each draw one agree on the greatest.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Serialize, Deserialize)]
+pub struct Renewal {
+    pub after: Stamp,
+    pub by: MachineId,
+}
+
+/// A group secret and the renewal that made it, none for the first secret.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct RenewedSecret {
+    pub secret: GroupSecret,
+    pub renewal: Option<Renewal>,
+}
+
+impl RenewedSecret {
+    /// Whether this secret replaces `other`: its renewal is later.
+    #[must_use]
+    pub fn supersedes(&self, other: &Self) -> bool {
+        self.renewal > other.renewal
+    }
+
+    /// Whether the exclusion stamped `exclusion` calls for a new secret.
+    #[must_use]
+    pub fn predates(&self, exclusion: Stamp) -> bool {
+        self.renewal.is_none_or(|renewal| renewal.after < exclusion)
     }
 }
 
@@ -118,6 +148,33 @@ mod tests {
         let c = member_key(&group, &name, "hunter3");
         assert_eq!(a.public(), b.public());
         assert_ne!(a.public(), c.public());
+    }
+
+    #[test]
+    fn the_latest_renewal_wins_and_follows_every_exclusion() {
+        let machine = |seed| SecretKey::from_bytes(&[seed; 32]).public();
+        let stamp = |time| Stamp {
+            time,
+            machine: machine(9),
+        };
+        let renewed = |time, by, byte| RenewedSecret {
+            secret: GroupSecret([byte; 32]),
+            renewal: Some(Renewal {
+                after: stamp(time),
+                by: machine(by),
+            }),
+        };
+        let first = RenewedSecret {
+            secret: GroupSecret([0; 32]),
+            renewal: None,
+        };
+        let (a, b, later) = (renewed(5, 1, 1), renewed(5, 2, 2), renewed(6, 1, 3));
+        assert!(a.supersedes(&first) && !first.supersedes(&a));
+        assert_eq!(a.supersedes(&b), !b.supersedes(&a));
+        assert!(later.supersedes(&a) && later.supersedes(&b));
+        assert!(!a.supersedes(&a));
+        assert!(first.predates(stamp(1)));
+        assert!(a.predates(stamp(6)) && !a.predates(stamp(5)));
     }
 
     #[test]
