@@ -4,7 +4,7 @@ pigeon keeps a group's files in sync, peer to peer. Each member owns
 folders that the whole group sees, and changes to someone else's files go
 through requests.
 
-![Three machines keep one tree in sync: each member's edits travel as signed patches, a change to someone else's file becomes a request, and drop-folder files freeze once published](assets/pigeon.gif)
+![Three machines keep one tree in sync: an owner's edit reaches every machine, a locked file's change travels to its owner as a request she accepts, and a file dropped in inbox/ spreads and freezes](assets/pigeon.gif)
 
 ## Install
 
