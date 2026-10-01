@@ -181,11 +181,20 @@ each of those version times with the number of files changed, or a date and
 time picked in local time. If the selection changes elsewhere meanwhile, a
 banner offers to reload it or keep the draft.
 
-The Files page gives each file and folder a box: checked
-when followed, mixed when only part of a folder is. Unchecking asks whether
-to keep the current copy, frozen, or free the space. A rule set this way
-replaces the earlier rules for the paths inside it; hand-written patterns
-such as `*.pdf` stay. The group's pages update themselves as files change.
+The Files page shows the whole group as one tree whose folders open and
+close in place, as `pigeon setup` does, with each folder's size, latest
+time and waiting edits; `?under=docs/report` opens it down to a folder.
+Each file and folder has a box: checked when followed, mixed when only part
+of a folder is. Unchecking asks whether to keep the current copy, frozen,
+or free the space. A rule set this way replaces the earlier rules for the
+paths inside it; hand-written patterns such as `*.pdf` stay. Each row's ⋯
+renames, replaces, adds, deletes, downloads once or publishes now, and
+turns a change to a file one may not write into a request to its owner.
+Drafts other members are adding to drop folders show greyed, with their
+author and the time left; when two members add the same path, both are
+warned, and the one whose copy will be set aside is told to rename it.
+`pigeon file pending` lists the same drafts. The group's pages update
+themselves as files change.
 
 `pigeon selection place --folder videos --destination /mnt/big/videos`
 keeps a folder on another disk and leaves a link at its place, a junction

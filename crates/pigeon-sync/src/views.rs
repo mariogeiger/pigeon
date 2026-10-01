@@ -90,20 +90,6 @@ pub struct FileView {
     pub writable: bool,
 }
 
-/// An edit waiting to stay unchanged long enough to be published.
-#[derive(Clone, Debug, Serialize)]
-pub struct PendingView {
-    pub path: GroupPath,
-    /// Whether the edit deletes the file.
-    pub deleted: bool,
-    /// Seconds until it is published, if it stays unchanged.
-    pub due_in: u64,
-    /// Whether publishing freezes the file, as in a drop folder.
-    pub freezes: bool,
-    /// The cutoff the selection gives the file.
-    pub cutoff: Cutoff,
-}
-
 /// One accepted version of a file.
 /// A time at which some files a pattern matches have a version, and how
 /// many: pinning the pattern holds something else at each such time and
@@ -176,30 +162,6 @@ pub struct AsideView {
 }
 
 impl Engine {
-    /// The edits waiting to be published at `under` or inside it, or
-    /// everywhere, by path.
-    pub async fn pending(&self, under: Option<&GroupPath>) -> Vec<PendingView> {
-        let inner = &self.inner;
-        let work = inner.work.lock().await;
-        let mut pending: Vec<PendingView> = work
-            .pending
-            .iter()
-            .filter(|(key, _)| under.is_none_or(|under| key.is_within(&under.key())))
-            .map(|(_, pending)| {
-                let settle = inner.settle_time(&pending.path);
-                PendingView {
-                    path: pending.path.clone(),
-                    deleted: pending.stat.is_none(),
-                    due_in: settle.saturating_sub(pending.since.elapsed()).as_secs(),
-                    freezes: inner.ledger.lock().freezes(&pending.path),
-                    cutoff: work.selection.cutoff(&pending.path),
-                }
-            })
-            .collect();
-        pending.sort_by(|a, b| a.path.cmp(&b.path));
-        pending
-    }
-
     /// # Panics
     ///
     /// Panics if a panic poisoned the error list.

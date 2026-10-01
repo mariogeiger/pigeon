@@ -2,8 +2,8 @@
 //! binds its endpoint, and runs the one loop that receives patches, follows
 //! the root's changes, publishes settled edits, joins the member to the
 //! group, renews and keeps the group secret, and keeps the blobs it needs
-//! from garbage collection. After each turn it signals whether what the
-//! engine shows may have changed.
+//! from garbage collection. After each turn it announces this machine's
+//! drafts and signals whether what the engine shows may have changed.
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -188,6 +188,8 @@ pub(crate) struct Work {
     pub out_of_place: Vec<(GroupPath, String)>,
     pub watcher: Option<notify::RecommendedWatcher>,
     pub watched: Vec<Watched>,
+    /// The drafts last announced: each path, size, and when it last changed.
+    pub announced: Option<Vec<(PathKey, u64, Instant)>>,
 }
 
 /// Work for the loop from outside it.
@@ -241,7 +243,8 @@ impl Inner {
 
     /// A hash of everything the views read: the state's writes, the
     /// pending edits, the fetches, the errors, the member's standing, the
-    /// folders out of place, the peers and the relay.
+    /// folders out of place, the drafts other machines announced, the peers
+    /// and the relay.
     fn fingerprint(&self, work: &Work) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.state.revision().hash(&mut hasher);
@@ -260,6 +263,7 @@ impl Inner {
             .expect("no panic holds the errors")
             .hash(&mut hasher);
         format!("{:?}{:?}", work.join, work.out_of_place).hash(&mut hasher);
+        self.node.announced().hash(&mut hasher);
         let mut peers = self.node.peers();
         peers.sort_unstable();
         peers.hash(&mut hasher);
@@ -571,6 +575,7 @@ impl Engine {
                 out_of_place: Vec::new(),
                 watcher: None,
                 watched: Vec::new(),
+                announced: None,
             }),
             wake,
             rescans,
@@ -712,7 +717,9 @@ async fn run(
                 inner.tick(&mut work, &mut last_rescan, &mut last_protect).await;
             }
         }
-        inner.signal(&*inner.work.lock().await);
+        let mut work = inner.work.lock().await;
+        inner.announce_drafts(&mut work);
+        inner.signal(&work);
     }
 }
 

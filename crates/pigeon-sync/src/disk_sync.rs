@@ -236,6 +236,14 @@ impl Inner {
             }
             Err(error) => self.report(error),
         }
+        for (key, pending) in &work.pending {
+            if under
+                .as_ref()
+                .is_none_or(|under| pending.path.key().is_within(&under.key()))
+            {
+                probes.entry(key.clone()).or_insert(None);
+            }
+        }
         if under.is_none() {
             let ledger = self.ledger.lock();
             for key in ledger.keys() {
@@ -285,9 +293,10 @@ impl Inner {
         } else {
             let path = match &entry {
                 Some(entry) => entry.path.clone(),
-                None => match self.ledger.lock().head(key) {
-                    Some(head) => head.path.clone(),
-                    None => return Ok(()),
+                None => match (self.ledger.lock().head(key), work.pending.get(key)) {
+                    (Some(head), _) => head.path.clone(),
+                    (None, Some(pending)) => pending.path.clone(),
+                    (None, None) => return Ok(()),
                 },
             };
             Probe::at(&root, path)

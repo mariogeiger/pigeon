@@ -5,12 +5,14 @@
 //! among admitted machines, each from several machines at once, through the
 //! relays it is told to use when no direct connection works, and tells
 //! which machines speak no protocol of its own and which pigeon they run,
-//! as it tells any machine that asks which pigeon it runs.
+//! as it tells any machine that asks which pigeon it runs. It announces
+//! this machine's drafts to every session and keeps those each connected
+//! machine announces, signed by it, until it announces others or leaves.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
 use iroh::endpoint::Connection;
@@ -25,7 +27,9 @@ use iroh_blobs::{BlobsProtocol, Hash};
 use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
 use n0_future::StreamExt;
 use pigeon_core::clock::{MachineId, Stamp};
+use pigeon_core::draft::{Draft, SignedDrafts};
 use pigeon_core::identity::{GroupId, MachineCert, RenewedSecret};
+use pigeon_core::name::MemberName;
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::hello::{self, Announcement, Announcing, HELLO_ALPN, Heard};
@@ -51,6 +55,14 @@ pub struct Received {
     pub patches: Patches,
 }
 
+/// The drafts a connected machine announced, and when.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Announced {
+    pub author: MemberName,
+    pub drafts: Vec<Draft>,
+    pub at: Instant,
+}
+
 type Counts = Mutex<HashMap<MachineId, usize>>;
 
 struct Shared {
@@ -66,6 +78,8 @@ struct Shared {
     admitted: Mutex<HashSet<MachineId>>,
     wanted: Mutex<BTreeSet<MachineId>>,
     incompatible: Mutex<BTreeMap<MachineId, Heard>>,
+    drafts: watch::Sender<Option<SignedDrafts>>,
+    announced: Mutex<BTreeMap<MachineId, Announced>>,
     relays: tokio::sync::Mutex<Vec<RelayUrl>>,
 }
 
@@ -127,6 +141,22 @@ impl Shared {
         Ok(())
     }
 
+    /// Keeps the drafts `remote` announced, if its machine signed them and
+    /// the member list recognizes its certificate.
+    fn hear(&self, remote: MachineId, signed: SignedDrafts) {
+        let genuine = signed.verify(&self.group).is_ok()
+            && signed.drafts.machine == remote
+            && self.log.recognizes(&signed.cert);
+        if genuine {
+            let announced = Announced {
+                author: signed.cert.name,
+                drafts: signed.drafts.drafts,
+                at: Instant::now(),
+            };
+            lock(&self.announced).insert(remote, announced);
+        }
+    }
+
     /// Adopts `secret` if it supersedes the one held.
     fn offer(&self, secret: RenewedSecret) -> bool {
         self.secret.send_if_modified(|held| {
@@ -147,6 +177,7 @@ impl Shared {
         let remote = connection.remote_id();
         let mut outgoing = self.outgoing.subscribe();
         let mut secrets = self.secret.subscribe();
+        let mut drafts = self.drafts.subscribe();
         let (mut send, mut recv, theirs) = if dialer {
             let (mut send, mut recv) = connection.open_bi().await?;
             wire::write(&mut send, &self.hello(remote)).await?;
@@ -166,6 +197,10 @@ impl Shared {
             wire::write(&mut send, &secret).await?;
             let missing = Message::Patches(self.log.missing_from(&theirs.vector));
             wire::write(&mut send, &missing).await?;
+            let announced = drafts.borrow_and_update().clone();
+            if let Some(announced) = announced {
+                wire::write(&mut send, &Message::Drafts(announced)).await?;
+            }
             loop {
                 let message = tokio::select! {
                     patches = outgoing.recv() => match patches {
@@ -182,6 +217,13 @@ impl Shared {
                             continue;
                         }
                         Arc::new(Message::Secret(secret))
+                    }
+                    changed = drafts.changed() => {
+                        changed?;
+                        let Some(announced) = drafts.borrow_and_update().clone() else {
+                            continue;
+                        };
+                        Arc::new(Message::Drafts(announced))
                     }
                 };
                 wire::write(&mut send, &*message).await?;
@@ -203,6 +245,7 @@ impl Shared {
                         }
                     }
                     Message::Patches(_) => {}
+                    Message::Drafts(signed) => self.hear(remote, signed),
                 }
             }
         };
@@ -211,6 +254,9 @@ impl Shared {
             result = reader => result,
         };
         count(&self.connected, remote, false);
+        if !lock(&self.connected).contains_key(&remote) {
+            lock(&self.announced).remove(&remote);
+        }
         result
     }
 
@@ -333,6 +379,8 @@ impl Node {
             admitted: Mutex::default(),
             wanted: Mutex::default(),
             incompatible: Mutex::default(),
+            drafts: watch::Sender::new(None),
+            announced: Mutex::default(),
             relays: tokio::sync::Mutex::default(),
         });
         let pool = ConnectionPool::new(
@@ -399,6 +447,22 @@ impl Node {
     #[must_use]
     pub fn offer(&self, secret: RenewedSecret) -> bool {
         self.shared.offer(secret)
+    }
+
+    /// Announces this machine's drafts to every connected peer, and to
+    /// each peer that connects later, unless they are those announced.
+    pub fn announce(&self, drafts: SignedDrafts) {
+        self.shared.drafts.send_if_modified(|held| {
+            let changed = held.as_ref() != Some(&drafts);
+            *held = Some(drafts);
+            changed
+        });
+    }
+
+    /// The drafts each connected machine announced.
+    #[must_use]
+    pub fn announced(&self) -> BTreeMap<MachineId, Announced> {
+        lock(&self.shared.announced).clone()
     }
 
     /// Sends patches to every connected peer.

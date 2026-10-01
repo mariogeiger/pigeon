@@ -320,13 +320,13 @@ pub const ACTIONS: &[Action] = &[
     view(
         "file",
         "pending",
-        "List the edits waiting to be published, with the seconds left",
+        "List the edits waiting to be published, with the seconds left: this machine's, and the drafts other machines announce, each with the other drafts of its path",
         &[optional(
             "under",
             "Only the edits in this folder",
             Kind::Path,
         )],
-        &["path", "due_in", "freezes", "deleted"],
+        &["path", "author", "due_in", "freezes", "deleted"],
     ),
     action(
         "file",

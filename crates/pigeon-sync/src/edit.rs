@@ -1,7 +1,8 @@
 //! What a person changes in the tree through an action: writing, deleting
-//! and renaming files or whole folders. Each file changes under its own
-//! rule: the files the member may write change on disk and are published at
-//! once, and the others become requests to their owners, one per owner.
+//! and renaming files or whole folders, drafts not yet published included.
+//! Each file changes under its own rule: the files the member may write
+//! change on disk and are published at once, and the others become
+//! requests to their owners, one per owner.
 
 use std::sync::Arc;
 
@@ -38,7 +39,14 @@ pub struct Edited {
 /// The content one path is to hold.
 enum Target {
     Bytes(Vec<u8>),
-    Moved { from: GroupPath, content: Content },
+    Moved {
+        from: GroupPath,
+        content: Content,
+    },
+    /// The draft at `from`, which only this machine's disk holds.
+    Draft {
+        from: GroupPath,
+    },
     Gone,
 }
 
@@ -51,53 +59,76 @@ fn files_at<'a>(ledger: &'a Ledger, path: &GroupPath) -> Vec<&'a Version> {
         .collect()
 }
 
-/// Spells out `edit` as the content each path is to hold, moves first so
-/// that a moved file leaves its source before the source is deleted.
-fn targets(ledger: &Ledger, edit: Edit) -> Result<Vec<(GroupPath, Target)>> {
+/// The drafts among `drafts` at `path` or inside the folder `path` that
+/// the ledger holds no live file at.
+fn drafts_at<'a>(ledger: &Ledger, drafts: &'a [GroupPath], path: &GroupPath) -> Vec<&'a GroupPath> {
+    let key = path.key();
+    drafts
+        .iter()
+        .filter(|draft| draft.key() == key || draft.is_inside(path.as_str()))
+        .filter(|draft| !ledger.head(&draft.key()).is_some_and(Version::is_live))
+        .collect()
+}
+
+/// Spells out `edit` as the content each path is to hold, given the
+/// `drafts` this machine holds, moves first so that a moved file leaves
+/// its source before the source is deleted.
+fn targets(ledger: &Ledger, drafts: &[GroupPath], edit: Edit) -> Result<Vec<(GroupPath, Target)>> {
     match edit {
         Edit::Write { path, bytes } => Ok(vec![(path, Target::Bytes(bytes))]),
         Edit::Delete { path } => {
             let files = files_at(ledger, &path);
-            if files.is_empty() {
+            let drafts = drafts_at(ledger, drafts, &path);
+            if files.is_empty() && drafts.is_empty() {
                 bail!("no file at {path}");
             }
             Ok(files
                 .into_iter()
-                .map(|version| (version.path.clone(), Target::Gone))
+                .map(|version| &version.path)
+                .chain(drafts)
+                .map(|path| (path.clone(), Target::Gone))
                 .collect())
         }
         Edit::Rename { from, to } => {
             let files = files_at(ledger, &from);
-            if files.is_empty() {
+            let moved_drafts = drafts_at(ledger, drafts, &from);
+            if files.is_empty() && moved_drafts.is_empty() {
                 bail!("no file at {from}");
             }
+            let sources = files
+                .into_iter()
+                .map(|version| {
+                    let content = version.content.expect("a live version has content");
+                    let from = version.path.clone();
+                    (version.path.clone(), Target::Moved { from, content })
+                })
+                .chain(moved_drafts.into_iter().map(|draft| {
+                    (
+                        draft.clone(),
+                        Target::Draft {
+                            from: draft.clone(),
+                        },
+                    )
+                }));
             let mut moves = Vec::new();
-            let mut sources = Vec::new();
-            for version in files {
-                let source = version.path.clone();
+            let mut gone = Vec::new();
+            for (source, moved) in sources {
                 let target = if source.key() == from.key() {
                     to.clone()
                 } else {
                     source.moved(from.as_str(), to.as_str())?
                 };
-                if target.key() != source.key()
-                    && ledger.head(&target.key()).is_some_and(Version::is_live)
-                {
+                let taken = ledger.head(&target.key()).is_some_and(Version::is_live)
+                    || drafts.iter().any(|draft| draft.key() == target.key());
+                if target.key() != source.key() && taken {
                     bail!("{target} exists");
                 }
-                let content = version.content.expect("a live version has content");
-                moves.push((
-                    target,
-                    Target::Moved {
-                        from: source.clone(),
-                        content,
-                    },
-                ));
-                if source.key() != moves[moves.len() - 1].0.key() {
-                    sources.push((source, Target::Gone));
+                if source.key() != target.key() {
+                    gone.push((source, Target::Gone));
                 }
+                moves.push((target, moved));
             }
-            moves.extend(sources);
+            moves.extend(gone);
             Ok(moves)
         }
     }
@@ -140,6 +171,12 @@ impl Inner {
                         .with_context(|| format!("{from} is not on this machine"))?;
                 }
             }
+            Target::Draft { from } => {
+                let source = fs_path(root, &from);
+                std::fs::rename(&source, &location)
+                    .with_context(|| format!("moving {from} to {path}"))?;
+                disk::remove(root, &source)?;
+            }
             Target::Gone => {
                 if file_stat(&location).is_some() {
                     disk::remove(root, &location)?;
@@ -167,6 +204,9 @@ impl Inner {
                 Some(content)
             }
             Target::Moved { content, .. } => Some(content),
+            Target::Draft { from } => {
+                bail!("{from} is not published yet: only its machine moves it")
+            }
             Target::Gone => None,
         };
         Ok(Change {
@@ -183,11 +223,17 @@ impl Inner {
         mode: Mode,
         message: &str,
     ) -> Result<Edited> {
+        let drafts: Vec<GroupPath> = work
+            .pending
+            .values()
+            .filter(|pending| pending.stat.is_some())
+            .map(|pending| pending.path.clone())
+            .collect();
         let mut planned = Vec::new();
         {
             let ledger = self.ledger.lock();
             for edit in edits {
-                planned.extend(targets(&ledger, edit)?);
+                planned.extend(targets(&ledger, &drafts, edit)?);
             }
         }
         let mut published = Vec::new();

@@ -1,8 +1,9 @@
 //! The tree in which `pigeon setup` lets one choose what this machine
 //! follows: folders open and close, a box checks a file or all those in a
 //! folder, the total shows what following them downloads, and each toggle
-//! becomes the follow or unfollow rule the web UI's Files page makes.
-//! Files inside the member's own `+name` folders stay followed.
+//! becomes the follow or unfollow rule the web UI's Files page makes, on
+//! the same tree of folders that page draws. Files inside the member's own
+//! `+name` folders stay followed.
 
 use std::collections::BTreeSet;
 use std::fmt::Write;
@@ -12,6 +13,7 @@ use dialoguer::console::{Key, Term};
 use pigeon_core::path::GroupPath;
 use pigeon_core::selection::{exact_pattern, folder_pattern};
 
+use crate::file_tree::{self, Facts, Folder, Followed, Leaf, Row};
 use crate::render;
 
 /// A file of the group as the tree shows it.
@@ -31,11 +33,45 @@ pub struct Chosen {
     pub download: u64,
 }
 
-/// A visible line of the tree: a folder or a file.
-struct Row {
+/// A visible line of the tree: a folder or a file, what the files it
+/// stands for add up to, and whether they are all the member's own.
+struct Line {
     path: String,
     depth: usize,
     folder: bool,
+    size: u64,
+    followed: Option<Followed>,
+    own: bool,
+}
+
+impl Line {
+    /// Whether the line stands for the file `path`.
+    fn covers(&self, path: &str) -> bool {
+        file_tree::contains(&self.path, path)
+    }
+
+    /// Its box: every file followed, none, or some.
+    fn check(&self) -> &'static str {
+        match self.followed {
+            Some(Followed::All) => "[x]",
+            Some(Followed::Some) => "[-]",
+            Some(Followed::None) | None => "[ ]",
+        }
+    }
+}
+
+impl Leaf for File {
+    fn path(&self) -> &str {
+        &self.path
+    }
+
+    fn facts(&self) -> Facts<'_> {
+        Facts {
+            size: self.size,
+            followed: Some(self.followed),
+            ..Facts::default()
+        }
+    }
 }
 
 /// The files, which folders are open, the line under the cursor, and the
@@ -49,8 +85,7 @@ pub struct Tree {
 
 impl Tree {
     #[must_use]
-    pub fn new(mut files: Vec<File>) -> Self {
-        files.sort_by(|a, b| a.path.split('/').cmp(b.path.split('/')));
+    pub fn new(files: Vec<File>) -> Self {
         Self {
             files,
             open: BTreeSet::new(),
@@ -59,47 +94,35 @@ impl Tree {
         }
     }
 
-    /// The lines shown: each folder once, and what open folders hold.
-    fn rows(&self) -> Vec<Row> {
-        let mut rows = Vec::new();
-        let mut shown = BTreeSet::new();
-        for file in &self.files {
-            let parts: Vec<&str> = file.path.split('/').collect();
-            for depth in 0..parts.len() {
-                let path = parts[..=depth].join("/");
-                let folder = depth + 1 < parts.len();
-                if !folder || shown.insert(path.clone()) {
-                    rows.push(Row {
-                        path: path.clone(),
-                        depth,
-                        folder,
-                    });
-                }
-                if folder && !self.open.contains(&path) {
-                    break;
-                }
-            }
-        }
-        rows
-    }
-
-    /// The files a line stands for: the file, or those in the folder.
-    fn under<'a>(&'a self, row: &'a Row) -> impl Iterator<Item = &'a File> {
-        self.files
-            .iter()
-            .filter(move |file| covers(row, &file.path))
-    }
-
-    /// The box of a line: every file followed, none, or some.
-    fn check(&self, row: &Row) -> &'static str {
-        let (followed, all) = self.under(row).fold((0, 0), |(followed, all), file| {
-            (followed + usize::from(file.followed), all + 1)
-        });
-        match followed {
-            0 => "[ ]",
-            _ if followed == all => "[x]",
-            _ => "[-]",
-        }
+    /// The lines shown: each folder, and what open folders hold.
+    fn lines(&self) -> Vec<Line> {
+        let tree = Folder::root(&self.files);
+        tree.rows()
+            .into_iter()
+            .filter(|row| file_tree::ancestors(row.path()).all(|folder| self.open.contains(folder)))
+            .map(|row| match row {
+                Row::Folder { folder, depth } => Line {
+                    path: folder.path.clone(),
+                    depth,
+                    folder: true,
+                    size: folder.summary.size,
+                    followed: folder.summary.followed(),
+                    own: folder.leaves().all(|file| file.locked),
+                },
+                Row::File { leaf, depth } => Line {
+                    path: leaf.path.clone(),
+                    depth,
+                    folder: false,
+                    size: leaf.size,
+                    followed: Some(if leaf.followed {
+                        Followed::All
+                    } else {
+                        Followed::None
+                    }),
+                    own: leaf.locked,
+                },
+            })
+            .collect()
     }
 
     /// What following the followed files downloads.
@@ -115,19 +138,22 @@ impl Tree {
     /// Follows the files of the line under the cursor, or unfollows them
     /// if all are followed, the member's own excepted.
     fn toggle(&mut self) {
-        let Some(row) = self.rows().into_iter().nth(self.cursor) else {
+        let Some(line) = self.lines().into_iter().nth(self.cursor) else {
             return;
         };
-        let follow = self.under(&row).any(|file| !file.locked && !file.followed);
+        let follow = self
+            .files
+            .iter()
+            .any(|file| line.covers(&file.path) && !file.locked && !file.followed);
         let mut changed = false;
         for file in &mut self.files {
-            if covers(&row, &file.path) && !file.locked {
+            if line.covers(&file.path) && !file.locked {
                 file.followed = follow;
                 changed = true;
             }
         }
-        if let (true, Ok(path)) = (changed, GroupPath::parse(&row.path)) {
-            let pattern = if row.folder {
+        if let (true, Ok(path)) = (changed, GroupPath::parse(&line.path)) {
+            let pattern = if line.folder {
                 folder_pattern(&path)
             } else {
                 exact_pattern(&path)
@@ -138,23 +164,23 @@ impl Tree {
 
     /// Carries out a key: moves, opens or closes a folder, or toggles.
     fn press(&mut self, key: &Key) {
-        let rows = self.rows();
-        let Some(row) = rows.get(self.cursor) else {
+        let lines = self.lines();
+        let Some(line) = lines.get(self.cursor) else {
             return;
         };
         match key {
             Key::ArrowUp => self.cursor = self.cursor.saturating_sub(1),
-            Key::ArrowDown => self.cursor = (self.cursor + 1).min(rows.len() - 1),
-            Key::ArrowRight if row.folder => {
-                self.open.insert(row.path.clone());
+            Key::ArrowDown => self.cursor = (self.cursor + 1).min(lines.len() - 1),
+            Key::ArrowRight if line.folder => {
+                self.open.insert(line.path.clone());
             }
-            Key::ArrowLeft if row.folder && self.open.contains(&row.path) => {
-                self.open.remove(&row.path);
+            Key::ArrowLeft if line.folder && self.open.contains(&line.path) => {
+                self.open.remove(&line.path);
             }
             Key::ArrowLeft => {
-                if let Some(parent) = rows[..self.cursor]
+                if let Some(parent) = lines[..self.cursor]
                     .iter()
-                    .rposition(|above| above.folder && covers(above, &row.path))
+                    .rposition(|above| above.folder && above.covers(&line.path))
                 {
                     self.cursor = parent;
                 }
@@ -166,36 +192,31 @@ impl Tree {
 
     /// The tree as drawn on a terminal `height` lines high.
     fn render(&self, height: usize) -> String {
-        let rows = self.rows();
+        let lines = self.lines();
         let room = height.saturating_sub(6).max(1);
         let first = self
             .cursor
             .saturating_sub(room / 2)
-            .min(rows.len().saturating_sub(room));
+            .min(lines.len().saturating_sub(room));
         let mut text = String::from(
             "What this machine follows\n↑↓ move · →← open, close · space check · Enter confirm · Esc skip\n\n",
         );
-        for (index, row) in rows.iter().enumerate().skip(first).take(room) {
+        for (index, line) in lines.iter().enumerate().skip(first).take(room) {
             let pointer = if index == self.cursor { '›' } else { ' ' };
-            let arrow = match (row.folder, self.open.contains(&row.path)) {
+            let arrow = match (line.folder, self.open.contains(&line.path)) {
                 (false, _) => ' ',
                 (true, true) => '▾',
                 (true, false) => '▸',
             };
-            let name = row.path.rsplit('/').next().unwrap_or_default();
-            let slash = if row.folder { "/" } else { "" };
-            let size: u64 = self.under(row).map(|file| file.size).sum();
-            let own = if self.under(row).all(|file| file.locked) {
-                "  (yours)"
-            } else {
-                ""
-            };
+            let name = line.path.rsplit('/').next().unwrap_or_default();
+            let slash = if line.folder { "/" } else { "" };
+            let own = if line.own { "  (yours)" } else { "" };
             let _ = writeln!(
                 text,
                 "{pointer} {}{arrow} {} {name}{slash}  {}{own}",
-                "  ".repeat(row.depth),
-                self.check(row),
-                render::size(size)
+                "  ".repeat(line.depth),
+                line.check(),
+                render::size(line.size)
             );
         }
         text + &format!("\nTo download: {}\n", render::size(self.to_download()))
@@ -228,15 +249,6 @@ impl Tree {
     }
 }
 
-/// Whether the line `row` stands for the file `path`.
-fn covers(row: &Row, path: &str) -> bool {
-    path == row.path
-        || (row.folder
-            && path
-                .strip_prefix(&row.path)
-                .is_some_and(|rest| rest.starts_with('/')))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,16 +276,16 @@ mod tests {
     fn closed_folders_hide_what_they_hold() {
         let mut tree = tree();
         let paths = |tree: &Tree| {
-            tree.rows()
+            tree.lines()
                 .into_iter()
-                .map(|row| row.path)
+                .map(|line| line.path)
                 .collect::<Vec<_>>()
         };
         assert_eq!(paths(&tree), ["docs", "readme"]);
         tree.press(&Key::ArrowRight);
         assert_eq!(
             paths(&tree),
-            ["docs", "docs/+mario", "docs/b.txt", "docs/old", "readme"]
+            ["docs", "docs/+mario", "docs/old", "docs/b.txt", "readme"]
         );
         tree.press(&Key::ArrowDown);
         tree.press(&Key::ArrowLeft);
@@ -285,17 +297,13 @@ mod tests {
     #[test]
     fn toggling_a_folder_follows_or_unfollows_all_but_the_members_own() {
         let mut tree = tree();
-        let docs = Row {
-            path: "docs".into(),
-            depth: 0,
-            folder: true,
-        };
-        assert_eq!(tree.check(&docs), "[-]");
+        let docs = |tree: &Tree| tree.lines()[0].check();
+        assert_eq!(docs(&tree), "[-]");
         tree.press(&Key::Char(' '));
-        assert_eq!(tree.check(&docs), "[x]");
+        assert_eq!(docs(&tree), "[x]");
         assert_eq!(tree.to_download(), 320);
         tree.press(&Key::Char(' '));
-        assert_eq!(tree.check(&docs), "[-]");
+        assert_eq!(docs(&tree), "[-]");
         assert_eq!(tree.to_download(), 0);
         tree.press(&Key::ArrowDown);
         tree.press(&Key::Char(' '));

@@ -1,48 +1,31 @@
-//! The web UI's Files page: one folder's subfolders and files, each with a
-//! box that follows it, checked when every file under it is followed and
-//! mixed when only some are, and the edits waiting there, with the time
-//! left before they are published and the buttons that publish them now.
+//! The web UI's Files page: the whole group as one tree, whose folders
+//! `files.js` opens and closes in place. Each row has a box that follows
+//! it, checked when every file under it is followed and mixed when only
+//! some are, its size, owner, time and state, and a menu of what can be
+//! done to it. The edits waiting here show with the time left, the drafts
+//! other machines announce show greyed with their author, and two drafts
+//! of one path warn both members, telling the later one it will be set
+//! aside.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use maud::{Markup, html};
 use pigeon_core::path::GroupPath;
 use pigeon_core::selection::{exact_pattern, folder_pattern};
 use serde_json::Value;
 
+use crate::file_tree::{self, Facts, Folder, Followed, Leaf, Row};
 use crate::form::form;
 use crate::group_pages::{encode, file_link, fill};
 use crate::pages::{action, layout};
-use crate::render::{cell, field, header};
+use crate::render::size;
 
-/// How many of the files under a box are followed.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Followed {
-    All,
-    Some,
-    None,
-}
-
-impl Followed {
-    fn of(followed: impl IntoIterator<Item = bool>) -> Self {
-        let (mut any, mut all) = (false, true);
-        for one in followed {
-            any |= one;
-            all &= one;
-        }
-        match (any, all) {
-            (false, _) => Self::None,
-            (true, true) => Self::All,
-            (true, false) => Self::Some,
-        }
-    }
-
-    fn state(self) -> &'static str {
-        match self {
-            Self::All => "checked",
-            Self::Some => "mixed",
-            Self::None => "unchecked",
-        }
+/// The value of a box's `data-state`.
+fn state(followed: Followed) -> &'static str {
+    match followed {
+        Followed::All => "checked",
+        Followed::Some => "mixed",
+        Followed::None => "unchecked",
     }
 }
 
@@ -56,105 +39,287 @@ fn clock(seconds: u64) -> String {
     format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
-/// One name of the folder: a published file, a waiting edit, or both.
-#[derive(Default)]
+/// A countdown that `live.js` ticks.
+fn countdown(seconds: &Value) -> Markup {
+    let seconds = seconds.as_u64().unwrap_or_default();
+    html! { span data-due=(seconds) { (clock(seconds)) } }
+}
+
+/// One path of the group: its published file, the edit of it waiting
+/// here, and the drafts of it other machines announced.
 struct Entry<'a> {
+    path: &'a str,
     file: Option<&'a Value>,
     waiting: Option<&'a Value>,
+    drafts: Vec<&'a Value>,
 }
 
-/// A subfolder: whether each file under it is followed, and how many
-/// edits wait in it.
-#[derive(Default)]
-struct Subfolder {
-    followed: Vec<bool>,
-    waiting: usize,
-}
+impl Leaf for Entry<'_> {
+    fn path(&self) -> &str {
+        self.path
+    }
 
-/// The folder `prefix` names, sorted into its subfolders and its own files.
-struct Folder<'a> {
-    subfolders: BTreeMap<&'a str, Subfolder>,
-    entries: BTreeMap<&'a str, Entry<'a>>,
-}
-
-impl<'a> Folder<'a> {
-    fn new(prefix: &str, files: &'a [Value], waiting: &'a [Value]) -> Self {
-        let mut folder = Self {
-            subfolders: BTreeMap::new(),
-            entries: BTreeMap::new(),
+    fn facts(&self) -> Facts<'_> {
+        let size = match (self.file, self.waiting, self.drafts.first().copied()) {
+            (Some(file), _, _) => &file["content"]["size"],
+            (None, Some(item), _) | (None, None, Some(item)) => &item["size"],
+            (None, None, None) => &Value::Null,
         };
-        for (item, is_waiting) in files
-            .iter()
-            .map(|item| (item, false))
-            .chain(waiting.iter().map(|item| (item, true)))
-        {
-            let path = item["path"].as_str().unwrap_or_default();
-            let rest = path.strip_prefix(prefix).unwrap_or(path);
-            if let Some((name, _)) = rest.split_once('/') {
-                let subfolder = folder.subfolders.entry(name).or_default();
-                subfolder.followed.push(follows(item));
-                subfolder.waiting += usize::from(is_waiting);
-            } else {
-                let entry = folder.entries.entry(path).or_default();
-                if is_waiting {
-                    entry.waiting = Some(item);
-                } else {
-                    entry.file = Some(item);
-                }
-            }
+        Facts {
+            size: size.as_u64().unwrap_or_default(),
+            followed: self.file.or(self.waiting).map(follows),
+            time: self.file.and_then(|file| file["time"].as_str()),
+            waiting: self.waiting.is_some(),
         }
-        folder
     }
 }
 
+/// The files and the waiting edits, one entry per path.
+fn entries<'a>(files: &'a [Value], waiting: &'a [Value]) -> Vec<Entry<'a>> {
+    let mut entries: BTreeMap<&str, Entry> = BTreeMap::new();
+    for item in files.iter().chain(waiting) {
+        let path = item["path"].as_str().unwrap_or_default();
+        let entry = entries.entry(path).or_insert(Entry {
+            path,
+            file: None,
+            waiting: None,
+            drafts: Vec::new(),
+        });
+        if item.get("here").is_none() {
+            entry.file = Some(item);
+        } else if item["here"] == true {
+            entry.waiting = Some(item);
+        } else {
+            entry.drafts.push(item);
+        }
+    }
+    entries.into_values().collect()
+}
+
 /// The box that follows `path`, when it is a valid path.
-fn follow_box(path: &str, pattern: fn(&GroupPath) -> String, followed: Followed) -> Markup {
-    let Ok(path) = GroupPath::parse(path) else {
+fn follow_box(path: &str, pattern: fn(&GroupPath) -> String, followed: Option<Followed>) -> Markup {
+    let (Ok(path), Some(followed)) = (GroupPath::parse(path), followed) else {
         return html! {};
     };
     html! {
         input type="checkbox" title="Follow" data-pattern=(pattern(&path))
-            data-state=(followed.state()) checked[followed == Followed::All];
+            data-state=(state(followed)) checked[followed == Followed::All];
     }
 }
 
 /// The button that publishes the edits waiting at `path` now, asking
 /// first when publishing freezes them.
 fn publish_button(group: &str, back: &str, path: &str, freezes: bool) -> Markup {
-    let question = format!(
-        "Publishing freezes what waits in a drop folder at {}: it then changes only through requests. Publish now?",
-        if path.is_empty() { group } else { path }
-    );
     html! {
-        div data-confirm=[freezes.then_some(question)] {
+        div data-confirm=[freezes.then(|| freeze_question(group, path))] {
             (form(action("file", "publish"), back, fill(group, &[("path", path)], &[])))
         }
     }
 }
 
-/// What a file's last cell says: a frozen copy, and its waiting edit.
-fn file_state(group: &str, back: &str, path: &str, entry: &Entry) -> Markup {
-    let frozen = entry.file.is_some_and(|file| file["cutoff"]["At"].is_u64());
-    html! {
-        @if frozen { span class="mark" { "frozen copy" } " " }
-        @if let Some(waiting) = entry.waiting { (waiting_note(group, back, path, waiting)) }
-    }
+/// What publishing asks first when it freezes what waits at `path`.
+fn freeze_question(group: &str, path: &str) -> String {
+    format!(
+        "Publishing freezes what waits in a drop folder at {}: it then changes only through requests. Publish now?",
+        if path.is_empty() { group } else { path }
+    )
 }
 
 /// The edit waiting at `path`: the time left before it is published, and
 /// the button that publishes it now.
 pub fn waiting_note(group: &str, back: &str, path: &str, waiting: &Value) -> Markup {
-    let seconds = waiting["due_in"].as_u64().unwrap_or_default();
     html! {
         @if waiting["deleted"] == true { "deletion " }
-        "waiting · published in " span data-due=(seconds) { (clock(seconds)) }
+        "waiting · published in " (countdown(&waiting["due_in"]))
         (publish_button(group, back, path, waiting["freezes"] == true))
     }
 }
 
-/// The question asked when a box is unchecked.
-fn unfollow_dialog() -> Markup {
+/// The other drafts of the path `item` waits at, and whether this
+/// machine's copy will be set aside.
+fn rivals(item: &Value) -> Markup {
+    let rivals = item["rivals"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
     html! {
+        @for rival in rivals {
+            span class="warning" {
+                "⚠ " (rival["author"].as_str().unwrap_or_default()) " is also adding "
+                (rival["path"].as_str().unwrap_or_default()) ", published in "
+                (countdown(&rival["due_in"]))
+            }
+        }
+        @if item["here"] == true && rivals.iter().any(|rival| rival["wins"] == true) {
+            span class="warning" { "Your copy will be set aside: rename it to keep both." }
+        }
+    }
+}
+
+/// What a file's state cell says: whether this machine holds it and is
+/// up to date, whether one may write it, its waiting edit, and the drafts
+/// of it other machines announced.
+fn file_state(entry: &Entry) -> Markup {
+    html! {
+        @if let Some(file) = entry.file {
+            @if file["held"] == false { span class="mark" { "not here" } " " }
+            @if file["outdated"] == true { span class="mark" { "outdated" } " " }
+            @if file["cutoff"]["At"].is_u64() { span class="mark" { "frozen copy" } " " }
+            @if file["writable"] == false {
+                span title="Only its owner writes it: changes become requests" { "🔒" } " "
+            }
+        }
+        @if let Some(waiting) = entry.waiting {
+            @if waiting["deleted"] == true { "deletion " }
+            "waiting · " (countdown(&waiting["due_in"]))
+            (rivals(waiting))
+        }
+        @for draft in &entry.drafts {
+            @if entry.waiting.is_none() {
+                (draft["author"].as_str().unwrap_or_default()) " is adding · "
+                (countdown(&draft["due_in"]))
+                (rivals(draft))
+            }
+        }
+    }
+}
+
+/// The folders open before one opens or closes any: those above `under`
+/// and `under` itself, and each of the member's own folders with those
+/// above it.
+fn first_open(rows: &[Row<Entry>], member: &str, under: &str) -> BTreeSet<String> {
+    let own = format!("+{member}");
+    let mut open = BTreeSet::new();
+    let mut above = |path: &str| {
+        open.extend(file_tree::ancestors(path).map(str::to_owned));
+        open.insert(path.to_owned());
+    };
+    for row in rows {
+        if let Row::Folder { folder, .. } = row
+            && folder.name() == own
+        {
+            above(&folder.path);
+        }
+    }
+    if !under.is_empty() {
+        above(under);
+    }
+    open
+}
+
+/// Whether `member` adds files to the folder `path` without asking: no
+/// statement folder holds it, and the rightmost `+name` tag above it, if
+/// any, is the member's own.
+fn adds_freely(path: &str, member: &str) -> bool {
+    !file_tree::contains(".pigeon", path)
+        && path
+            .split('/')
+            .rev()
+            .find_map(|name| name.strip_prefix('+'))
+            .is_none_or(|tag| tag.eq_ignore_ascii_case(member))
+}
+
+/// A time in RFC 3339 to the minute.
+fn short_time(time: &str) -> String {
+    time.get(..16).unwrap_or(time).replacen('T', " ", 1)
+}
+
+/// The menu button of a row, which tells `files.js` what can be done:
+/// `member` adds files to a folder freely or by request.
+fn menu_button(
+    kind: &str,
+    path: &str,
+    folder: Option<&Folder<Entry>>,
+    entry: Option<&Entry>,
+    member: &str,
+) -> Markup {
+    let addable = folder.map(|_| adds_freely(path, member));
+    let pattern = GroupPath::parse(path).ok().map(|parsed| match kind {
+        "file" => exact_pattern(&parsed),
+        _ => folder_pattern(&parsed),
+    });
+    let writable = match (folder, entry) {
+        (Some(folder), _) => folder
+            .leaves()
+            .filter_map(|entry| entry.file)
+            .all(|file| file["writable"] != false),
+        (None, Some(entry)) => entry.file.is_none_or(|file| file["writable"] != false),
+        (None, None) => true,
+    };
+    let waiting = match (folder, entry) {
+        (Some(folder), _) => folder.leaves().filter_map(|entry| entry.waiting).collect(),
+        (None, Some(entry)) => entry.waiting.into_iter().collect(),
+        (None, None) => Vec::new(),
+    };
+    let freezes = waiting.iter().any(|item| item["freezes"] == true);
+    let published = entry.is_some_and(|entry| entry.file.is_some());
+    html! {
+        button type="button" class="more" title="Actions" data-kind=(kind) data-path=(path)
+            data-pattern=[pattern] data-writable=(writable) data-waiting=(waiting.len())
+            data-freezes=(freezes) data-published=(published) data-addable=[addable] { "⋯" }
+    }
+}
+
+/// The dialogs the menu opens, each filled by `files.js` for its row.
+fn dialogs(group: &str, back: &str) -> Markup {
+    let hidden = |name: &str| html! { input type="hidden" name=(name); };
+    let start = html! {
+        input type="hidden" name="back" value=(back);
+        input type="hidden" name="group" value=(group);
+    };
+    let request = html! {
+        div class="request" {
+            p { "You may not write this: it becomes a request to its owner." }
+            label { span { "Why, for the owner" } input type="text" name="message"; }
+        }
+    };
+    let close = html! { button type="button" value="" class="close" { "Cancel" } };
+    html! {
+        dialog id="menu" {
+            p { strong class="subject" {} }
+            div class="choices" {
+                button type="button" data-open="rename" { "Rename…" }
+                button type="button" data-open="replace" { "Replace…" }
+                button type="button" data-open="add" { "Add file…" }
+                button type="button" data-open="delete" { "Delete…" }
+                form id="download" method="post" action="/act/selection/download" enctype="multipart/form-data" {
+                    (start) (hidden("pattern")) button { "Download once" }
+                }
+                form id="publish" method="post" action="/act/file/publish" enctype="multipart/form-data" {
+                    (start) (hidden("path")) button { "Publish now" }
+                }
+                a id="history" { "History" }
+            }
+            (close)
+        }
+        dialog id="rename" {
+            form method="post" action="/act/file/rename" enctype="multipart/form-data" {
+                p { "Rename " strong class="subject" {} } (start) (hidden("from"))
+                label { span { "New path" } input type="text" name="to" required; }
+                (request) button { "Rename" } " " (close)
+            }
+        }
+        dialog id="replace" {
+            form method="post" action="/act/file/write" enctype="multipart/form-data" {
+                p { "Replace " strong class="subject" {} } (start) (hidden("path"))
+                label { span { "New content" } input type="file" name="content" required; }
+                (request) button { "Replace" } " " (close)
+            }
+        }
+        dialog id="add" {
+            form method="post" action="/act/file/write" enctype="multipart/form-data" {
+                p { "Add a file to " strong class="subject" {} } (start)
+                label { span { "Path" } input type="text" name="path" required; }
+                label { span { "Content" } input type="file" name="content" required; }
+                (request) button { "Add" } " " (close)
+            }
+        }
+        dialog id="delete" {
+            form method="post" action="/act/file/delete" enctype="multipart/form-data" {
+                p { "Delete " strong class="subject" {} "?" } (start) (hidden("path"))
+                (request) button { "Delete" } " " (close)
+            }
+        }
         dialog id="unfollow" {
             form method="dialog" {
                 p { "Stop following: keep the current copy here, frozen, or free the space?" }
@@ -166,75 +331,112 @@ fn unfollow_dialog() -> Markup {
     }
 }
 
-/// The folder `under`: its subfolders and files with their follow boxes,
-/// the edits waiting in it, and the forms that act on it.
+/// One row of the tree, marked when it is the folder `under` the page
+/// shows.
+fn row(
+    group: &str,
+    member: &str,
+    under: &str,
+    row: &Row<Entry>,
+    open: &BTreeSet<String>,
+) -> Markup {
+    let path = row.path();
+    let target = (path == under).then_some("target");
+    let hidden = file_tree::ancestors(path).any(|folder| !open.contains(folder));
+    let indent = format!(
+        "padding-left: {}em",
+        0.5 + 1.25 * f64::from(u32::try_from(row.depth()).unwrap_or(0))
+    );
+    match row {
+        Row::Folder { folder, .. } => {
+            let is_open = open.contains(path);
+            let summary = &folder.summary;
+            html! {
+                tr data-path=(path) class=[target] data-folder data-open[is_open] hidden[hidden] {
+                    td { (follow_box(path, folder_pattern, summary.followed())) }
+                    td style=(indent) {
+                        button type="button" class="twist" {
+                            span class="arrow" { @if is_open { "▾" } @else { "▸" } } " " (folder.name()) "/"
+                        }
+                    }
+                    td { (size(summary.size)) }
+                    td {}
+                    td { @if let Some(time) = &summary.time { (short_time(time)) } }
+                    td { @if summary.waiting > 0 { (summary.waiting) " waiting" } }
+                    td { (menu_button("folder", path, Some(folder), None, member)) }
+                }
+            }
+        }
+        Row::File { leaf: entry, .. } => {
+            let item = entry.file.or(entry.waiting);
+            let facts = entry.facts();
+            let owner = match (entry.file, entry.drafts.first()) {
+                (Some(file), _) => file["owner"].as_str(),
+                (None, Some(draft)) if entry.waiting.is_none() => draft["author"].as_str(),
+                _ => None,
+            };
+            let name = path.rsplit('/').next().unwrap_or_default();
+            html! {
+                tr data-path=(path) class=[target.or(item.is_none().then_some("draft"))] hidden[hidden] {
+                    td { (follow_box(path, exact_pattern, item.map(|item| if follows(item) { Followed::All } else { Followed::None }))) }
+                    td style=(indent) {
+                        @if entry.file.is_some() { a href=(file_link(group, path)) { (name) } }
+                        @else { (name) }
+                    }
+                    td { (size(facts.size)) }
+                    td { (owner.unwrap_or_default()) }
+                    td { @if let Some(time) = facts.time { (short_time(time)) } }
+                    td { (file_state(entry)) }
+                    td { @if item.is_some() { (menu_button("file", path, None, Some(entry), member)) } }
+                }
+            }
+        }
+    }
+}
+
+/// The whole group as a tree: the folders above `under` open, and those
+/// of `member`, until one opens or closes others.
 #[must_use]
-pub fn files(group: &str, under: &str, files: &Value, waiting: &Value) -> Markup {
-    let prefix = if under.is_empty() {
-        String::new()
-    } else {
-        format!("{under}/")
-    };
+pub fn files(group: &str, member: &str, under: &str, files: &Value, waiting: &Value) -> Markup {
     let files = files.as_array().map(Vec::as_slice).unwrap_or_default();
     let waiting = waiting.as_array().map(Vec::as_slice).unwrap_or_default();
-    let folder = Folder::new(&prefix, files, waiting);
-    let back = format!("/g/{group}/files?under={}", encode(under));
-    let names: Vec<&str> = under.split('/').filter(|name| !name.is_empty()).collect();
-    let folder_link = |path: &str| format!("/g/{group}/files?under={}", encode(path));
-    let columns = action("file", "list").columns;
-    let freezes = waiting.iter().any(|item| item["freezes"] == true);
+    let tree = Folder::root(entries(files, waiting));
+    let rows = tree.rows();
+    let open = first_open(&rows, member, under);
+    let back = if under.is_empty() {
+        format!("/g/{group}/files")
+    } else {
+        format!("/g/{group}/files?under={}", encode(under))
+    };
+    let here: Vec<&Value> = waiting
+        .iter()
+        .filter(|item| item["here"] != false)
+        .collect();
+    let freezes = here.iter().any(|item| item["freezes"] == true);
     let body = html! {
         p {
-            a href=(folder_link("")) { (group) }
-            @for (index, name) in names.iter().enumerate() {
-                " / " a href=(folder_link(&names[..=index].join("/"))) { (name) }
+            button type="button" id="expand-all" { "Expand all" } " "
+            button type="button" id="collapse-all" { "Collapse all" }
+        }
+        @if here.len() > 1 {
+            p { (here.len()) " edits wait to be published." (publish_button(group, &back, "", freezes)) }
+        }
+        table class="tree" data-group=(group) data-under=(under) {
+            tr { th {} th { "Name" } th { "Size" } th { "Owner" } th { "Time" } th { "State" } th {} }
+            tr class="root" data-path="" {
+                td {}
+                td { strong { (group) } }
+                td { (size(tree.summary.size)) }
+                td {}
+                td { @if let Some(time) = &tree.summary.time { (short_time(time)) } }
+                td { @if tree.summary.waiting > 0 { (tree.summary.waiting) " waiting" } }
+                td { (menu_button("root", "", Some(&tree), None, member)) }
             }
+            @for one in &rows { (row(group, member, under, one, &open)) }
         }
-        @if waiting.len() > 1 {
-            p { (waiting.len()) " edits wait to be published here."
-                (publish_button(group, &back, under, freezes)) }
-        }
-        @if folder.subfolders.is_empty() && folder.entries.is_empty() {
-            p { "Nothing yet." }
-        } @else {
-            table {
-                tr { th {} @for column in columns { th { (header(column)) } } th {} }
-                @for (name, subfolder) in &folder.subfolders {
-                    @let path = format!("{prefix}{name}");
-                    tr {
-                        td { (follow_box(&path, folder_pattern, Followed::of(subfolder.followed.iter().copied()))) }
-                        td { a href=(folder_link(&path)) { (name) "/" } }
-                        @for _ in &columns[1..] { td {} }
-                        td { @if subfolder.waiting > 0 { (subfolder.waiting) " waiting" } }
-                    }
-                }
-                @for (path, entry) in &folder.entries {
-                    @let item = entry.file.or(entry.waiting).unwrap_or(&Value::Null);
-                    tr {
-                        td { (follow_box(path, exact_pattern, Followed::of([follows(item)]))) }
-                        td {
-                            @if entry.file.is_some() { a href=(file_link(group, path)) { (path) } }
-                            @else { (path) }
-                        }
-                        @for column in &columns[1..] {
-                            td { @if let Some(file) = entry.file { (cell(column, field(file, column))) } }
-                        }
-                        td { (file_state(group, &back, path, entry)) }
-                    }
-                }
-            }
-        }
-        (unfollow_dialog())
-        (form(action("file", "write"), &back, fill(group, &[], &[("path", &prefix)])))
-        @if let Ok(path) = GroupPath::parse(under) {
-            @let pattern = folder_pattern(&path);
-            h2 { "This folder" }
-            @for verb in ["follow", "download", "unfollow"] {
-                (form(action("selection", verb), &back, fill(group, &[("pattern", &pattern)], &[])))
-            }
-            (form(action("file", "rename"), &back, fill(group, &[("from", under)], &[("to", under)])))
-            (form(action("file", "delete"), &back, fill(group, &[("path", under)], &[])))
-        }
+        @if tree.is_empty() { p { "Nothing yet." } }
+        (dialogs(group, &back))
+        script src="/files.js" defer {}
     };
     layout("Files", Some(group), &body)
 }
@@ -245,7 +447,13 @@ mod tests {
     use serde_json::json;
 
     fn file(path: &str, cutoff: &Value) -> Value {
-        json!({"path": path, "owner": "alice", "content": {"size": 1}, "cutoff": cutoff})
+        json!({"path": path, "owner": "alice", "content": {"size": 1}, "cutoff": cutoff,
+            "time": "2026-01-01T00:00:00Z", "held": true, "outdated": false, "writable": true})
+    }
+
+    fn row_of<'a>(page: &'a str, path: &str) -> &'a str {
+        let at = page.find(&format!(r#"<tr data-path="{path}""#)).unwrap();
+        &page[at..at + page[at..].find("</tr>").unwrap()]
     }
 
     #[test]
@@ -258,43 +466,89 @@ mod tests {
             file("docs/none/e.txt", &json!("MinusInfinity")),
             file("docs/[x].txt", &json!({"At": 5})),
         ]);
-        let page = files("cheapmo", "docs", &list, &json!([])).into_string();
-        let row = |name: &str| {
-            let at = page.find(name).unwrap();
-            page[page[..at].rfind("<tr>").unwrap()..at].to_owned()
-        };
+        let page = files("cheapmo", "alice", "", &list, &json!([])).into_string();
         assert!(
-            row(">all/<").contains(r#"data-pattern="/docs/all/" data-state="checked" checked"#)
+            row_of(&page, "docs/all")
+                .contains(r#"data-pattern="/docs/all/" data-state="checked" checked"#)
         );
-        assert!(row(">some/<").contains(r#"data-state="mixed">"#));
-        assert!(row(">none/<").contains(r#"data-state="unchecked">"#));
+        assert!(row_of(&page, "docs/some").contains(r#"data-state="mixed">"#));
+        assert!(row_of(&page, "docs/none").contains(r#"data-state="unchecked">"#));
         assert!(
-            row(">docs/a.txt<")
+            row_of(&page, "docs/a.txt")
                 .contains(r#"data-pattern="/docs/a.txt" data-state="checked" checked"#)
         );
         assert!(page.contains(r#"data-pattern="/docs/\[x\].txt" data-state="unchecked">"#));
         assert!(page.contains("frozen copy"));
-        assert!(!page.contains("docs/all/b.txt"));
-        assert!(page.contains(r#"<input type="hidden" name="pattern" value="/docs/">"#));
+        assert!(!row_of(&page, "docs").contains("hidden"));
+        assert!(row_of(&page, "docs/all").contains("hidden"));
+        assert!(row_of(&page, "docs/all/b.txt").contains("hidden"));
+        assert!(row_of(&page, "docs").contains("6 B"));
         assert!(page.contains(r#"<dialog id="unfollow">"#));
+        let at = |path: &str| page.find(&format!(r#"<tr data-path="{path}""#)).unwrap();
+        assert!(at("docs/some") < at("docs/a.txt"), "folders come first");
     }
 
     #[test]
-    fn waiting_edits_show_in_their_folder_with_the_time_left_and_a_button() {
+    fn under_and_the_members_own_folder_start_open() {
+        let list = json!([
+            file("docs/deep/a.txt", &json!("PlusInfinity")),
+            file("team/+alice/b.txt", &json!("PlusInfinity")),
+            file("team/+bob/c.txt", &json!("PlusInfinity")),
+        ]);
+        let page = files("cheapmo", "alice", "docs/deep", &list, &json!([])).into_string();
+        assert!(row_of(&page, "docs").contains("data-open"));
+        assert!(!row_of(&page, "docs/deep/a.txt").contains("hidden"));
+        assert!(!row_of(&page, "team/+alice/b.txt").contains("hidden"));
+        assert!(row_of(&page, "team/+bob/c.txt").contains("hidden"));
+        assert!(page.contains(r#"data-under="docs/deep""#));
+        assert!(row_of(&page, "docs/deep").contains(r#"class="target""#));
+        assert!(page.contains(r#"name="back" value="/g/cheapmo/files?under=docs/deep""#));
+    }
+
+    #[test]
+    fn waiting_edits_show_in_their_folder_with_the_time_left() {
         let list = json!([file("+alice/a.txt", &json!("PlusInfinity"))]);
         let waiting = json!([
-            {"path": "+alice/a.txt", "due_in": 2, "freezes": false, "deleted": false, "cutoff": "PlusInfinity"},
-            {"path": "+alice/new/b.txt", "due_in": 3, "freezes": false, "deleted": false, "cutoff": "PlusInfinity"},
-            {"path": "+alice/c.txt", "due_in": 192, "freezes": true, "deleted": false, "cutoff": "MinusInfinity"},
+            {"path": "+alice/a.txt", "here": true, "due_in": 2, "freezes": false, "deleted": false, "cutoff": "PlusInfinity", "size": 3},
+            {"path": "+alice/new/b.txt", "here": true, "due_in": 3, "freezes": false, "deleted": false, "cutoff": "PlusInfinity", "size": 4},
+            {"path": "+alice/c.txt", "here": true, "due_in": 192, "freezes": true, "deleted": false, "cutoff": "MinusInfinity", "size": 5},
         ]);
-        let page = files("cheapmo", "+alice", &list, &waiting).into_string();
-        assert!(page.contains(r#"waiting · published in <span data-due="2">0:02</span>"#));
+        let page = files("cheapmo", "alice", "", &list, &waiting).into_string();
+        assert!(page.contains(r#"waiting · <span data-due="2">0:02</span>"#));
         assert!(page.contains(r#"<span data-due="192">3:12</span>"#));
-        assert!(page.contains(">new/</a>") && page.contains("1 waiting"));
-        assert!(page.contains("3 edits wait to be published here."));
-        assert!(page.contains(r#"name="path" value="+alice/c.txt""#));
-        assert_eq!(page.matches("data-confirm=").count(), 2, "{page}");
-        assert!(page.contains("<td>+alice/c.txt</td>"));
-        assert!(page.contains(r#"data-pattern="/+alice/c.txt" data-state="unchecked""#));
+        assert!(row_of(&page, "+alice/new").contains("1 waiting"));
+        assert!(page.contains("3 edits wait to be published."));
+        assert_eq!(page.matches("data-confirm=").count(), 1, "{page}");
+        assert!(row_of(&page, "+alice").contains(r#"data-waiting="3" data-freezes="true""#));
+        assert!(
+            row_of(&page, "+alice/c.txt")
+                .contains(r#"data-pattern="/+alice/c.txt" data-state="unchecked""#)
+        );
+        assert!(row_of(&page, "+alice/c.txt").contains(r#"data-published="false""#));
+    }
+
+    #[test]
+    fn rival_drafts_warn_and_tell_the_later_its_copy_is_set_aside() {
+        let waiting = json!([
+            {"path": "inbox/Report.txt", "here": true, "author": "alice", "due_in": 200, "freezes": true,
+             "deleted": false, "cutoff": "PlusInfinity", "size": 3,
+             "rivals": [{"author": "bob", "path": "inbox/report.txt", "due_in": 42, "wins": true}]},
+            {"path": "inbox/report.txt", "here": false, "author": "bob", "due_in": 42, "freezes": true,
+             "deleted": false, "cutoff": "MinusInfinity", "size": 7,
+             "rivals": [{"author": "alice", "path": "inbox/Report.txt", "due_in": 200, "wins": false}]},
+        ]);
+        let page = files("cheapmo", "alice", "", &json!([]), &waiting).into_string();
+        let mine = row_of(&page, "inbox/Report.txt");
+        assert!(mine.contains(
+            r#"⚠ bob is also adding inbox/report.txt, published in <span data-due="42">0:42</span>"#
+        ));
+        assert!(mine.contains("Your copy will be set aside: rename it to keep both."));
+        let theirs = row_of(&page, "inbox/report.txt");
+        assert!(theirs.contains(r#"class="draft""#));
+        assert!(theirs.contains(r#"bob is adding · <span data-due="42">0:42</span>"#));
+        assert!(theirs.contains("<td>bob</td>") && theirs.contains("7 B"));
+        assert!(!theirs.contains("checkbox") && !theirs.contains("⋯"));
+        assert!(!theirs.contains("set aside"));
+        assert!(!page.contains("edits wait to be published"));
     }
 }

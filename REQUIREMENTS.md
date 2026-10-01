@@ -68,9 +68,16 @@ of the first implementation.
   stopped changing: after a few seconds, or after 5 minutes in a drop
   folder, where publishing freezes the file. A deletion deletes the file for
   everyone, and the owner's history keeps its last version.
-- **P0** Until it is published, a new file in a drop folder is a draft that
-  stays on its author's machine, which can still edit or delete it. A change
-  made through an action in the web UI or the CLI, statements included, is
+- **P0** Until it is published, a new file in a drop folder is a draft whose
+  content stays on its author's machine, which can still edit, rename or
+  delete it. That machine announces the draft to the machines it reaches,
+  signed, with its path, author, size and the time left before it is
+  published, and withdraws it once it is published or deleted; nothing of
+  it enters the history. When two members add the same path, whatever its
+  case, each sees the other's draft, and the one published later learns
+  that its copy will be set aside unless renamed. The earliest publication
+  still wins, since a machine offline hears no announcement. A change made
+  through an action in the web UI or the CLI, statements included, is
   published at once.
 
 ## Changes

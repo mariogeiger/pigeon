@@ -1,10 +1,11 @@
 // Keeps a group's pages live: each event of the group's stream fetches the
 // page again and swaps its <main>, unless the person is typing, reading an
 // open form or answering a question, keeping the parts marked data-keep,
-// and tells the page through a groupchange event; follow boxes post the selection,
-// asking first whether an unfollowed copy stays; countdowns tick; forms
-// marked data-confirm ask before they publish; once the daemon restarts
-// onto another program, a banner offers to reload the page.
+// and tells the page through a groupchange event, and through a mainswap
+// event once it swapped; follow boxes post the selection, asking first
+// whether an unfollowed copy stays; countdowns tick; forms marked
+// data-confirm ask before they publish; once the daemon restarts onto
+// another program, a banner offers to reload the page.
 "use strict";
 (() => {
   const group = document.body.dataset.group;
@@ -49,6 +50,7 @@
     document.querySelector("main").replaceWith(fresh);
     document.title = page.title;
     prepare(fresh);
+    document.dispatchEvent(new Event("mainswap"));
   };
 
   const refresh = async () => {

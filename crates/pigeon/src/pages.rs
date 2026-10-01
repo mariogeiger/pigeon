@@ -33,6 +33,15 @@ ol.rules .effect { font-size: 13px; color: #555; }
 ol.rules .error { flex-basis: 100%; }
 ol.rules li.masked input, ol.rules li.masked .effect { color: #999; }
 form.add { display: flex; gap: .25rem; } form.add input { flex: 1; font-family: monospace; }
+table.tree td { padding-top: .1rem; padding-bottom: .1rem; }
+table.tree button.twist, table.tree button.more { border: 0; background: none; padding: 0; font: inherit; cursor: pointer; }
+table.tree tr.draft { color: #888; }
+table.tree tr.target { background: #ffd; }
+table.tree .warning { display: block; color: #a50; }
+table.tree form.action, table.tree div[data-confirm] { display: inline; }
+dialog .choices { display: flex; flex-direction: column; align-items: start; gap: .25rem; margin-bottom: .5rem; }
+dialog .choices form { margin: 0; }
+dialog form label { margin: .5rem 0; }
 ";
 
 /// The action `noun verb`, which the catalog defines.

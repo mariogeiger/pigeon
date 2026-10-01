@@ -12,4 +12,4 @@ pub mod relay;
 pub mod swarm;
 pub mod wire;
 
-pub use node::{Log, Node, Received};
+pub use node::{Announced, Log, Node, Received};

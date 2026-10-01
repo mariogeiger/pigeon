@@ -111,22 +111,12 @@ async fn files(
     let under = query
         .get("under")
         .map_or("", |under| under.trim_matches('/'));
-    let list = view(
-        &app,
-        "file",
-        "list",
-        json!({ "group": group, "under": under }),
-    )
-    .await?;
-    let waiting = view(
-        &app,
-        "file",
-        "pending",
-        json!({ "group": group, "under": under }),
-    )
-    .await?;
+    let status = view(&app, "group", "status", json!({ "group": group })).await?;
+    let list = view(&app, "file", "list", json!({ "group": group })).await?;
+    let waiting = view(&app, "file", "pending", json!({ "group": group })).await?;
+    let member = status["member"].as_str().unwrap_or_default();
     Ok(html_page(&files_page::files(
-        &group, under, &list, &waiting,
+        &group, member, under, &list, &waiting,
     )))
 }
 
@@ -164,7 +154,11 @@ async fn file(
     .await?;
     let waiting = waiting
         .as_array()
-        .and_then(|edits| edits.iter().find(|edit| edit["path"] == path))
+        .and_then(|edits| {
+            edits
+                .iter()
+                .find(|edit| edit["path"] == path && edit["here"] == true)
+        })
         .cloned()
         .unwrap_or(Value::Null);
     Ok(html_page(&group_pages::file(
@@ -384,6 +378,11 @@ async fn live_script() -> Response {
     script(include_str!("live.js"))
 }
 
+/// The script of the Files page's tree.
+async fn files_script() -> Response {
+    script(include_str!("files.js"))
+}
+
 /// The script of the selection editor.
 async fn selection_script() -> Response {
     script(include_str!("selection.js"))
@@ -476,6 +475,7 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/g/{group}/raw", get(raw))
         .route("/g/{group}/events", get(events))
         .route("/live.js", get(live_script))
+        .route("/files.js", get(files_script))
         .route("/selection.js", get(selection_script))
         .route("/act/{noun}/{verb}", post(act))
 }
