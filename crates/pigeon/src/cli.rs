@@ -42,7 +42,7 @@ fn action_command(action: &Action) -> Command {
 pub fn command() -> Command {
     let mut root = Command::new("pigeon")
         .about("Peer-to-peer file sync for a trusted group")
-        .version(env!("CARGO_PKG_VERSION"))
+        .version(crate::VERSION)
         .subcommand_required(true)
         .arg_required_else_help(true)
         .arg(

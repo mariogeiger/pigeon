@@ -24,3 +24,6 @@ pub mod serve;
 pub mod shared_root;
 pub mod update;
 mod web;
+
+/// pigeon's version and the commit it was built from.
+pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("PIGEON_COMMIT"), ")");

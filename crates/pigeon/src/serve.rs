@@ -35,7 +35,8 @@ pub async fn run(home: Home, port: u16) -> Result<Option<Program>> {
     let daemon = Daemon::start(home.clone(), Options::default()).await?;
     home.save_address(address)?;
     eprintln!(
-        "pigeon: listening on {address}; open the web UI at {}",
+        "pigeon {}: listening on {address}; open the web UI at {}",
+        crate::VERSION,
         open_link(address, &token)
     );
     let mut stopping = daemon.stopping();
