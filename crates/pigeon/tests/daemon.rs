@@ -40,6 +40,7 @@ fn options(lookup: &MemoryLookup) -> Options {
         rescan: Duration::from_secs(60),
         tick: Duration::from_millis(50),
         join_delay: Duration::from_millis(300),
+        gc: Duration::from_millis(300),
         ..Options::default()
     }
 }
@@ -308,6 +309,25 @@ async fn web_forms_run_their_action_and_return() {
     );
     let page = peer.page("/g/cheapmo/selection").await;
     assert!(page.contains("/docs/"));
+    let set = peer
+        .call("retention", "set", json!({"quota": 5, "everything": "on"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        set,
+        json!({"every": 1, "daily": 30, "weekly": 365, "deletion": 365, "quota": 5, "everything": "on"})
+    );
+    let page = peer.page("/g/cheapmo/retention").await;
+    assert!(
+        page.contains(r#"<input type="number" min="0" name="quota" value="5">"#),
+        "{page}"
+    );
+    assert!(page.contains(r#"<option value="on" selected>"#));
+    let error = peer
+        .call("retention", "set", json!({"quota": 101}))
+        .await
+        .unwrap_err();
+    assert!(error.contains("percentage"), "{error}");
 }
 
 fn dummy(kind: Kind, peer: &Peer) -> Value {

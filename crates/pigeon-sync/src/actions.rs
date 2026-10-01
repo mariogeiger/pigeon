@@ -1,11 +1,13 @@
 //! What a person can ask of the engine besides editing the tree: change
-//! the selection, file and answer requests, and resolve set-aside items.
+//! the selection and the retention, file and answer requests, and resolve
+//! set-aside items.
 
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
 use pigeon_core::patch::Change;
 use pigeon_core::path::{GroupPath, PathKey};
+use pigeon_core::retention::Retention;
 use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_core::statement::{Decision, Mode};
 use pigeon_store::disk::{self, fs_path};
@@ -111,6 +113,19 @@ impl Engine {
         if self.inner.state.take_aside(id)?.is_none() {
             bail!("no set-aside item {id}");
         }
+        work.protect_due = true;
+        Ok(())
+    }
+
+    /// Replaces this machine's retention, which the next protection pass
+    /// applies.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the state cannot be written.
+    pub async fn set_retention(&self, retention: &Retention) -> Result<()> {
+        let mut work = self.inner.work.lock().await;
+        self.inner.state.set_retention(retention)?;
         work.protect_due = true;
         Ok(())
     }

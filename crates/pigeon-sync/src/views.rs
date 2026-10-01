@@ -1,7 +1,7 @@
 //! What the engine shows: its status, the group's files as this machine
 //! holds them, a file's history, the members, the requests, the set-aside
-//! list and the selection, each as plain data for the command line and the
-//! API.
+//! list, the selection and the retention, each as plain data for the
+//! command line and the API.
 
 use std::collections::HashMap;
 
@@ -11,6 +11,7 @@ use pigeon_core::ledger::Version;
 use pigeon_core::name::MemberName;
 use pigeon_core::patch::Content;
 use pigeon_core::path::{GroupPath, PathKey};
+use pigeon_core::retention::Retention;
 use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_core::statement::{Decision, RequestStatement};
 use pigeon_store::aside::AsideItem;
@@ -291,6 +292,15 @@ impl Engine {
             .into_iter()
             .map(|(id, item)| AsideView { id, item })
             .collect())
+    }
+
+    /// This machine's retention.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the state cannot be read.
+    pub fn retention(&self) -> Result<Retention> {
+        Ok(self.inner.state.retention()?)
     }
 
     /// The selection's rules, the last matching one winning.

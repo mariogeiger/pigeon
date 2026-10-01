@@ -57,6 +57,7 @@ pub fn layout(title: &str, group: Option<&str>, body: &Markup) -> Markup {
                         a href={ "/g/" (group) "/aside" } { "Set aside" }
                         a href={ "/g/" (group) "/members" } { "Members" }
                         a href={ "/g/" (group) "/selection" } { "Selection" }
+                        a href={ "/g/" (group) "/retention" } { "Retention" }
                     }
                 }
                 h1 { (title) }
@@ -214,4 +215,30 @@ pub fn listing(group: &str, title: &str, view: &Action, items: &Value, forms: &M
         (forms)
     };
     layout(title, Some(group), &body)
+}
+
+/// This machine's retention, and the form to change it, filled with the
+/// current values.
+#[must_use]
+pub fn retention(group: &str, retention: &Value) -> Markup {
+    let back = format!("/g/{group}/retention");
+    let current: Vec<(&str, String)> = action("retention", "set")
+        .params
+        .iter()
+        .map(|param| (param.name, cell(param.name, &retention[param.name])))
+        .collect();
+    let defaults: Vec<(&str, &str)> = current
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect();
+    let fill = Fill {
+        group: Some(group),
+        fixed: &[],
+        defaults: &defaults,
+    };
+    let body = html! {
+        (fields(retention))
+        (form(action("retention", "set"), &back, fill))
+    };
+    layout("Retention", Some(group), &body)
 }

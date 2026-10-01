@@ -11,6 +11,7 @@ rust-version.workspace = true
 pigeon-core.workspace = true
 blake3 = { workspace = true, features = ["mmap", "rayon"] }
 data-encoding.workspace = true
+fs4.workspace = true
 getrandom.workspace = true
 ignore.workspace = true
 iroh-base.workspace = true

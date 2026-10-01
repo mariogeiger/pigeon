@@ -98,6 +98,7 @@ const fn optional(name: &'static str, about: &'static str, kind: Kind) -> Param 
 }
 
 const MODES: &[&str] = &["propose", "force"];
+const SWITCH: &[&str] = &["off", "on"];
 const MODE: Param = optional(
     "mode",
     "For files one may not write: propose the change to their owner, or force it",
@@ -198,6 +199,7 @@ pub const NOUNS: &[(&str, &str)] = &[
     ("selection", "Which files this machine holds"),
     ("request", "Changes asked of a file's owner"),
     ("aside", "What this machine may not publish as it is"),
+    ("retention", "Which past versions this machine keeps"),
 ];
 
 /// Every action, grouped by noun.
@@ -403,6 +405,50 @@ pub const ACTIONS: &[Action] = &[
         "request",
         "Request a set-aside item from the owner of its path",
         &[ID, MODE, MESSAGE],
+    ),
+    view(
+        "retention",
+        "show",
+        "Show which past versions this machine keeps",
+        &[],
+        &[],
+    ),
+    action(
+        "retention",
+        "set",
+        "Change which past versions this machine keeps",
+        &[
+            optional(
+                "every",
+                "Keep every version for this many days",
+                Kind::Number,
+            ),
+            optional(
+                "daily",
+                "Keep the last version of each day for this many days",
+                Kind::Number,
+            ),
+            optional(
+                "weekly",
+                "Keep the last version of each week for this many days",
+                Kind::Number,
+            ),
+            optional(
+                "deletion",
+                "Keep the last version before a deletion for this many days",
+                Kind::Number,
+            ),
+            optional(
+                "quota",
+                "Let past versions fill at most this percentage of the disk",
+                Kind::Number,
+            ),
+            optional(
+                "everything",
+                "Keep the history of every file this machine downloads, not only yours",
+                Kind::Choice(SWITCH),
+            ),
+        ],
     ),
 ];
 

@@ -257,6 +257,11 @@ async fn selection(State(app): State<Arc<App>>, Path(group): Path<String>) -> Pa
     Ok(html_page(&page))
 }
 
+async fn retention(State(app): State<Arc<App>>, Path(group): Path<String>) -> Page {
+    let retention = view(&app, "retention", "show", json!({ "group": group })).await?;
+    Ok(html_page(&pages::retention(&group, &retention)))
+}
+
 async fn raw(
     State(app): State<Arc<App>>,
     Path(group): Path<String>,
@@ -377,6 +382,7 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/g/{group}/aside", get(aside))
         .route("/g/{group}/members", get(members))
         .route("/g/{group}/selection", get(selection))
+        .route("/g/{group}/retention", get(retention))
         .route("/g/{group}/raw", get(raw))
         .route("/act/{noun}/{verb}", post(act))
 }

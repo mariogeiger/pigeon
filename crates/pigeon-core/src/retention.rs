@@ -1,16 +1,27 @@
 //! Retention: which past versions of a file a machine keeps, given their
 //! dates: every version for a day, the last of each day for 30 days, the
-//! last of each week for a year, and the last before a deletion for a year.
+//! last of each week for a year, and the last before a deletion for a year;
+//! then a quota, a share of the disk, drops the oldest first.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::hash::BuildHasher;
 
-/// How long each tier lasts, in seconds; adjustable on each machine.
+use crate::patch::{Content, ContentHash};
+
+/// How long each tier lasts, in seconds, the share of the disk history may
+/// fill, and whose files it covers; adjustable on each machine.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Retention {
     pub every: u64,
     pub daily: u64,
     pub weekly: u64,
     pub before_deletion: u64,
+    /// The percentage of the disk that past versions may fill.
+    pub quota_percent: u8,
+    /// Whether history covers every file the machine downloads, not only
+    /// the member's own.
+    pub everything: bool,
 }
 
 const DAY: u64 = 86_400;
@@ -22,6 +33,8 @@ impl Default for Retention {
             daily: 30 * DAY,
             weekly: 365 * DAY,
             before_deletion: 365 * DAY,
+            quota_percent: 20,
+            everything: false,
         }
     }
 }
@@ -63,9 +76,89 @@ impl Retention {
     }
 }
 
+/// The contents of `history`, past versions as `(seconds, content)`, that
+/// fit in `quota` bytes when the oldest go first. A content counts once,
+/// however many versions share it, and lasts as long as its newest version;
+/// contents in `kept_anyway` cost nothing, since they stay regardless.
+#[must_use]
+pub fn within_quota<S: BuildHasher>(
+    history: &[(u64, Content)],
+    quota: u64,
+    kept_anyway: &HashSet<ContentHash, S>,
+) -> HashSet<ContentHash> {
+    let mut newest: HashMap<ContentHash, (u64, u64)> = HashMap::new();
+    for (seconds, content) in history {
+        if kept_anyway.contains(&content.hash) {
+            continue;
+        }
+        let entry = newest
+            .entry(content.hash)
+            .or_insert((*seconds, content.size));
+        entry.0 = entry.0.max(*seconds);
+    }
+    let mut by_age: Vec<(u64, u64, ContentHash)> = newest
+        .into_iter()
+        .map(|(hash, (seconds, size))| (seconds, size, hash))
+        .collect();
+    by_age.sort_unstable_by(|a, b| b.cmp(a));
+    let mut used = 0u64;
+    by_age
+        .into_iter()
+        .take_while(|(_, size, _)| {
+            used = used.saturating_add(*size);
+            used <= quota
+        })
+        .map(|(_, _, hash)| hash)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn content(byte: u8, size: u64) -> Content {
+        Content {
+            hash: ContentHash([byte; 32]),
+            size,
+            executable: false,
+        }
+    }
+
+    #[test]
+    fn a_stored_retention_without_the_newer_settings_reads_with_defaults() {
+        let stored = r#"{"every":1,"daily":2,"weekly":3,"before_deletion":4}"#;
+        let retention: Retention = serde_json::from_str(stored).unwrap();
+        assert_eq!(retention.every, 1);
+        assert_eq!(retention.quota_percent, 20);
+        assert!(!retention.everything);
+    }
+
+    #[test]
+    fn the_quota_drops_the_oldest_contents_first() {
+        let history = [
+            (10, content(1, 40)),
+            (20, content(2, 40)),
+            (30, content(1, 40)),
+            (40, content(3, 50)),
+            (50, content(4, 30)),
+        ];
+        let kept = |quota, anyway: &[u8]| {
+            let anyway: HashSet<ContentHash> =
+                anyway.iter().map(|byte| ContentHash([*byte; 32])).collect();
+            let mut kept: Vec<u8> = within_quota(&history, quota, &anyway)
+                .into_iter()
+                .map(|hash| hash.0[0])
+                .collect();
+            kept.sort_unstable();
+            kept
+        };
+        assert_eq!(kept(1000, &[]), [1, 2, 3, 4]);
+        assert_eq!(kept(120, &[]), [1, 3, 4]);
+        assert_eq!(kept(119, &[]), [3, 4]);
+        assert_eq!(kept(79, &[]), [4]);
+        assert_eq!(kept(0, &[]), Vec::<u8>::new());
+        assert_eq!(kept(90, &[3]), [1, 4]);
+    }
 
     fn dated(seconds: u64) -> Dated {
         Dated {

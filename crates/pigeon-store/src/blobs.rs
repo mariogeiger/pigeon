@@ -1,8 +1,9 @@
 //! The blob store: file contents by BLAKE3 hash, in iroh-blobs' file store,
-//! whose garbage collector keeps exactly the hashes pigeon protects.
+//! whose garbage collector keeps exactly the hashes pigeon protects, on a
+//! disk whose size bounds the history.
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -32,6 +33,7 @@ pub fn blob_hash(hash: &ContentHash) -> Hash {
 pub struct Blobs {
     store: FsStore,
     protected: Arc<Mutex<HashSet<Hash>>>,
+    path: PathBuf,
 }
 
 impl Blobs {
@@ -61,7 +63,20 @@ impl Blobs {
         let store = FsStore::load_with_opts(path.join("blobs.db"), options)
             .await
             .map_err(blob_error)?;
-        Ok(Self { store, protected })
+        Ok(Self {
+            store,
+            protected,
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// The size in bytes of the disk holding the store.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the system cannot tell.
+    pub fn disk_size(&self) -> Result<u64> {
+        fs4::total_space(&self.path).map_err(StoreError::io(&self.path))
     }
 
     /// The underlying store, which the network serves and fills.
@@ -77,6 +92,19 @@ impl Blobs {
     /// Panics if a thread panicked while holding the set.
     pub fn protect(&self, hashes: HashSet<Hash>) {
         *self.protected.lock().expect("no panic holds the lock") = hashes;
+    }
+
+    /// Adds `hash` to the set garbage collection keeps, until the next
+    /// [`Blobs::protect`] replaces it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a thread panicked while holding the set.
+    pub fn protect_also(&self, hash: Hash) {
+        self.protected
+            .lock()
+            .expect("no panic holds the lock")
+            .insert(hash);
     }
 
     /// Copies the file at `path` into the store and returns its size. The

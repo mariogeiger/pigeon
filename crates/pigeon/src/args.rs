@@ -124,10 +124,14 @@ impl Args {
     ///
     /// Fails if it is missing.
     pub fn number(&self, name: &str) -> Result<u64> {
-        self.values
-            .get(name)
-            .and_then(Value::as_u64)
+        self.optional_number(name)
             .ok_or_else(|| anyhow!("{} needs --{name}", self.action.command()))
+    }
+
+    /// The number in `name`, if given.
+    #[must_use]
+    pub fn optional_number(&self, name: &str) -> Option<u64> {
+        self.values.get(name).and_then(Value::as_u64)
     }
 
     /// Whether the flag `name` is on.

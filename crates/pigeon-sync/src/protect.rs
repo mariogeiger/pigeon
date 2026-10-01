@@ -1,6 +1,8 @@
-//! Which blobs garbage collection must keep: the versions retention keeps
-//! of the member's files, what the disk holds, the statements, the
-//! set-aside list, and the contents that requests not yet applied carry.
+//! Which blobs garbage collection must keep: the current versions of the
+//! member's files, what the disk holds, the statements, the set-aside list,
+//! the blobs being fetched and the contents that requests not yet applied
+//! carry; then, within the quota, the past versions retention keeps of the
+//! member's files, or of every file with `everything`.
 
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -8,7 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use iroh_blobs::Hash;
 use pigeon_core::patch::Content;
-use pigeon_core::retention::Dated;
+use pigeon_core::patch::ContentHash;
+use pigeon_core::retention::{Dated, within_quota};
 use pigeon_core::statement::{RequestStatement, STATEMENTS};
 use pigeon_store::blobs::blob_hash;
 
@@ -28,22 +31,27 @@ impl Inner {
         let retention = self.state.retention()?;
         let now = seconds(SystemTime::now());
         let entries = self.state.index(None)?;
-        let mut kept: HashSet<Hash> = HashSet::new();
+        let mut anyway: HashSet<ContentHash> = HashSet::new();
         let mut keep = |content: Option<Content>| {
             if let Some(content) = content {
-                kept.insert(blob_hash(&content.hash));
+                anyway.insert(content.hash);
             }
         };
+        let mut history: Vec<(u64, Content)> = Vec::new();
         let mut requests = Vec::new();
         {
             let ledger = self.ledger.lock();
             let folder = requests_folder();
             for key in ledger.keys() {
                 let versions = ledger.versions(key);
-                let Some(head) = versions.last() else {
+                let Some((head, past)) = versions.split_last() else {
                     continue;
                 };
-                if head.owner == self.config.member {
+                let own = head.owner == self.config.member;
+                if own {
+                    keep(head.content);
+                }
+                if own || retention.everything {
                     let dated: Vec<Dated> = versions
                         .iter()
                         .enumerate()
@@ -54,9 +62,10 @@ impl Inner {
                                 .is_some_and(|next| next.content.is_none()),
                         })
                         .collect();
-                    for (version, kept) in versions.iter().zip(retention.keep(&dated, now)) {
-                        if kept {
-                            keep(version.content);
+                    let kept = retention.keep(&dated, now);
+                    for ((version, dated), kept) in past.iter().zip(&dated).zip(kept) {
+                        if let Some(content) = version.content.filter(|_| kept) {
+                            history.push((dated.seconds, content));
                         }
                     }
                 }
@@ -93,6 +102,19 @@ impl Inner {
         for (_, item) in self.state.aside()? {
             keep(item.content);
         }
+        anyway.extend(work.fetching.keys().copied());
+        let mut held = Vec::new();
+        for (time, content) in history {
+            if !anyway.contains(&content.hash) && self.blobs.has(&content.hash).await? {
+                held.push((time, content));
+            }
+        }
+        let quota = self.blobs.disk_size()? / 100 * u64::from(retention.quota_percent);
+        let kept: HashSet<Hash> = within_quota(&held, quota, &anyway)
+            .iter()
+            .chain(&anyway)
+            .map(blob_hash)
+            .collect();
         self.blobs.protect(kept);
         work.tags.clear();
         work.protect_due = false;

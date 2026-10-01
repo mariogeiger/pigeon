@@ -185,6 +185,8 @@ fn settings_default_until_set() {
     );
     let retention = Retention {
         every: 1,
+        quota_percent: 5,
+        everything: true,
         ..Retention::default()
     };
     state.set_retention(&retention).unwrap();

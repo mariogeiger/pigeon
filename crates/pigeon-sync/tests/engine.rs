@@ -2,12 +2,13 @@
 //! them, edits nobody may publish are set aside and undone, drop files
 //! freeze and change through requests, concurrent edits of one member keep
 //! the later, a taken name joins nothing, and edits through actions publish
-//! or request each file under its own rule.
+//! or request each file under its own rule, and the quota drops history.
 
 mod common;
 
 use common::{eventually, group, is_read_only, joined};
 use pigeon_core::path::GroupPath;
+use pigeon_core::retention::Retention;
 use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_core::statement::{Decision, Mode};
 use pigeon_store::aside::Reason;
@@ -368,4 +369,42 @@ async fn edits_publish_what_the_member_writes_and_request_the_rest() {
         .await
         .unwrap_err();
     assert_eq!(missing.to_string(), "no file at @alice/papers");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_quota_drops_past_versions_and_keeps_current_ones() {
+    let machines = group(&[("alice", "a")]).await;
+    joined(&machines).await;
+    let alice = &machines[0];
+    for text in ["one", "two"] {
+        let edit = Edit::Write {
+            path: path("@alice/a.txt"),
+            bytes: text.as_bytes().to_vec(),
+        };
+        alice
+            .engine
+            .edit(vec![edit], Mode::Propose, "")
+            .await
+            .unwrap();
+    }
+    let history = alice.engine.history(&path("@alice/a.txt"));
+    let [old, current] = &history[..] else {
+        panic!("two versions: {history:?}")
+    };
+    let (old, current) = (old.content.unwrap(), current.content.unwrap());
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    assert!(alice.engine.read(&old).await.unwrap().is_some());
+    let retention = Retention {
+        quota_percent: 0,
+        ..alice.engine.retention().unwrap()
+    };
+    alice.engine.set_retention(&retention).await.unwrap();
+    eventually("the past version goes", || async {
+        alice.engine.read(&old).await.unwrap().is_none()
+    })
+    .await;
+    assert_eq!(
+        alice.engine.read(&current).await.unwrap().as_deref(),
+        Some(&b"two"[..])
+    );
 }

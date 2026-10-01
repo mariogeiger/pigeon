@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use anyhow::{Result, anyhow, bail};
+use pigeon_core::retention::Retention;
 use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_core::statement::Decision;
 use pigeon_sync::{Edit, Engine};
@@ -115,6 +116,20 @@ pub async fn perform(daemon: &Daemon, args: &Args) -> Result<Value> {
     }
 }
 
+const DAY: u64 = 86_400;
+
+/// A retention as the `retention set` arguments read it.
+fn retention_in_days(retention: &Retention) -> Value {
+    json!({
+        "every": retention.every / DAY,
+        "daily": retention.daily / DAY,
+        "weekly": retention.weekly / DAY,
+        "deletion": retention.before_deletion / DAY,
+        "quota": retention.quota_percent,
+        "everything": if retention.everything { "on" } else { "off" },
+    })
+}
+
 /// Carries out a call on one group.
 async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
     let action = args.action;
@@ -188,6 +203,29 @@ async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
                 .request_aside(args.number("id")?, args.mode(), message)
                 .await?;
             Ok(json!({ "requests": requests }))
+        }
+        ("retention", "show") => to_json(retention_in_days(&engine.retention()?)),
+        ("retention", "set") => {
+            let mut retention = engine.retention()?;
+            let days = |name: &str, current: u64| {
+                args.optional_number(name)
+                    .map_or(current, |days| days.saturating_mul(DAY))
+            };
+            retention.every = days("every", retention.every);
+            retention.daily = days("daily", retention.daily);
+            retention.weekly = days("weekly", retention.weekly);
+            retention.before_deletion = days("deletion", retention.before_deletion);
+            if let Some(quota) = args.optional_number("quota") {
+                retention.quota_percent = u8::try_from(quota)
+                    .ok()
+                    .filter(|percent| *percent <= 100)
+                    .ok_or_else(|| anyhow!("--quota is a percentage, from 0 to 100"))?;
+            }
+            if let Some(switch) = args.text("everything") {
+                retention.everything = switch == "on";
+            }
+            engine.set_retention(&retention).await?;
+            to_json(retention_in_days(&retention))
         }
         _ => bail!("{} is not implemented", action.command()),
     }

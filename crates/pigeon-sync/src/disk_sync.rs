@@ -453,6 +453,8 @@ impl Inner {
 
     /// Fetches a blob from its author's machine or any peer, then wakes the
     /// paths waiting for it; after a failure it waits before trying again.
+    /// The blob is protected from the start, so that garbage collection
+    /// never takes it before the paths waiting for it protect it.
     pub(crate) fn fetch(
         self: &Arc<Self>,
         work: &mut Work,
@@ -466,6 +468,8 @@ impl Inner {
         if !started {
             return;
         }
+        self.blobs
+            .protect_also(pigeon_store::blobs::blob_hash(&hash));
         let mut providers = vec![author];
         providers.extend(self.node.peers().into_iter().filter(|peer| *peer != author));
         providers.retain(|provider| *provider != self.me());

@@ -73,6 +73,7 @@ pub fn options(lookup: &MemoryLookup) -> Options {
         rescan: Duration::from_secs(60),
         tick: Duration::from_millis(50),
         join_delay: Duration::from_millis(300),
+        gc: Duration::from_millis(300),
         ..Options::default()
     }
 }
