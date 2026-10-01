@@ -35,7 +35,7 @@ fn patch(time: u64, path: &GroupPath) -> SignedPatch {
     let cert = MachineCert::issue(
         &group(),
         name,
-        &member_key(&group(), &MemberName::parse("mario").unwrap(), "pw"),
+        &member_key(&group(), &MemberName::parse("mario").unwrap()),
         key.public(),
     );
     let unsigned = Patch {

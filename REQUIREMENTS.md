@@ -11,26 +11,22 @@ of the first implementation.
 - **P0** A group is a closed set of people who trust each other: about 20
   members with one or two machines each. Each group has its own root folder,
   such as `/cheapmo`, and nothing in pigeon is specific to one group.
-- **P0** Joining takes three fields at first launch: the group key, shared by
-  the members, which admits a new machine; a name, of 1 to 32 characters
+- **P0** Joining takes two fields at first launch: the group key, shared by
+  the members, which admits a new machine; and a name, of 1 to 32 characters
   among `a`–`z` and `0`–`9`, so that it is valid in any path on every
-  system; and a personal password.
-- **P0** The member list binds each name to a key, and joining claims a name:
-  the earliest claim wins, and a machine that loses asks for another name.
-  The password derives the member's signing key, with no server: the same
-  name and password on another machine make it one more machine of the same
-  member.
+  system. There is no password: the members trust each other.
+- **P0** The member list binds each name to a key, and joining claims a name.
+  The name alone derives the member's signing key, with no server: the same
+  name on another machine makes it one more machine of the same member. A
+  machine whose name is excluded, or claimed by a folder, asks for another
+  name.
 - **P0** Members, requests, and decisions are signed statements, stored as
   files in the hidden drop folder `/<group>/.pigeon`, which every machine
   follows. They sync, show up, and keep their history like any other file,
   and nothing ever edits them. A member's notifications are simply the
   statements that concern them.
-- **P1** Changing one's password, resetting another member's password,
-  excluding a member, and leaving the group all rebind a name, to the key of
-  a new password or to none. A member changes their password from any
-  machine where they are logged in; any member can reset a password or
-  exclude someone from the web UI, without a vote. Everyone sees it, and the
-  member is notified.
+- **P1** Any member can exclude someone from the web UI, without a vote.
+  Everyone sees it, and the member is notified.
 - **P1** Excluding a member, and leaving, which is excluding oneself, bind the
   name to none and replace the group key: the member list recognizes
   machines, while the group key only admits new ones, so the other machines

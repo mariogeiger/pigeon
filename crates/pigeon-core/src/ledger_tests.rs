@@ -19,12 +19,20 @@ fn group() -> GroupId {
     GroupSecret([9; 32]).id()
 }
 
-fn machine(name: &str, password: &str, seed: u8) -> Machine {
+fn machine(name: &str, seed: u8) -> Machine {
+    let member = member_key(&group(), &MemberName::parse(name).unwrap());
+    keyed_machine(name, &member, seed)
+}
+
+fn keyed_machine(name: &str, member: &SecretKey, seed: u8) -> Machine {
     let group = group();
-    let name = MemberName::parse(name).unwrap();
-    let member = member_key(&group, &name, password);
     let key = SecretKey::from_bytes(&[seed; 32]);
-    let cert = MachineCert::issue(&group, name, &member, key.public());
+    let cert = MachineCert::issue(
+        &group,
+        MemberName::parse(name).unwrap(),
+        member,
+        key.public(),
+    );
     Machine { group, cert, key }
 }
 
@@ -86,8 +94,8 @@ fn rejection(ledger: &Ledger, stamp: Stamp) -> Rejection {
 
 #[test]
 fn only_the_owner_writes_a_personal_file() {
-    let mario = machine("mario", "a", 1);
-    let bob = machine("bob", "b", 2);
+    let mario = machine("mario", 1);
+    let bob = machine("bob", 2);
     let mut ledger = Ledger::new(group());
     ledger.insert(mario.join(1)).unwrap();
     ledger.insert(bob.join(2)).unwrap();
@@ -114,8 +122,8 @@ fn only_the_owner_writes_a_personal_file() {
 
 #[test]
 fn the_earliest_drop_claim_wins_whatever_the_arrival_order() {
-    let mario = machine("mario", "a", 1);
-    let bob = machine("bob", "b", 2);
+    let mario = machine("mario", 1);
+    let bob = machine("bob", 2);
     let late = bob.patch(20, vec![change("Notes.txt", Some(2), None)], None);
     let early = mario.patch(10, vec![change("notes.txt", Some(1), None)], None);
     let mut ledger = Ledger::new(group());
@@ -136,8 +144,8 @@ fn the_earliest_drop_claim_wins_whatever_the_arrival_order() {
 
 #[test]
 fn a_published_drop_file_changes_only_through_a_request() {
-    let mario = machine("mario", "a", 1);
-    let bob = machine("bob", "b", 2);
+    let mario = machine("mario", 1);
+    let bob = machine("bob", 2);
     let mut ledger = Ledger::new(group());
     ledger.insert(mario.join(1)).unwrap();
     ledger.insert(bob.join(2)).unwrap();
@@ -168,8 +176,8 @@ fn a_published_drop_file_changes_only_through_a_request() {
 
 #[test]
 fn a_patch_is_accepted_or_rejected_whole() {
-    let mario = machine("mario", "a", 1);
-    let bob = machine("bob", "b", 2);
+    let mario = machine("mario", 1);
+    let bob = machine("bob", 2);
     let mut ledger = Ledger::new(group());
     ledger.insert(mario.join(1)).unwrap();
     ledger.insert(bob.join(2)).unwrap();
@@ -190,10 +198,10 @@ fn a_patch_is_accepted_or_rejected_whole() {
 }
 
 #[test]
-fn a_name_belongs_to_its_first_password() {
-    let mario = machine("mario", "right", 1);
-    let laptop = machine("mario", "right", 2);
-    let impostor = machine("mario", "wrong", 3);
+fn a_name_belongs_to_its_first_key() {
+    let mario = machine("mario", 1);
+    let laptop = machine("mario", 2);
+    let impostor = keyed_machine("mario", &SecretKey::from_bytes(&[40; 32]), 3);
     let mut ledger = Ledger::new(group());
     ledger.insert(mario.join(1)).unwrap();
     let second = laptop.patch(2, vec![change("+mario/x", Some(1), None)], None);
@@ -215,8 +223,8 @@ fn a_name_belongs_to_its_first_password() {
 
 #[test]
 fn a_folder_claims_a_name_until_it_is_empty() {
-    let mario = machine("mario", "a", 1);
-    let build = machine("build", "b", 2);
+    let mario = machine("mario", 1);
+    let build = machine("build", 2);
     let mut ledger = Ledger::new(group());
     ledger.insert(mario.join(1)).unwrap();
     let dropped = mario.patch(2, vec![change("docs/+Build/a", Some(1), None)], None);
@@ -247,8 +255,8 @@ fn a_folder_claims_a_name_until_it_is_empty() {
 
 #[test]
 fn between_one_members_machines_the_later_change_wins() {
-    let desktop = machine("mario", "a", 1);
-    let laptop = machine("mario", "a", 2);
+    let desktop = machine("mario", 1);
+    let laptop = machine("mario", 2);
     let mut ledger = Ledger::new(group());
     ledger.insert(desktop.join(1)).unwrap();
     let base = desktop.patch(2, vec![change("+mario/a", Some(1), None)], None);
@@ -282,8 +290,8 @@ fn between_one_members_machines_the_later_change_wins() {
 
 #[test]
 fn every_arrival_order_gives_the_same_tree() {
-    let mario = machine("mario", "a", 1);
-    let bob = machine("bob", "b", 2);
+    let mario = machine("mario", 1);
+    let bob = machine("bob", 2);
     let patches = vec![
         mario.join(1),
         bob.join(2),
@@ -339,8 +347,8 @@ fn every_arrival_order_gives_the_same_tree() {
 
 #[test]
 fn a_vector_names_exactly_the_missing_patches() {
-    let mario = machine("mario", "a", 1);
-    let bob = machine("bob", "b", 2);
+    let mario = machine("mario", 1);
+    let bob = machine("bob", 2);
     let mut ledger = Ledger::new(group());
     for patch in [
         mario.join(1),
@@ -363,7 +371,7 @@ fn a_vector_names_exactly_the_missing_patches() {
 
 #[test]
 fn a_forged_patch_is_refused() {
-    let mario = machine("mario", "a", 1);
+    let mario = machine("mario", 1);
     let mut forged = mario.join(1);
     forged.patch.stamp.time = 2;
     assert_eq!(
@@ -373,9 +381,9 @@ fn a_forged_patch_is_refused() {
 }
 
 #[test]
-fn a_new_password_rebinds_the_name_and_retires_the_old_key() {
-    let old = machine("mario", "old", 1);
-    let new = machine("mario", "new", 2);
+fn a_new_key_rebinds_the_name_and_retires_the_old_one() {
+    let old = machine("mario", 1);
+    let new = keyed_machine("mario", &SecretKey::from_bytes(&[41; 32]), 2);
     let mut ledger = Ledger::new(group());
     ledger.insert(old.join(1)).unwrap();
     ledger
@@ -408,10 +416,10 @@ fn a_new_password_rebinds_the_name_and_retires_the_old_key() {
 }
 
 #[test]
-fn any_member_resets_a_password_or_excludes_without_a_vote() {
-    let mario = machine("mario", "a", 1);
-    let bob = machine("bob", "b", 2);
-    let reset = machine("mario", "given", 3);
+fn any_member_rebinds_or_excludes_without_a_vote() {
+    let mario = machine("mario", 1);
+    let bob = machine("bob", 2);
+    let reset = keyed_machine("mario", &SecretKey::from_bytes(&[42; 32]), 3);
     let mut ledger = Ledger::new(group());
     ledger.insert(mario.join(1)).unwrap();
     ledger.insert(bob.join(2)).unwrap();
@@ -456,14 +464,14 @@ fn any_member_resets_a_password_or_excludes_without_a_vote() {
         rejection(&ledger, intrusion.stamp()),
         Rejection::NotOwner { .. }
     ));
-    let impostor = machine("mario", "z", 4);
+    let impostor = keyed_machine("mario", &SecretKey::from_bytes(&[43; 32]), 4);
     ledger.insert(impostor.join(9)).unwrap();
     assert!(ledger.members()[&mario.cert.name].key.is_none());
 }
 
 #[test]
 fn a_rebinding_names_a_member_and_a_key() {
-    let mario = machine("mario", "a", 1);
+    let mario = machine("mario", 1);
     let mut ledger = Ledger::new(group());
     ledger.insert(mario.join(1)).unwrap();
     let unknown = mario.rebind(2, "nobody", None);
@@ -487,8 +495,8 @@ fn a_rebinding_names_a_member_and_a_key() {
 
 #[test]
 fn an_earlier_exclusion_undoes_what_the_excluded_member_did_after_it() {
-    let mario = machine("mario", "a", 1);
-    let bob = machine("bob", "b", 2);
+    let mario = machine("mario", 1);
+    let bob = machine("bob", 2);
     let late_edit = mario.patch(5, vec![change("+mario/a", Some(1), None)], None);
     let exclusion = bob.rebind(4, "mario", None);
     let mut ledger = Ledger::new(group());

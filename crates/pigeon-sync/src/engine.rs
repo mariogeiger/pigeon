@@ -90,10 +90,8 @@ pub enum JoinState {
     /// The member file is not accepted yet.
     Pending,
     Joined,
-    /// Another password holds the name, or a folder claims it.
+    /// Another key holds the name, or a folder claims it.
     Taken(String),
-    /// The name was bound to a new password, which logs this machine in.
-    Rebound(String),
     /// The member left or was excluded.
     Excluded(String),
 }
@@ -298,12 +296,9 @@ impl Inner {
             let by = member.rebound.as_ref().map(|rebinding| &rebinding.by);
             return match (member.key, by) {
                 (Some(key), _) if key == self.config.cert.member => JoinState::Joined,
-                (Some(_), None) => {
-                    JoinState::Taken(format!("the name {name} is taken by another password"))
+                (Some(_), _) => {
+                    JoinState::Taken(format!("the name {name} is taken by another key"))
                 }
-                (Some(_), Some(by)) => JoinState::Rebound(format!(
-                    "{by} gave {name} a new password: log this machine in with it through `pigeon member claim`"
-                )),
                 (None, Some(by)) if by == name => {
                     JoinState::Excluded(format!("{name} left the group"))
                 }

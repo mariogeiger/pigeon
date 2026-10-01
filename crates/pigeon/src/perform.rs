@@ -79,39 +79,22 @@ pub async fn perform(daemon: &Daemon, args: &Args) -> Result<Value> {
         }
         ("group", "create") => {
             let key = daemon
-                .create(
-                    args.required("name")?,
-                    args.required("member")?,
-                    args.required("password")?,
-                    root(),
-                )
+                .create(args.required("name")?, args.required("member")?, root())
                 .await?;
             Ok(json!({ "key": key }))
         }
         ("group", "join") => {
             let key = daemon
-                .join(
-                    args.required("key")?,
-                    args.required("member")?,
-                    args.required("password")?,
-                    root(),
-                )
+                .join(args.required("key")?, args.required("member")?, root())
                 .await?;
             Ok(json!({ "key": key }))
         }
-        ("member", verb @ ("claim" | "password")) => {
+        ("member", "claim") => {
             let group = {
                 let groups = daemon.groups().await;
                 choose(&groups, args.text(GROUP.name))?.0.to_owned()
             };
-            let password = args.required("password")?;
-            if verb == "claim" {
-                daemon
-                    .claim(&group, args.required("member")?, password)
-                    .await?;
-            } else {
-                daemon.set_password(&group, password).await?;
-            }
+            daemon.claim(&group, args.required("member")?).await?;
             Ok(Value::Null)
         }
         ("daemon", "restart") => Ok(json!({ "restarts": daemon.restart()? })),
@@ -157,12 +140,6 @@ async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
         ("group", "status") => to_json(engine.status().await),
         ("group", "key") => Ok(json!({ "key": engine.group_key() })),
         ("member", "list") => to_json(engine.members()),
-        ("member", "reset") => {
-            engine
-                .set_password(&member(args)?, args.required("password")?)
-                .await?;
-            Ok(Value::Null)
-        }
         ("member", "exclude") => {
             engine.exclude(&member(args)?).await?;
             Ok(Value::Null)

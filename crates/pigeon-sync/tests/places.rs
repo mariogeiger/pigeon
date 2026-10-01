@@ -36,7 +36,7 @@ fn read(path: &Path) -> Option<String> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_placed_folder_moves_behind_a_link_and_keeps_syncing() {
-    let machines = group(&[("alice", "a"), ("bob", "b")]).await;
+    let machines = group(&["alice", "bob"]).await;
     joined(&machines).await;
     let [alice, bob] = &machines[..] else {
         unreachable!()
@@ -89,7 +89,7 @@ async fn a_placed_folder_moves_behind_a_link_and_keeps_syncing() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_missing_destination_freezes_its_folder_until_it_returns() {
-    let machines = group(&[("alice", "a"), ("bob", "b")]).await;
+    let machines = group(&["alice", "bob"]).await;
     joined(&machines).await;
     let [alice, bob]: [Machine; 2] = machines.try_into().ok().unwrap();
     follow(&alice, "+bob/").await;

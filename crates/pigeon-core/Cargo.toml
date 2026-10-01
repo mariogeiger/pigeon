@@ -8,7 +8,6 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-argon2.workspace = true
 blake3.workspace = true
 ignore.workspace = true
 iroh-base.workspace = true

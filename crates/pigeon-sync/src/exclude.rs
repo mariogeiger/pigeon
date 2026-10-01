@@ -1,9 +1,8 @@
-//! Rebinding names: a member gives themself or another member a new
-//! password, or excludes a member, themself included, by a rebinding
-//! statement that every machine folds into the member list.
+//! Excluding a member, themself included, by a rebinding statement that
+//! binds the name to no key and that every machine folds into the member
+//! list.
 
 use anyhow::{Result, bail};
-use pigeon_core::identity::member_key;
 use pigeon_core::name::MemberName;
 use pigeon_core::patch::Change;
 use pigeon_core::statement::{RebindStatement, rebind_path};
@@ -11,18 +10,13 @@ use pigeon_core::statement::{RebindStatement, rebind_path};
 use crate::engine::{Engine, Inner, JoinState, Wake, Work};
 
 impl Inner {
-    async fn rebind(
-        &self,
-        work: &mut Work,
-        name: &MemberName,
-        password: Option<&str>,
-    ) -> Result<()> {
+    async fn exclude(&self, work: &mut Work, name: &MemberName) -> Result<()> {
         if work.join != JoinState::Joined {
             bail!("{} does not belong to the group now", self.config.member);
         }
         let statement = RebindStatement {
             name: name.clone(),
-            key: password.map(|password| member_key(&self.group, name, password).public()),
+            key: None,
         };
         let stamp = self.clock.stamp();
         let path = rebind_path(&statement, &stamp);
@@ -49,19 +43,6 @@ impl Inner {
 }
 
 impl Engine {
-    /// Binds `name` to the key of `password`: a new password for this
-    /// member, which then logs this machine in with it, or a reset of
-    /// another member's.
-    ///
-    /// # Errors
-    ///
-    /// Fails if this member does not belong to the group, `name` is no
-    /// member, or the statement cannot be stored.
-    pub async fn set_password(&self, name: &MemberName, password: &str) -> Result<()> {
-        let mut work = self.inner.work.lock().await;
-        self.inner.rebind(&mut work, name, Some(password)).await
-    }
-
     /// Binds `name` to no key: excluding a member, or leaving when `name`
     /// is this member. The name stays taken, and the group secret is
     /// renewed.
@@ -72,6 +53,6 @@ impl Engine {
     /// member, or the statement cannot be stored.
     pub async fn exclude(&self, name: &MemberName) -> Result<()> {
         let mut work = self.inner.work.lock().await;
-        self.inner.rebind(&mut work, name, None).await
+        self.inner.exclude(&mut work, name).await
     }
 }

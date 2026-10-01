@@ -1,8 +1,6 @@
-//! Tests of rebinding names across machines: a new password retires the
-//! old one on every machine until it logs in again, any member resets a
-//! password, and excluding or leaving renews the group secret, which then
-//! admits new machines while the old one admits none, even on the excluded
-//! machine.
+//! Tests of excluding across machines: excluding or leaving renews the
+//! group secret, which then admits new machines while the old one admits
+//! none, even on the excluded machine.
 
 mod common;
 
@@ -22,10 +20,6 @@ async fn state(machine: &Machine) -> JoinState {
     machine.engine.status().await.join
 }
 
-async fn rebound_by(machine: &Machine, by: &str) -> bool {
-    matches!(state(machine).await, JoinState::Rebound(reason) if reason.starts_with(by))
-}
-
 fn secret(machine: &Machine) -> GroupSecret {
     machine.data.load_config().unwrap().key.secret
 }
@@ -35,53 +29,8 @@ fn secret_of(key: &str) -> GroupSecret {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_new_password_logs_out_every_machine_until_it_logs_in_with_it() {
-    let machines = group(&[("alice", "a"), ("alice", "a"), ("bob", "b")]).await;
-    joined(&machines).await;
-    let [desktop, laptop, bob]: [Machine; 3] = machines.try_into().ok().unwrap();
-    desktop
-        .engine
-        .set_password(&name("alice"), "new")
-        .await
-        .unwrap();
-    assert!(rebound_by(&desktop, "alice").await);
-    eventually("the laptop learns of the new password", || {
-        rebound_by(&laptop, "alice")
-    })
-    .await;
-    let desktop = desktop.log_in("new").await;
-    eventually("the new password logs the desktop in", || async {
-        state(&desktop).await == JoinState::Joined
-    })
-    .await;
-    bob.engine
-        .set_password(&name("alice"), "given")
-        .await
-        .unwrap();
-    eventually("bob's reset logs the desktop out", || {
-        rebound_by(&desktop, "bob")
-    })
-    .await;
-    let laptop = laptop.log_in("given").await;
-    eventually("the given password logs the laptop in", || async {
-        state(&laptop).await == JoinState::Joined
-    })
-    .await;
-    let alice = bob
-        .engine
-        .members()
-        .into_iter()
-        .find(|member| member.name == name("alice"))
-        .unwrap();
-    assert_eq!(alice.rebound.unwrap().by, name("bob"));
-    for machine in [desktop, laptop, bob] {
-        machine.engine.shutdown().await.unwrap();
-    }
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn excluding_renews_the_secret_that_admits_new_machines() {
-    let machines = group(&[("alice", "a"), ("bob", "b")]).await;
+    let machines = group(&["alice", "bob"]).await;
     joined(&machines).await;
     let [alice, bob]: [Machine; 2] = machines.try_into().ok().unwrap();
     let old_key = bob.engine.group_key();
@@ -97,7 +46,7 @@ async fn excluding_renews_the_secret_that_admits_new_machines() {
     })
     .await;
     assert_eq!(secret(&alice), secret_of(&old_key));
-    let late = bob.join_with(&old_key, "carol", "c").await;
+    let late = bob.join_with(&old_key, "carol").await;
     tokio::time::sleep(Duration::from_secs(3)).await;
     assert!(late.engine.status().await.peers.is_empty());
     assert!(
@@ -106,7 +55,7 @@ async fn excluding_renews_the_secret_that_admits_new_machines() {
             .iter()
             .any(|member| member.name == name("carol"))
     );
-    let dave = bob.join_with(&new_key, "dave", "d").await;
+    let dave = bob.join_with(&new_key, "dave").await;
     eventually("the new secret admits dave", || async {
         bob.engine
             .members()
@@ -127,7 +76,7 @@ async fn excluding_renews_the_secret_that_admits_new_machines() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn leaving_excludes_oneself_and_the_others_renew_the_secret() {
-    let machines = group(&[("alice", "a"), ("bob", "b")]).await;
+    let machines = group(&["alice", "bob"]).await;
     joined(&machines).await;
     let [alice, bob]: [Machine; 2] = machines.try_into().ok().unwrap();
     let before = secret(&alice);

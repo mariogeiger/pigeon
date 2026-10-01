@@ -18,11 +18,10 @@ anyhow = "1"
 axum = { version = "0.8.9", features = ["multipart"] }
 clap = "4.6.7"
 clap_complete = "4.6.11"
-dialoguer = { version = "0.12", default-features = false, features = ["password"] }
+dialoguer = { version = "0.12", default-features = false }
 dirs = "6"
 futures-util = { version = "0.3.34", default-features = false }
 fs4 = { version = "1.1", default-features = false }
-argon2 = "0.5"
 bao-tree = { version = "0.16", default-features = false }
 blake3 = "1"
 data-encoding = "2.11"

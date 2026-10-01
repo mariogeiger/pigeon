@@ -1,8 +1,7 @@
 //! Keys and certificates: the group secret that admits new machines and its
-//! renewals, the member key derived from a name and password, and the
-//! certificate by which a member vouches for each of their machines.
+//! renewals, the member key derived from a name, and the certificate by
+//! which a member vouches for each of their machines.
 
-use argon2::Argon2;
 use iroh_base::{PublicKey, SecretKey, Signature};
 use serde::{Deserialize, Serialize};
 
@@ -71,22 +70,16 @@ impl RenewedSecret {
     }
 }
 
-/// Derives a member's signing key from their name and password, so that the
-/// same name and password make the same member on any machine.
-///
-/// # Panics
-/// Never: Argon2's default parameters accept any password and a 32-byte
-/// output.
+/// Derives a member's signing key from their name, so that the same name
+/// makes the same member on any machine. Anyone holding the group key can
+/// derive it: the members trust each other, and the key only tells which
+/// name a machine speaks for.
 #[must_use]
-pub fn member_key(group: &GroupId, name: &MemberName, password: &str) -> SecretKey {
-    let mut salt = b"pigeon member ".to_vec();
-    salt.extend_from_slice(&group.0);
-    salt.extend_from_slice(name.as_str().as_bytes());
-    let mut seed = [0u8; 32];
-    Argon2::default()
-        .hash_password_into(password.as_bytes(), &salt, &mut seed)
-        .expect("argon2 accepts a 32-byte output");
-    SecretKey::from_bytes(&seed)
+pub fn member_key(group: &GroupId, name: &MemberName) -> SecretKey {
+    let mut hasher = blake3::Hasher::new_derive_key("pigeon 2026 member");
+    hasher.update(&group.0);
+    hasher.update(name.as_str().as_bytes());
+    SecretKey::from_bytes(hasher.finalize().as_bytes())
 }
 
 /// A member's statement that a machine is one of theirs.
@@ -140,14 +133,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn same_name_and_password_give_the_same_member() {
+    fn a_name_makes_one_member_per_group() {
         let group = GroupSecret([1; 32]).id();
-        let name = MemberName::parse("mario").unwrap();
-        let a = member_key(&group, &name, "hunter2");
-        let b = member_key(&group, &name, "hunter2");
-        let c = member_key(&group, &name, "hunter3");
-        assert_eq!(a.public(), b.public());
-        assert_ne!(a.public(), c.public());
+        let other = GroupSecret([2; 32]).id();
+        let mario = MemberName::parse("mario").unwrap();
+        let laurent = MemberName::parse("laurent").unwrap();
+        let key = member_key(&group, &mario).public();
+        assert_eq!(key, member_key(&group, &mario).public());
+        assert_ne!(key, member_key(&group, &laurent).public());
+        assert_ne!(key, member_key(&other, &mario).public());
     }
 
     #[test]

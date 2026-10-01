@@ -208,7 +208,7 @@ async fn two_daemons_share_files_and_answer_requests() {
         .call(
             "group",
             "create",
-            json!({"name": "cheapmo", "member": "alice", "password": "pa", "root": a.root("cheapmo")}),
+            json!({"name": "cheapmo", "member": "alice", "root": a.root("cheapmo")}),
         )
         .await
         .unwrap();
@@ -216,7 +216,7 @@ async fn two_daemons_share_files_and_answer_requests() {
     b.call(
         "group",
         "join",
-        json!({"key": key, "member": "bob", "password": "pb", "root": b.root("cheapmo")}),
+        json!({"key": key, "member": "bob", "root": b.root("cheapmo")}),
     )
     .await
     .unwrap();
@@ -282,7 +282,7 @@ async fn two_daemons_share_files_and_answer_requests() {
 }
 
 #[tokio::test]
-async fn joining_with_a_wrong_password_names_the_command_that_logs_in() {
+async fn joining_with_a_members_name_adds_a_machine_of_theirs() {
     let lookup = MemoryLookup::new();
     let a = Peer::start(&lookup).await;
     let b = Peer::start(&lookup).await;
@@ -290,36 +290,22 @@ async fn joining_with_a_wrong_password_names_the_command_that_logs_in() {
         .call(
             "group",
             "create",
-            json!({"name": "cheapmo", "member": "alice", "password": "pa", "root": a.root("cheapmo")}),
+            json!({"name": "cheapmo", "member": "alice", "root": a.root("cheapmo")}),
         )
         .await
         .unwrap();
     assert!(a.joined().await);
     let key = created["key"].as_str().unwrap();
-    let error = b
-        .call(
-            "group",
-            "join",
-            json!({"key": key, "member": "alice", "password": "wrong", "root": b.root("cheapmo")}),
-        )
-        .await
-        .unwrap_err();
-    assert!(
-        error.contains("the name alice is taken by another password"),
-        "{error}"
-    );
-    assert!(
-        error.contains("`pigeon member claim --group cheapmo --member alice`"),
-        "{error}"
-    );
     b.call(
-        "member",
-        "claim",
-        json!({"member": "alice", "password": "pa"}),
+        "group",
+        "join",
+        json!({"key": key, "member": "alice", "root": b.root("cheapmo")}),
     )
     .await
     .unwrap();
     assert!(b.joined().await);
+    let members = b.call("member", "list", json!({})).await.unwrap();
+    assert_eq!(members.as_array().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -329,7 +315,7 @@ async fn web_forms_run_their_action_and_return() {
     peer.call(
         "group",
         "create",
-        json!({"name": "cheapmo", "member": "alice", "password": "pa", "root": peer.root("cheapmo")}),
+        json!({"name": "cheapmo", "member": "alice", "root": peer.root("cheapmo")}),
     )
     .await
     .unwrap();
@@ -383,7 +369,7 @@ async fn web_forms_run_their_action_and_return() {
 
 fn dummy(kind: Kind, peer: &Peer) -> Value {
     match kind {
-        Kind::Text | Kind::Secret => json!("x"),
+        Kind::Text => json!("x"),
         Kind::Path => json!("+alice/dummy.txt"),
         Kind::Pattern => json!("/dummy/"),
         Kind::Folder => json!(peer.root("dummy")),
@@ -403,7 +389,7 @@ async fn every_action_of_the_catalog_is_carried_out() {
     peer.call(
         "group",
         "create",
-        json!({"name": "cheapmo", "member": "alice", "password": "pa", "root": peer.root("cheapmo")}),
+        json!({"name": "cheapmo", "member": "alice", "root": peer.root("cheapmo")}),
     )
     .await
     .unwrap();
@@ -429,32 +415,21 @@ async fn every_action_of_the_catalog_is_carried_out() {
 }
 
 #[tokio::test]
-async fn a_new_password_keeps_this_machine_in_and_leaving_takes_it_out() {
+async fn the_members_page_offers_exclusion_and_leaving_takes_this_machine_out() {
     let lookup = MemoryLookup::new();
     let peer = Peer::start(&lookup).await;
     peer.call(
         "group",
         "create",
-        json!({"name": "cheapmo", "member": "alice", "password": "pa", "root": peer.root("cheapmo")}),
+        json!({"name": "cheapmo", "member": "alice", "root": peer.root("cheapmo")}),
     )
     .await
     .unwrap();
     eventually("alice joined", async || peer.joined().await).await;
     let page = peer.page("/g/cheapmo/members").await;
-    for verb in [
-        "member/password",
-        "member/reset",
-        "member/exclude",
-        "group/leave",
-    ] {
+    for verb in ["member/exclude", "group/leave"] {
         assert!(page.contains(&format!(r#"action="/act/{verb}""#)), "{verb}");
     }
-    peer.call("member", "password", json!({"password": "new"}))
-        .await
-        .unwrap();
-    assert!(peer.joined().await);
-    let members = peer.call("member", "list", json!({})).await.unwrap();
-    assert_eq!(members[0]["rebound"]["by"], "alice");
     peer.call("group", "leave", json!({})).await.unwrap();
     let status = peer.call("group", "status", json!({})).await.unwrap();
     assert_eq!(
@@ -535,7 +510,7 @@ async fn group_pages_follow_files_and_hear_each_change() {
     peer.call(
         "group",
         "create",
-        json!({"name": "cheapmo", "member": "alice", "password": "pa", "root": peer.root("cheapmo")}),
+        json!({"name": "cheapmo", "member": "alice", "root": peer.root("cheapmo")}),
     )
     .await
     .unwrap();
@@ -596,7 +571,7 @@ async fn the_daemon_stops_with_event_streams_open_and_restarts_only_onto_another
     peer.call(
         "group",
         "create",
-        json!({"name": "cheapmo", "member": "alice", "password": "pa", "root": peer.root("cheapmo")}),
+        json!({"name": "cheapmo", "member": "alice", "root": peer.root("cheapmo")}),
     )
     .await
     .unwrap();
@@ -647,7 +622,7 @@ async fn the_selection_editor_previews_a_draft_and_saves_it_whole() {
     peer.call(
         "group",
         "create",
-        json!({"name": "cheapmo", "member": "alice", "password": "pa", "root": peer.root("cheapmo")}),
+        json!({"name": "cheapmo", "member": "alice", "root": peer.root("cheapmo")}),
     )
     .await
     .unwrap();

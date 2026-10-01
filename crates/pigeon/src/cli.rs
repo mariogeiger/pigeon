@@ -25,7 +25,7 @@ fn param_arg(param: &Param) -> Arg {
         Kind::Bytes | Kind::Rules => arg.value_hint(ValueHint::FilePath).value_name("FILE"),
         Kind::Folder => arg.value_hint(ValueHint::DirPath).value_name("FOLDER"),
         Kind::Number => arg.value_name("NUMBER"),
-        Kind::Text | Kind::Secret | Kind::Path | Kind::Pattern | Kind::Time => arg,
+        Kind::Text | Kind::Path | Kind::Pattern | Kind::Time => arg,
     }
 }
 
@@ -139,16 +139,9 @@ fn read_local(name: &str) -> Result<Vec<u8>> {
 
 /// Asks the person at the terminal for `param`.
 fn prompt(param: &Param) -> Result<String> {
-    let answer = if param.kind == Kind::Secret {
-        dialoguer::Password::new()
-            .with_prompt(param.about)
-            .interact()?
-    } else {
-        dialoguer::Input::<String>::new()
-            .with_prompt(param.about)
-            .interact_text()?
-    };
-    Ok(answer)
+    Ok(dialoguer::Input::<String>::new()
+        .with_prompt(param.about)
+        .interact_text()?)
 }
 
 /// The arguments of `action` from the command line, prompting for the

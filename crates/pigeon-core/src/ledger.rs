@@ -60,9 +60,7 @@ pub enum Rejection {
     Signature(#[from] SignatureError),
     #[error("{0} is not a member of this group")]
     UnknownMember(MemberName),
-    #[error(
-        "the name {0} is taken: another password made it, so choose another name or retype yours"
-    )]
+    #[error("the name {0} is taken by another key: choose another name")]
     OtherKey(MemberName),
     #[error("a folder +{0} already claims the name {0}: choose another name")]
     ClaimedByFolder(MemberName),

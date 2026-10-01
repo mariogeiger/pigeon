@@ -20,7 +20,7 @@ In another terminal:
 pigeon group join --key <the key> --member <your name>
 ```
 
-Choose a password when asked, and use the same one on your other machines.
+Use the same name on your other machines.
 If pigeon says only an administrator can create the group's folder, run the
 command it prints and join again. The daemon's link opens the web
 interface, where you choose the folders to follow; `pigeon ui` prints it

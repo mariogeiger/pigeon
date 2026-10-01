@@ -50,31 +50,13 @@ impl Machine {
         Self { engine, ..self }
     }
 
-    /// Logs this machine in again with `password`, as after a password
-    /// change.
-    pub async fn log_in(self, password: &str) -> Self {
-        self.engine.shutdown().await.unwrap();
-        let config = self.data.load_config().unwrap();
-        let config = config.log_in(
-            config.member.clone(),
-            password,
-            &self.data.machine_key().unwrap(),
-        );
-        self.data.save_config(&config).unwrap();
-        let engine = Engine::start(&self.data, self.options.clone())
-            .await
-            .unwrap();
-        Self { engine, ..self }
-    }
-
     /// Starts another machine on the same network, joining with `key`.
-    pub async fn join_with(&self, key: &str, member: &str, password: &str) -> Machine {
+    pub async fn join_with(&self, key: &str, member: &str) -> Machine {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("root");
         start(
             key.parse().unwrap(),
             member,
-            password,
             (dir, root),
             self.options.clone(),
         )
@@ -84,7 +66,7 @@ impl Machine {
     /// Starts another machine on the same network, joining with `key`,
     /// whose root is a link to a folder elsewhere, as macOS makes `/name`.
     #[cfg(unix)]
-    pub async fn join_through_link(&self, key: &str, member: &str, password: &str) -> Machine {
+    pub async fn join_through_link(&self, key: &str, member: &str) -> Machine {
         let dir = tempfile::tempdir().unwrap();
         let folder = dir.path().join("elsewhere");
         std::fs::create_dir(&folder).unwrap();
@@ -93,7 +75,6 @@ impl Machine {
         start(
             key.parse().unwrap(),
             member,
-            password,
             (dir, root),
             self.options.clone(),
         )
@@ -104,7 +85,6 @@ impl Machine {
 async fn start(
     key: GroupKey,
     member: &str,
-    password: &str,
     (dir, root): (TempDir, PathBuf),
     options: Options,
 ) -> Machine {
@@ -112,7 +92,6 @@ async fn start(
     let config = GroupConfig::join(
         key,
         MemberName::parse(member).unwrap(),
-        password,
         root.clone(),
         &data.machine_key().unwrap(),
     );
@@ -154,14 +133,14 @@ pub fn options(lookup: &MemoryLookup) -> Options {
     }
 }
 
-/// Starts one machine per `(member, password)`, all in one group whose key
+/// Starts one machine per member, all in one group whose key
 /// names the first machine.
-pub async fn group(members: &[(&str, &str)]) -> Vec<Machine> {
+pub async fn group(members: &[&str]) -> Vec<Machine> {
     group_with(members, |_| {}).await
 }
 
 /// The same, with the timings `tune` changes.
-pub async fn group_with(members: &[(&str, &str)], tune: impl Fn(&mut Options)) -> Vec<Machine> {
+pub async fn group_with(members: &[&str], tune: impl Fn(&mut Options)) -> Vec<Machine> {
     let lookup = MemoryLookup::new();
     let dirs: Vec<TempDir> = members
         .iter()
@@ -173,11 +152,11 @@ pub async fn group_with(members: &[(&str, &str)], tune: impl Fn(&mut Options)) -
         .public();
     let key = GroupKey::generate(MemberName::parse("friends").unwrap(), vec![first]);
     let mut machines = Vec::new();
-    for (dir, (member, password)) in dirs.into_iter().zip(members) {
+    for (dir, member) in dirs.into_iter().zip(members) {
         let root = dir.path().join("root");
         let mut options = options(&lookup);
         tune(&mut options);
-        machines.push(start(key.clone(), member, password, (dir, root), options).await);
+        machines.push(start(key.clone(), member, (dir, root), options).await);
     }
     machines
 }

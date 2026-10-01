@@ -31,7 +31,7 @@ pub fn member_of_path(path: &GroupPath) -> Option<MemberName> {
 }
 
 /// The file whose creation, in the patch stamped `stamp`, binds `name` to
-/// `key`, the key of a new password, or to none, which excludes the member.
+/// `key`, or to none, which excludes the member.
 ///
 /// # Panics
 /// Never: every part of the path is portable by construction.

@@ -203,7 +203,7 @@ pub fn fields(value: &Value) -> Markup {
 /// How a group stands here, its key, the form that names the group's
 /// relay, whether some machine runs a version of pigeon this one cannot
 /// talk to, and, unless the member belongs, why and the form to claim a
-/// name or log in with a new password.
+/// name.
 #[must_use]
 pub fn overview(group: &str, status: &Value, key: &str) -> Markup {
     let back = format!("/g/{group}");

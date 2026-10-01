@@ -12,8 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Result, StoreError};
 use crate::group_key::GroupKey;
 
-/// What a machine knows about a group it joined. The password is never
-/// stored: it served once to sign the machine's certificate.
+/// What a machine knows about a group it joined.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroupConfig {
     pub key: GroupKey,
@@ -26,17 +25,11 @@ pub struct GroupConfig {
 }
 
 impl GroupConfig {
-    /// Joins `member` to the group from this machine: the name and password
-    /// derive the member key, which vouches for the machine key.
+    /// Joins `member` to the group from this machine: the name derives the
+    /// member key, which vouches for the machine key.
     #[must_use]
-    pub fn join(
-        key: GroupKey,
-        member: MemberName,
-        password: &str,
-        root: PathBuf,
-        machine: &SecretKey,
-    ) -> Self {
-        let member_secret = member_key(&key.group, &member, password);
+    pub fn join(key: GroupKey, member: MemberName, root: PathBuf, machine: &SecretKey) -> Self {
+        let member_secret = member_key(&key.group, &member);
         let cert = MachineCert::issue(&key.group, member.clone(), &member_secret, machine.public());
         Self {
             key,
@@ -47,19 +40,13 @@ impl GroupConfig {
         }
     }
 
-    /// The same machine and member in the same group, certified anew by
-    /// `password`: logging in after a password change.
+    /// The same machine in the same group, speaking for `member`: claiming
+    /// another name after losing one.
     #[must_use]
-    pub fn log_in(&self, member: MemberName, password: &str, machine: &SecretKey) -> Self {
+    pub fn log_in(&self, member: MemberName, machine: &SecretKey) -> Self {
         Self {
             renewal: self.renewal,
-            ..Self::join(
-                self.key.clone(),
-                member,
-                password,
-                self.root.clone(),
-                machine,
-            )
+            ..Self::join(self.key.clone(), member, self.root.clone(), machine)
         }
     }
 
@@ -219,7 +206,7 @@ mod tests {
         let machine = data.machine_key().unwrap();
         let key = GroupKey::generate(MemberName::parse("cheapmo").unwrap(), Vec::new());
         let member = MemberName::parse("mario").unwrap();
-        let config = GroupConfig::join(key, member, "pw", "/cheapmo".into(), &machine);
+        let config = GroupConfig::join(key, member, "/cheapmo".into(), &machine);
         data.save_config(&config).unwrap();
         let loaded = data.load_config().unwrap();
         assert_eq!(loaded, config);
@@ -228,24 +215,13 @@ mod tests {
     }
 
     #[test]
-    fn same_name_and_password_give_the_same_member_on_two_machines() {
+    fn the_same_name_gives_the_same_member_on_two_machines() {
         let key = GroupKey::generate(MemberName::parse("g").unwrap(), Vec::new());
-        let member = MemberName::parse("mario").unwrap();
-        let a = GroupConfig::join(
-            key.clone(),
-            member.clone(),
-            "pw",
-            "/g".into(),
-            &SecretKey::generate(),
-        );
-        let b = GroupConfig::join(
-            key.clone(),
-            member.clone(),
-            "pw",
-            "/g".into(),
-            &SecretKey::generate(),
-        );
-        let c = GroupConfig::join(key, member, "other", "/g".into(), &SecretKey::generate());
+        let join = |name| {
+            let member = MemberName::parse(name).unwrap();
+            GroupConfig::join(key.clone(), member, "/g".into(), &SecretKey::generate())
+        };
+        let (a, b, c) = (join("mario"), join("mario"), join("laurent"));
         assert_eq!(a.cert.member, b.cert.member);
         assert_ne!(a.cert.member, c.cert.member);
     }

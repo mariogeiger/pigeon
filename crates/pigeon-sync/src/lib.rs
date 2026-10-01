@@ -1,17 +1,17 @@
 //! pigeon's engine for one group on one machine: it watches the root,
 //! publishes what the machine may write, materializes what the selection
-//! holds, sets aside what it may not publish, applies requests, rebinds
-//! names, follows the group's relay, and keeps placed folders at their
+//! holds, sets aside what it may not publish, applies requests, excludes
+//! members, follows the group's relay, and keeps placed folders at their
 //! destinations.
 
 mod actions;
 mod disk_sync;
 pub mod edit;
 pub mod engine;
+mod exclude;
 mod layout;
 mod protect;
 mod publish;
-mod rebind;
 pub mod reconcile;
 mod relay;
 mod selection_change;

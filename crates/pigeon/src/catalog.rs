@@ -6,8 +6,6 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Text,
-    /// A secret, typed without echo and never shown.
-    Secret,
     /// A path in the group, such as `docs/plan.txt`.
     Path,
     /// A gitignore pattern, such as `/docs/` or `*.pdf`.
@@ -112,11 +110,6 @@ const MEMBER: Param = required(
     "member",
     "Your name in the group: 1 to 32 characters among a-z and 0-9",
     Kind::Text,
-);
-const PASSWORD: Param = required(
-    "password",
-    "Your personal password, the same on each of your machines",
-    Kind::Secret,
 );
 const WHO: Param = required("member", "The member's name", Kind::Text);
 const ROOT: Param = optional(
@@ -240,7 +233,6 @@ pub const ACTIONS: &[Action] = &[
                 Kind::Text,
             ),
             MEMBER,
-            PASSWORD,
             ROOT,
         ],
     )),
@@ -251,7 +243,6 @@ pub const ACTIONS: &[Action] = &[
         &[
             required("key", "The group key a member shared", Kind::Text),
             MEMBER,
-            PASSWORD,
             ROOT,
         ],
     )),
@@ -295,23 +286,8 @@ pub const ACTIONS: &[Action] = &[
     action(
         "member",
         "claim",
-        "Claim a name for this machine after losing one, or log it in with a new password",
-        &[MEMBER, PASSWORD],
-    ),
-    action(
-        "member",
-        "password",
-        "Change your password; your other machines then log in with it",
-        &[required("password", "Your new password", Kind::Secret)],
-    ),
-    action(
-        "member",
-        "reset",
-        "Give another member a new password, which you then tell them",
-        &[
-            WHO,
-            required("password", "Their new password", Kind::Secret),
-        ],
+        "Claim a name for this machine after losing one",
+        &[MEMBER],
     ),
     action(
         "member",

@@ -123,18 +123,12 @@ impl Daemon {
     ///
     /// Fails if a name is invalid, the group exists here, or it does not
     /// start.
-    pub async fn create(
-        &self,
-        name: &str,
-        member: &str,
-        password: &str,
-        root: Option<PathBuf>,
-    ) -> Result<String> {
+    pub async fn create(&self, name: &str, member: &str, root: Option<PathBuf>) -> Result<String> {
         let name = MemberName::parse(name).context("the group name")?;
         let data = self.home.group(name.as_str());
         let machine = data.machine_key()?;
         let key = GroupKey::generate(name, vec![machine.public()]);
-        self.add(key, member, password, root).await
+        self.add(key, member, root).await
     }
 
     /// Joins the group `key` admits as `member`; returns the group key.
@@ -143,24 +137,12 @@ impl Daemon {
     ///
     /// Fails if the key or name is invalid, the group exists here, it does
     /// not start, or it refuses the name.
-    pub async fn join(
-        &self,
-        key: &str,
-        member: &str,
-        password: &str,
-        root: Option<PathBuf>,
-    ) -> Result<String> {
+    pub async fn join(&self, key: &str, member: &str, root: Option<PathBuf>) -> Result<String> {
         let key: GroupKey = key.parse().context("the group key")?;
-        self.add(key, member, password, root).await
+        self.add(key, member, root).await
     }
 
-    async fn add(
-        &self,
-        key: GroupKey,
-        member: &str,
-        password: &str,
-        root: Option<PathBuf>,
-    ) -> Result<String> {
+    async fn add(&self, key: GroupKey, member: &str, root: Option<PathBuf>) -> Result<String> {
         let member = MemberName::parse(member).context("the member name")?;
         let name = key.name.to_string();
         let mut groups = self.groups.write().await;
@@ -173,7 +155,7 @@ impl Daemon {
         create_root(&root)?;
         let data = self.home.group(&name);
         let machine = data.machine_key()?;
-        data.save_config(&GroupConfig::join(key, member, password, root, &machine))?;
+        data.save_config(&GroupConfig::join(key, member, root, &machine))?;
         let key = match Engine::start(&data, self.options.clone()).await {
             Ok(engine) => {
                 let key = engine.group_key();
@@ -208,26 +190,22 @@ impl Daemon {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
                 JoinState::Pending | JoinState::Joined => return Ok(()),
-                JoinState::Taken(reason)
-                | JoinState::Rebound(reason)
-                | JoinState::Excluded(reason) => bail!(
-                    "{reason}: if {member} is your name, run `pigeon member claim --group {group} --member {member}` with your password; otherwise claim another name the same way",
-                    member = status.member
+                JoinState::Taken(reason) | JoinState::Excluded(reason) => bail!(
+                    "{reason}: claim another name with `pigeon member claim --group {group} --member <name>`"
                 ),
             }
         }
     }
 
-    /// Makes this machine claim the name `member` in `group` with
-    /// `password`, after losing its previous claim or to log in with a new
-    /// password, and follows the name's personal folder.
+    /// Makes this machine claim the name `member` in `group` after losing
+    /// its previous claim, and follows the name's personal folder.
     ///
     /// # Errors
     ///
     /// Fails if the group is unknown, the member has already joined, the
     /// name is invalid, the group does not restart, or it refuses the
     /// name.
-    pub async fn claim(&self, group: &str, member: &str, password: &str) -> Result<()> {
+    pub async fn claim(&self, group: &str, member: &str) -> Result<()> {
         let member = MemberName::parse(member).context("the member name")?;
         let mut groups = self.groups.write().await;
         let engine = groups
@@ -245,7 +223,6 @@ impl Daemon {
         data.save_config(&GroupConfig::join(
             config.key,
             member.clone(),
-            password,
             config.root,
             &machine,
         ))?;
@@ -259,26 +236,6 @@ impl Daemon {
         groups.insert(group.to_owned(), engine);
         drop(groups);
         self.verdict(group).await
-    }
-
-    /// Gives this machine's member in `group` a new password, then logs
-    /// this machine in with it; the member's other machines log in again.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the group is unknown, the member does not belong to it, or
-    /// the group does not restart.
-    pub async fn set_password(&self, group: &str, password: &str) -> Result<()> {
-        let member = {
-            let groups = self.groups.read().await;
-            let engine = groups.get(group).ok_or_else(|| {
-                anyhow!("no group {group} on this machine: see `pigeon group list`")
-            })?;
-            let member = engine.status().await.member;
-            engine.set_password(&member, password).await?;
-            member
-        };
-        self.claim(group, member.as_str(), password).await
     }
 
     /// Stops every group.

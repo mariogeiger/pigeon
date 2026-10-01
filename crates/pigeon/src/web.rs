@@ -260,8 +260,6 @@ async fn members(State(app): State<Arc<App>>, Path(group): Path<String>) -> Page
     };
     let forms = html! {
         @for (noun, verb) in [
-            ("member", "password"),
-            ("member", "reset"),
             ("member", "exclude"),
             ("group", "leave"),
         ] {

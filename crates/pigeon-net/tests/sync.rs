@@ -128,7 +128,7 @@ impl Machine {
         let log = Arc::new(Held(Mutex::new(Ledger::new(group()))));
         let blobs = MemStore::new();
         let name = MemberName::parse("mario").unwrap();
-        let member = member_key(&group(), &name, "pw");
+        let member = member_key(&group(), &name);
         let cert = MachineCert::issue(&group(), name, &member, key.public());
         let (node, received) =
             Node::spawn(endpoint, group(), cert.clone(), secret, log.clone(), &blobs);

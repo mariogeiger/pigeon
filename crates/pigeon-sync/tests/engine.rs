@@ -26,7 +26,7 @@ fn rule(pattern: &str, cutoff: Cutoff) -> Rule {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_personal_file_reaches_the_machines_that_hold_it() {
-    let machines = group(&[("alice", "a"), ("bob", "b")]).await;
+    let machines = group(&["alice", "bob"]).await;
     joined(&machines).await;
     let [alice, bob] = &machines[..] else {
         unreachable!()
@@ -89,7 +89,7 @@ async fn a_personal_file_reaches_the_machines_that_hold_it() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_edit_that_may_not_be_published_is_set_aside_then_forced() {
-    let machines = group(&[("alice", "a"), ("bob", "b")]).await;
+    let machines = group(&["alice", "bob"]).await;
     joined(&machines).await;
     let [alice, bob] = &machines[..] else {
         unreachable!()
@@ -134,7 +134,7 @@ async fn an_edit_that_may_not_be_published_is_set_aside_then_forced() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_drop_file_freezes_and_changes_by_accepted_request() {
-    let machines = group(&[("alice", "a"), ("bob", "b")]).await;
+    let machines = group(&["alice", "bob"]).await;
     joined(&machines).await;
     let [alice, bob] = &machines[..] else {
         unreachable!()
@@ -193,7 +193,7 @@ async fn a_drop_file_freezes_and_changes_by_accepted_request() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_edits_of_one_member_keep_the_later_and_set_aside_the_other() {
-    let machines = group(&[("alice", "a"), ("alice", "a")]).await;
+    let machines = group(&["alice", "alice"]).await;
     joined(&machines).await;
     let [laptop, desktop] = &machines[..] else {
         unreachable!()
@@ -227,31 +227,12 @@ async fn concurrent_edits_of_one_member_keep_the_later_and_set_aside_the_other()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_name_taken_by_another_password_joins_nothing() {
-    let machines = group(&[("alice", "a"), ("alice", "other")]).await;
+async fn two_machines_with_one_name_are_one_member() {
+    let machines = group(&["alice", "alice"]).await;
+    joined(&machines).await;
     for machine in &machines {
-        eventually("the claim is settled", || async {
-            machine.engine.status().await.join != JoinState::Pending
-        })
-        .await;
+        assert_eq!(machine.engine.members().len(), 1);
     }
-    eventually("both machines agree on who holds the name", || async {
-        let mut states = Vec::new();
-        for machine in &machines {
-            states.push(machine.engine.status().await.join);
-        }
-        states
-            .iter()
-            .filter(|state| **state == JoinState::Joined)
-            .count()
-            == 1
-            && states
-                .iter()
-                .filter(|state| matches!(state, JoinState::Taken(_)))
-                .count()
-                == 1
-    })
-    .await;
     for machine in machines {
         machine.engine.shutdown().await.unwrap();
     }
@@ -259,7 +240,7 @@ async fn a_name_taken_by_another_password_joins_nothing() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_restarted_machine_resumes_without_publishing_again() {
-    let mut machines = group(&[("alice", "a")]).await;
+    let mut machines = group(&["alice"]).await;
     joined(&machines).await;
     let alice = machines.remove(0);
     alice.edit("+alice/a.txt", "a");
@@ -295,7 +276,7 @@ fn path(text: &str) -> GroupPath {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn edits_publish_what_the_member_writes_and_request_the_rest() {
-    let machines = group(&[("alice", "a"), ("bob", "b")]).await;
+    let machines = group(&["alice", "bob"]).await;
     joined(&machines).await;
     let [alice, bob] = &machines[..] else {
         unreachable!()
@@ -376,7 +357,7 @@ async fn edits_publish_what_the_member_writes_and_request_the_rest() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_quota_drops_past_versions_and_keeps_current_ones() {
-    let machines = group(&[("alice", "a")]).await;
+    let machines = group(&["alice"]).await;
     joined(&machines).await;
     let alice = &machines[0];
     for text in ["one", "two"] {
@@ -414,7 +395,7 @@ async fn the_quota_drops_past_versions_and_keeps_current_ones() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn keeping_history_keeps_past_versions_of_others_files() {
-    let machines = group(&[("alice", "a"), ("bob", "b")]).await;
+    let machines = group(&["alice", "bob"]).await;
     joined(&machines).await;
     let [alice, bob] = &machines[..] else {
         unreachable!()
@@ -452,7 +433,7 @@ async fn keeping_history_keeps_past_versions_of_others_files() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn every_machine_follows_the_relay_the_group_names() {
-    let mut machines = group(&[("alice", "a"), ("bob", "b")]).await;
+    let mut machines = group(&["alice", "bob"]).await;
     joined(&machines).await;
     let server = serve_relay("127.0.0.1:0".parse().unwrap(), None)
         .await
@@ -478,11 +459,11 @@ async fn every_machine_follows_the_relay_the_group_names() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_root_reached_through_a_link_syncs_both_ways() {
-    let machines = group(&[("alice", "a")]).await;
+    let machines = group(&["alice"]).await;
     joined(&machines).await;
     let alice = &machines[0];
     let bob = alice
-        .join_through_link(&alice.engine.group_key(), "bob", "b")
+        .join_through_link(&alice.engine.group_key(), "bob")
         .await;
     joined(std::slice::from_ref(&bob)).await;
     for (machine, folder) in [(alice, "+bob/"), (&bob, "+alice/")] {

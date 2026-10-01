@@ -65,7 +65,7 @@ async fn publish(machine: &Machine, file: &str, text: &str) {
 /// `+alice/a.txt` and `+alice/big.iso` and Bob `+bob/notes.txt`, which he
 /// then edits again.
 async fn alice_and_bob() -> Vec<Machine> {
-    let machines = group_with(&[("alice", "a"), ("bob", "b")], |options| {
+    let machines = group_with(&["alice", "bob"], |options| {
         options.settle_personal = Duration::from_secs(60);
     })
     .await;

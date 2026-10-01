@@ -60,8 +60,7 @@ pigeon group create --name cheapmo --member mario
 ```
 
 The group name and member names use 1 to 32 characters among `a-z` and
-`0-9`. pigeon asks for your password. Use the same one on each of your
-machines.
+`0-9`. Use the same member name on each of your machines.
 
 The group's files live in its root folder: `/cheapmo` on Linux and macOS,
 and `C:\cheapmo` on Windows, where programs on drive C: also resolve
@@ -91,23 +90,16 @@ group. The newcomer then runs, on each of their machines:
 pigeon group join --key <the key> --member alice
 ```
 
-with the same name and password on all of them. Keep the machine that gave
-the key online until the newcomer has joined. `pigeon group join` waits for
-the group's answer. If the name belongs to another password, it says so
-and prints the `pigeon member claim` command that logs in with the right
-one.
+with the same name on all of them. Keep the machine that gave the key
+online until the newcomer has joined. `pigeon group join` waits for the
+group's answer. If the name was excluded or a folder claims it, it says so
+and prints the `pigeon member claim` command that claims another name.
 
-To manage members:
-
-- `pigeon member password` changes your password. Your other machines then
-  log in with `pigeon member claim`.
-- `pigeon member reset --member alice` gives alice a new password, which you
-  then tell her.
-- `pigeon member exclude --member alice` excludes alice, and
-  `pigeon group leave` excludes yourself. The name stays taken. Excluding
-  renews the group key: machines already in the group keep working, but the
-  old key admits no new machine, so run `pigeon group key` again for the
-  next newcomer.
+To remove members, `pigeon member exclude --member alice` excludes alice,
+and `pigeon group leave` excludes yourself. The name stays taken. Excluding
+renews the group key: machines already in the group keep working, but the
+old key admits no new machine, so run `pigeon group key` again for the next
+newcomer.
 
 ## 5. Organize the files
 
