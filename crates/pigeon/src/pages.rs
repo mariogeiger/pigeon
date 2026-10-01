@@ -79,6 +79,7 @@ pub fn layout(title: &str, group: Option<&str>, body: &Markup) -> Markup {
                     h1 { (title) }
                     (body)
                 }
+                footer { small { "pigeon " (crate::VERSION) } }
             }
         }
     }
