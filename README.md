@@ -4,32 +4,25 @@ pigeon keeps a group's files in sync, peer to peer. Each member owns
 folders that the whole group sees, and changes to someone else's files go
 through requests.
 
-## Join a group
+## Install
 
-Ask a member for the group key, install [Rust](https://rustup.rs), then:
-
-```sh
-cargo install --git https://github.com/mariogeiger/pigeon pigeon
-pigeon daemon
-```
-
-Leave the daemon running: it prints the link that opens the web interface.
-In another terminal:
+On Linux or macOS:
 
 ```sh
-pigeon group join --key <the key> --member <your name>
+curl -sSf https://raw.githubusercontent.com/mariogeiger/pigeon/main/install.sh | sh
 ```
 
-Use the same name on your other machines.
-If pigeon says only an administrator can create the group's folder, run the
-command it prints and join again. The daemon's link opens the web
-interface, where you choose the folders to follow; `pigeon ui` prints it
-again. Open it once per browser; from then on the interface is at
-<http://127.0.0.1:6767>.
+It installs Rust if needed, builds pigeon, and runs `pigeon setup`, which
+joins or founds a group step by step and opens the web interface. Run
+`pigeon setup` again at any time, and `pigeon update` to update.
 
-`pigeon update` later builds the latest pigeon and restarts the daemon
-onto it. To found a group, run its server, or manage members, see
-[docs/setup.md](docs/setup.md).
+An always-on server of a group asks nothing:
+
+```sh
+curl -sSf https://raw.githubusercontent.com/mariogeiger/pigeon/main/install.sh | sh -s -- server --key <the key> --member server
+```
+
+Every step also exists as a command: see [docs/setup.md](docs/setup.md).
 
 ## License
 

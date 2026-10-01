@@ -1,6 +1,7 @@
 //! Running the daemon: start every group, listen on localhost, record the
-//! address for the command line, print the link that opens the web UI, and stop cleanly on Ctrl-C or when asked
-//! to restart, closing every connection, event streams included.
+//! address for the command line, print the link that opens the web UI, and
+//! stop cleanly on Ctrl-C, when a service manager terminates it, or when
+//! asked to, closing every connection, event streams included.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -17,6 +18,22 @@ use crate::program::Program;
 /// The localhost port the daemon listens on unless told otherwise: fixed, so
 /// that the web UI keeps one address a browser can bookmark.
 pub const PORT: u16 = 6767;
+
+/// Waits for Ctrl-C, or on Unix for the signal a service manager stops
+/// its programs with.
+async fn interrupted_or_terminated() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut terminated =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            interrupted = tokio::signal::ctrl_c() => interrupted,
+            _ = terminated.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await
+}
 
 /// Runs the daemon of `home` on `port`, any free port for 0, until it
 /// stops; returns the program to restart onto, if that is why it stopped.
@@ -43,7 +60,7 @@ pub async fn run(home: Home, port: u16) -> Result<Option<Program>> {
     let app = Arc::new(App { daemon, token });
     let interrupted = Arc::downgrade(&app);
     tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok()
+        if interrupted_or_terminated().await.is_ok()
             && let Some(app) = interrupted.upgrade()
         {
             app.daemon.stop(Stop::Quit);

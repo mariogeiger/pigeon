@@ -1,8 +1,8 @@
 //! The command line: `pigeon <noun> <verb>` commands generated from the
 //! catalog, which prompt for a missing argument only when a terminal is
 //! attached and otherwise call the daemon's API; plus the commands that run
-//! the daemon, update pigeon, serve a relay, link to the web UI, and
-//! complete the shell.
+//! the daemon, set pigeon up, install its service, update it, serve a
+//! relay, link to the web UI, and complete the shell.
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
@@ -15,7 +15,7 @@ use serde_json::{Map, Value};
 
 use crate::catalog::{ACTIONS, Action, GROUP, Kind, NOUNS, Param, Scope, find};
 use crate::home::Home;
-use crate::{api, client, relay, render, serve, update};
+use crate::{api, client, relay, render, serve, service, setup, update};
 
 fn param_arg(param: &Param) -> Arg {
     let arg = Arg::new(param.name).long(param.name).help(param.about);
@@ -106,6 +106,26 @@ pub fn command() -> Command {
                     .help("The HTTP port, which Let's Encrypt needs at 80")
                     .value_parser(clap::value_parser!(u16))
                     .default_value("80"),
+            ),
+    )
+    .subcommand(
+        Command::new("setup")
+            .about("Set up pigeon on this machine step by step: start at login, join or found a group, choose what to follow"),
+    )
+    .subcommand(
+        Command::new("service")
+            .about("The service that starts the daemon at login")
+            .subcommand_required(true)
+            .arg_required_else_help(true)
+            .subcommand(
+                Command::new("install")
+                    .about("Start the daemon at login, as a systemd user service or a launchd agent, replacing a daemon started by hand")
+                    .arg(
+                        Arg::new("linger")
+                            .long("linger")
+                            .action(ArgAction::SetTrue)
+                            .help("Start it at boot too, without a login, as a server needs (Linux)"),
+                    ),
             ),
     )
     .subcommand(Command::new("ui").about("Print the link that opens the web UI"))
@@ -219,6 +239,13 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
             let port = noun_matches.get_one::<u16>("port").copied().unwrap_or(80);
             tokio::runtime::Runtime::new()?.block_on(relay::run(&home, hostname, contact, port))
         }
+        "setup" => setup::run(&home),
+        "service" => service::install(
+            &home,
+            noun_matches
+                .subcommand_matches("install")
+                .is_some_and(|install| install.get_flag("linger")),
+        ),
         "ui" => {
             println!("{}", api::open_link(home.address()?, &home.token()?));
             Ok(())

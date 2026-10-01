@@ -9,11 +9,20 @@ picks one.
 
 ## 1. Install pigeon on each machine
 
-Install [Rust](https://rustup.rs), then:
+On Linux and macOS,
 
 ```sh
-cargo install --git https://github.com/mariogeiger/pigeon pigeon
+curl -sSf https://raw.githubusercontent.com/mariogeiger/pigeon/main/install.sh | sh
 ```
+
+installs Rust with rustup if cargo is missing, builds pigeon the way
+`pigeon update` does, and runs `pigeon setup`. Elsewhere, install
+[Rust](https://rustup.rs), then run
+`cargo install --git https://github.com/mariogeiger/pigeon pigeon` and
+`pigeon setup`. The setup asks, step by step, the questions the commands
+below answer: start at login, join or found a group, where its root folder
+goes, and what to follow. Running it again resumes where the machine
+stands.
 
 To update, run `pigeon update`. It brings a clone of pigeon kept in your
 cache folder to the head of the main branch with git, then builds it with
@@ -28,31 +37,21 @@ other show as incompatible in `pigeon group status`: update them all.
 
 `pigeon daemon` syncs every group of the machine and serves the API and the
 web interface on localhost port 6767, or the one `--port` names. The link
-it prints at start, which `pigeon ui` prints again, leaves the browser a cookie that lasts 400 days, so
-afterwards <http://127.0.0.1:6767> opens the interface directly.
+it prints at start, which `pigeon ui` prints again, leaves the browser a
+cookie that lasts 400 days, so afterwards <http://127.0.0.1:6767> opens the
+interface directly. `pigeon daemon stop` stops it.
 
 The daemon keeps its state in `$PIGEON_HOME`, by default a `pigeon` folder
-in the user's data folder. Start it at login. On Linux, a systemd user
-service does this:
-
-```ini
-# ~/.config/systemd/user/pigeon.service
-[Unit]
-Description=pigeon
-
-[Service]
-ExecStart=%h/.cargo/bin/pigeon daemon
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
-```
+in the user's data folder.
 
 ```sh
-systemctl --user enable --now pigeon
+pigeon service install
 ```
 
-On macOS and Windows, add `pigeon daemon` to the programs started at login.
+starts it at login, as a systemd user service on Linux or a launchd agent
+on macOS, in place of a daemon started by hand. `--linger` starts it at
+boot too, without a login, as a server needs. On Windows, add
+`pigeon daemon` to the programs started at login.
 
 ## 3. Found the group
 
@@ -85,13 +84,16 @@ pigeon group key
 ```
 
 prints the group key. Send it privately, since it admits machines into the
-group. The newcomer then runs, on each of their machines:
+group. The newcomer then runs `pigeon setup`, or, on each of their machines:
 
 ```sh
+pigeon group names --key <the key>
 pigeon group join --key <the key> --member alice
 ```
 
-with the same name on all of them. Keep the machine that gave the key
+with the same name on all of them. `pigeon group names` hears the group
+without joining it and lists its members, to add a machine of theirs, and
+the names taken. Keep the machine that gave the key
 online until the newcomer has joined. `pigeon group join` waits for the
 group's answer. If the name was excluded or a folder claims it, it says so
 and prints the `pigeon member claim` command that claims another name.
@@ -202,9 +204,15 @@ pigeon selection follow --pattern '*'
 pigeon retention set --everything on
 ```
 
-It owns no folder, so it writes nobody's files. Run its daemon as the
-systemd service above, and let it run without a login session with
-`loginctl enable-linger "$USER"`. Manage it over SSH:
+It owns no folder, so it writes nobody's files. Run its daemon with
+`pigeon service install --linger`, which starts it at boot. On Linux and
+macOS,
+
+```sh
+curl -sSf https://raw.githubusercontent.com/mariogeiger/pigeon/main/install.sh | sh -s -- server --key <the key> --member server
+```
+
+does all of this. Manage it over SSH:
 `ssh server .cargo/bin/pigeon group status`.
 
 ## 8. Run the group's relay

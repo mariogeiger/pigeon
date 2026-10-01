@@ -1,5 +1,5 @@
 //! The command line's side of the API: one authenticated call to the
-//! daemon this user runs.
+//! daemon this user runs, or whether it answers at all.
 
 use std::net::SocketAddr;
 
@@ -56,4 +56,10 @@ pub fn call_at(
 /// As [`call_at`], and fails if the daemon never ran.
 pub fn call(home: &Home, noun: &str, verb: &str, args: &Map<String, Value>) -> Result<Value> {
     call_at(home.address()?, &home.token()?, noun, verb, args)
+}
+
+/// Whether the daemon of `home` answers now.
+#[must_use]
+pub fn answers(home: &Home) -> bool {
+    call(home, "group", "list", &Map::new()).is_ok()
 }

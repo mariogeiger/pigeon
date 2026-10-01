@@ -21,6 +21,8 @@ pub mod relay;
 pub mod render;
 mod selection_page;
 pub mod serve;
+pub mod service;
+pub mod setup;
 pub mod shared_root;
 pub mod update;
 mod web;

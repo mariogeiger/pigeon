@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 
 use crate::args::Args;
 use crate::catalog::{GROUP, Scope};
-use crate::daemon::Daemon;
+use crate::daemon::{Daemon, Stop};
 use crate::draft;
 
 fn to_json(value: impl Serialize) -> Result<Value> {
@@ -96,6 +96,10 @@ pub async fn perform(daemon: &Daemon, args: &Args) -> Result<Value> {
                 choose(&groups, args.text(GROUP.name))?.0.to_owned()
             };
             daemon.claim(&group, args.required("member")?).await?;
+            Ok(Value::Null)
+        }
+        ("daemon", "stop") => {
+            daemon.stop(Stop::Quit);
             Ok(Value::Null)
         }
         ("daemon", "restart") => Ok(json!({ "restarts": daemon.restart()? })),

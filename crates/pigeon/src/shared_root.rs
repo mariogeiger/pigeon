@@ -38,28 +38,41 @@ pub fn create_root(root: &Path) -> Result<()> {
                 ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem
             ) =>
         {
-            bail!("{}", admin_command(std::env::consts::OS, root))
+            let place = if cfg!(windows) {
+                " in a Command Prompt run as administrator"
+            } else {
+                ""
+            };
+            bail!(
+                "only an administrator can give you {}; run this once{place}, then try again: {}; or choose another root folder",
+                root.display(),
+                admin_command(root)
+            )
         }
         Err(error) => Err(error).with_context(|| format!("creating {}", root.display())),
     }
 }
 
-/// How an administrator of a system `os`, as named by
-/// [`std::env::consts::OS`], gives this user the folder `root`.
-fn admin_command(os: &str, root: &Path) -> String {
+/// The command an administrator of this system runs once to give this
+/// user the folder `root`.
+#[must_use]
+pub fn admin_command(root: &Path) -> String {
+    admin_command_for(std::env::consts::OS, root)
+}
+
+/// The command an administrator of a system `os`, as named by
+/// [`std::env::consts::OS`], runs once to give this user the folder `root`.
+fn admin_command_for(os: &str, root: &Path) -> String {
     let shown = root.display();
-    let command = match (os, top_level_name(root)) {
-        ("windows", _) => format!(
-            "in a Command Prompt run as administrator: mkdir {shown} && icacls {shown} /grant \"%USERNAME%:(OI)(CI)F\""
-        ),
+    match (os, top_level_name(root)) {
+        ("windows", _) => {
+            format!("mkdir {shown} && icacls {shown} /grant \"%USERNAME%:(OI)(CI)F\"")
+        }
         ("macos", Some(name)) => format!(
-            "macOS keeps / read-only, so /etc/synthetic.conf links {shown} to a folder of your home: mkdir -p ~/{name} && printf '{name}\\t%s/{name}\\n' \"${{HOME#/}}\" | sudo tee -a /etc/synthetic.conf && sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t"
+            "mkdir -p ~/{name} && printf '{name}\\t%s/{name}\\n' \"${{HOME#/}}\" | sudo tee -a /etc/synthetic.conf && sudo /System/Library/Filesystems/apfs.fs/Contents/Resources/apfs.util -t"
         ),
         _ => format!("sudo install -d -o \"$USER\" {shown}"),
-    };
-    format!(
-        "only an administrator can give you {shown}; run this once, then try again: {command}; or choose another root folder"
-    )
+    }
 }
 
 /// The name of `root` when it sits directly at the top of the disk.
@@ -85,16 +98,16 @@ mod tests {
     #[test]
     fn each_system_names_its_own_command() {
         let top = Path::new("/cheapmo");
-        let linux = admin_command("linux", top);
+        let linux = admin_command_for("linux", top);
         assert!(linux.contains("sudo install -d -o \"$USER\" /cheapmo"));
-        let macos = admin_command("macos", top);
+        let macos = admin_command_for("macos", top);
         assert!(macos.contains("printf 'cheapmo\\t%s/cheapmo\\n' \"${HOME#/}\""));
         assert!(macos.contains("/etc/synthetic.conf"));
         assert!(macos.contains("mkdir -p ~/cheapmo"));
-        let deep = admin_command("macos", Path::new("/srv/cheapmo"));
+        let deep = admin_command_for("macos", Path::new("/srv/cheapmo"));
         assert!(deep.contains("sudo install -d"));
         assert!(!deep.contains("synthetic"));
-        let windows = admin_command("windows", Path::new("C:\\cheapmo"));
+        let windows = admin_command_for("windows", Path::new("C:\\cheapmo"));
         assert!(windows.contains("mkdir C:\\cheapmo && icacls C:\\cheapmo"));
     }
 
