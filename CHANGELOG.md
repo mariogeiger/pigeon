@@ -4,6 +4,18 @@ All notable user-visible changes to pigeon are documented here. While the
 version is 0.x, a change that breaks compatibility increments the second
 number, and any other change the third.
 
+## 0.2.5 — 2026-10-01
+
+### Changed
+
+- On Linux, pigeon follows the XDG base directories: each group's
+  `config.toml` lives in `~/.config/pigeon/groups/<group>/`, its secrets,
+  state database and blobs stay in `~/.local/share/pigeon/groups/<group>/`,
+  and `daemon.toml`, `daemon.log` and the relay's certificates live in
+  `~/.local/state/pigeon`. Files in the older places move there once. On
+  macOS and Windows, and under `$PIGEON_HOME`, one folder still holds
+  everything.
+
 ## 0.2.4 — 2026-10-01
 
 ### Fixed

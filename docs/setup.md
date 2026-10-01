@@ -45,22 +45,26 @@ it prints at start, which `pigeon ui` prints again, leaves the browser a
 cookie that lasts 400 days, so afterwards <http://127.0.0.1:6767> opens the
 interface directly. `pigeon daemon stop` stops it.
 
-The daemon keeps everything in one folder, `$PIGEON_HOME`, by default
-`pigeon` in the user's local data folder: `~/.local/share/pigeon` on Linux,
-`~/Library/Application Support/pigeon` on macOS, and
-`%LOCALAPPDATA%\pigeon` on Windows. There `daemon.toml` holds the token
-that guards the API and the address the daemon listens on, and each group
-has a folder in `groups/`:
+On Linux, pigeon keeps its files in three `pigeon` folders, where the XDG
+base directories put configuration, data and state. On macOS one folder,
+`~/Library/Application Support/pigeon`, holds all three, and on Windows
+`%LOCALAPPDATA%\pigeon`; `$PIGEON_HOME` names one folder for all three.
 
-- `config.toml`: the member, the root, the selection, the retention and
-  the places. Edit it by hand, then apply it with `pigeon daemon reload`,
-  which changes nothing if a group's file does not read. pigeon rewrites
-  the file whole, without your comments, whenever it changes a setting,
-  and refuses to while the file holds edits it has not read.
-- `secrets.toml`: the group key and this machine's secret key. Share it
-  with nobody.
-- `state.redb` and `blobs/`: the patches, what the disk holds, and the
-  files' contents.
+- The configuration, in `~/.config/pigeon`: for each group,
+  `groups/<group>/config.toml` holds the member, the root, the selection,
+  the retention and the places. Edit it by hand, then apply it with
+  `pigeon daemon reload`, which changes nothing if a group's file does not
+  read. pigeon rewrites the file whole, without your comments, whenever it
+  changes a setting, and refuses to while the file holds edits it has not
+  read.
+- The data, in `~/.local/share/pigeon`: for each group, in
+  `groups/<group>/`, `secrets.toml` holds the group key and this machine's
+  secret key, to share with nobody, and `state.redb` and `blobs/` the
+  patches, what the disk holds, and the files' contents.
+- The state, in `~/.local/state/pigeon`: `daemon.toml` holds the token that
+  guards the API and the address the daemon listens on, `daemon.log` the
+  output of a daemon started by hand, and `relay/` the certificates of a
+  relay.
 
 ```sh
 pigeon service install

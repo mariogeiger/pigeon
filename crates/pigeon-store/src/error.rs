@@ -1,5 +1,5 @@
 //! The one error type of local storage: every failure to read or write the
-//! data directory, the state database, the blob store, or the group root.
+//! group's folders, the state database, the blob store, or the group root.
 
 use std::path::PathBuf;
 

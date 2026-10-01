@@ -11,8 +11,8 @@ use pigeon_core::identity::{GroupId, MachineCert, Renewal, RenewedSecret};
 use pigeon_core::name::MemberName;
 use serde::{Deserialize, Serialize};
 
-use crate::data_dir::{DataDir, read_if_present, write_private};
 use crate::error::{Result, StoreError};
+use crate::group_dirs::{GroupDirs, read_if_present, write_private};
 use crate::group_key::GroupKey;
 
 /// What `secrets.toml` starts with.
@@ -173,7 +173,7 @@ impl Spelled {
     }
 }
 
-impl DataDir {
+impl GroupDirs {
     /// The group's secrets on this machine, made with a new machine key on
     /// first use.
     ///
@@ -223,17 +223,17 @@ mod tests {
     #[test]
     fn the_machine_key_is_made_once_and_kept_private() {
         let dir = tempfile::tempdir().unwrap();
-        let data = DataDir::new(dir.path().join("g"));
-        let first = data.secrets().unwrap();
+        let group = GroupDirs::new(dir.path().join("g"), dir.path().join("g"));
+        let first = group.secrets().unwrap();
         assert!(first.key.is_none() && first.secret().is_none());
         assert_eq!(
-            data.secrets().unwrap().machine.public(),
+            group.secrets().unwrap().machine.public(),
             first.machine.public()
         );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let metadata = std::fs::metadata(data.secrets_path()).unwrap();
+            let metadata = std::fs::metadata(group.secrets_path()).unwrap();
             assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
         }
     }
@@ -241,8 +241,8 @@ mod tests {
     #[test]
     fn secrets_read_back_exactly_as_written() {
         let dir = tempfile::tempdir().unwrap();
-        let data = DataDir::new(dir.path());
-        let mut secrets = data.secrets().unwrap();
+        let group = GroupDirs::new(dir.path(), dir.path());
+        let mut secrets = group.secrets().unwrap();
         let by = SecretKey::generate().public();
         secrets.key = Some(GroupKey::generate(
             MemberName::parse("g").unwrap(),
@@ -261,36 +261,36 @@ mod tests {
         };
         secrets.renew(renewed.clone());
         assert_ne!(secrets.secret(), Some(first));
-        data.save_secrets(&secrets).unwrap();
-        let text = std::fs::read_to_string(data.secrets_path()).unwrap();
+        group.save_secrets(&secrets).unwrap();
+        let text = std::fs::read_to_string(group.secrets_path()).unwrap();
         assert!(
             text.starts_with(HEADER) && text.contains("2026-10-01T12:00:00."),
             "{text}"
         );
-        let read = data.secrets().unwrap();
+        let read = group.secrets().unwrap();
         assert_eq!(read.machine.to_bytes(), secrets.machine.to_bytes());
         assert_eq!(read.key, secrets.key);
         assert_eq!(read.secret(), Some(renewed));
-        let group = secrets.key.as_ref().unwrap().group;
+        let id = secrets.key.as_ref().unwrap().group;
         let mario = MemberName::parse("mario").unwrap();
         let random = SecretKey::generate();
-        let cert = MachineCert::issue(&group, mario.clone(), &random, read.machine.public());
+        let cert = MachineCert::issue(&id, mario.clone(), &random, read.machine.public());
         let kept = Secrets {
             cert: Some(cert.clone()),
             ..read
         };
-        data.save_secrets(&kept).unwrap();
-        let read = data.secrets().unwrap();
+        group.save_secrets(&kept).unwrap();
+        let read = group.secrets().unwrap();
         assert_eq!(read.cert, Some(cert.clone()));
-        assert_eq!(read.cert_of(&group, &mario), Ok(cert));
+        assert_eq!(read.cert_of(&id, &mario), Ok(cert));
         let other = GroupKey::generate(MemberName::parse("h").unwrap(), Vec::new()).group;
         assert!(
             read.cert_of(&other, &mario)
                 .unwrap_err()
                 .contains("does not vouch")
         );
-        std::fs::write(data.secrets_path(), "machine = \"00\"\n").unwrap();
-        let error = data.secrets().unwrap_err().to_string();
+        std::fs::write(group.secrets_path(), "machine = \"00\"\n").unwrap();
+        let error = group.secrets().unwrap_err().to_string();
         assert!(error.contains("hexadecimal"), "{error}");
     }
 }

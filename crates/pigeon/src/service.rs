@@ -165,15 +165,15 @@ pub fn wait_until_answering(home: &Home, answering: bool) -> Result<()> {
 pub fn install(home: &Home, linger: bool) -> Result<()> {
     let file = service_file()?;
     let program = std::env::current_exe().context("finding the running program")?;
-    let custom = std::env::var_os(HOME_VARIABLE).map(|_| home.path());
+    let custom = std::env::var_os(HOME_VARIABLE).map(PathBuf::from);
     if client::answers(home) && !active() {
         client::call(home, "daemon", "stop", &Map::new())?;
         wait_until_answering(home, false)?;
     }
     let text = if cfg!(target_os = "macos") {
-        launchd_agent(&program, custom)
+        launchd_agent(&program, custom.as_deref())
     } else {
-        systemd_unit(&program, custom)
+        systemd_unit(&program, custom.as_deref())
     };
     if let Some(folder) = file.parent() {
         std::fs::create_dir_all(folder)
@@ -211,9 +211,11 @@ pub fn install(home: &Home, linger: bool) -> Result<()> {
 /// Fails if the program cannot start or its daemon does not answer.
 pub fn start_detached(home: &Home) -> Result<PathBuf> {
     let program = std::env::current_exe().context("finding the running program")?;
-    std::fs::create_dir_all(home.path())
-        .with_context(|| format!("creating {}", home.path().display()))?;
-    let log = home.path().join("daemon.log");
+    let log = home.log_path();
+    if let Some(folder) = log.parent() {
+        std::fs::create_dir_all(folder)
+            .with_context(|| format!("creating {}", folder.display()))?;
+    }
     let output =
         std::fs::File::create(&log).with_context(|| format!("creating {}", log.display()))?;
     let mut command = Command::new(program);

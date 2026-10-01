@@ -11,7 +11,7 @@ use iroh::address_lookup::MemoryLookup;
 use pigeon_core::clock::MachineId;
 use pigeon_core::name::MemberName;
 use pigeon_store::config::{Config, ConfigFile};
-use pigeon_store::data_dir::DataDir;
+use pigeon_store::group_dirs::GroupDirs;
 use pigeon_store::group_key::GroupKey;
 use pigeon_sync::{Engine, JoinState, Network, Options};
 use tempfile::TempDir;
@@ -19,7 +19,7 @@ use tempfile::TempDir;
 pub struct Machine {
     pub engine: Engine,
     pub root: PathBuf,
-    pub data: DataDir,
+    pub dirs: GroupDirs,
     options: Options,
     _dir: TempDir,
 }
@@ -45,7 +45,7 @@ impl Machine {
 
     pub async fn restart(self) -> Self {
         self.engine.shutdown().await.unwrap();
-        let engine = Engine::start(&self.data, self.options.clone())
+        let engine = Engine::start(&self.dirs, self.options.clone())
             .await
             .unwrap();
         Self { engine, ..self }
@@ -89,17 +89,17 @@ async fn start(
     (dir, root): (TempDir, PathBuf),
     options: Options,
 ) -> Machine {
-    let data = DataDir::new(dir.path().join("data"));
-    let mut secrets = data.secrets().unwrap();
+    let dirs = GroupDirs::new(dir.path().join("config"), dir.path().join("data"));
+    let mut secrets = dirs.secrets().unwrap();
     secrets.key = Some(key);
-    data.save_secrets(&secrets).unwrap();
+    dirs.save_secrets(&secrets).unwrap();
     let config = Config::new(MemberName::parse(member).unwrap(), root.clone());
-    ConfigFile::create(&data, config).unwrap();
-    let engine = Engine::start(&data, options.clone()).await.unwrap();
+    ConfigFile::create(&dirs, config).unwrap();
+    let engine = Engine::start(&dirs, options.clone()).await.unwrap();
     Machine {
         engine,
         root,
-        data,
+        dirs,
         options,
         _dir: dir,
     }
@@ -145,11 +145,12 @@ pub async fn group_with(members: &[&str], tune: impl Fn(&mut Options)) -> Vec<Ma
         .iter()
         .map(|_| tempfile::tempdir().unwrap())
         .collect();
-    let first: MachineId = DataDir::new(dirs[0].path().join("data"))
-        .secrets()
-        .unwrap()
-        .machine
-        .public();
+    let first: MachineId =
+        GroupDirs::new(dirs[0].path().join("config"), dirs[0].path().join("data"))
+            .secrets()
+            .unwrap()
+            .machine
+            .public();
     let key = GroupKey::generate(MemberName::parse("friends").unwrap(), vec![first]);
     let mut machines = Vec::new();
     for (dir, member) in dirs.into_iter().zip(members) {

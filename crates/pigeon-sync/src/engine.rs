@@ -30,8 +30,8 @@ use pigeon_net::wire::{Patches, Vector};
 use pigeon_net::{Log, Node, Received};
 use pigeon_store::blobs::Blobs;
 use pigeon_store::config::ConfigFile;
-use pigeon_store::data_dir::DataDir;
 use pigeon_store::disk::Stat;
+use pigeon_store::group_dirs::GroupDirs;
 use pigeon_store::group_key::{GroupKey, random_secret};
 use pigeon_store::state::State;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -197,7 +197,7 @@ pub(crate) enum Wake {
 }
 
 pub(crate) struct Inner {
-    pub data: DataDir,
+    pub dirs: GroupDirs,
     /// The member this machine speaks for.
     pub member: MemberName,
     pub root: std::path::PathBuf,
@@ -453,13 +453,13 @@ impl Inner {
 
     /// Keeps the group secret the node holds in the group's secrets.
     fn save_secret(&self, secret: RenewedSecret) -> Result<()> {
-        let mut secrets = self.data.secrets()?;
+        let mut secrets = self.dirs.secrets()?;
         if secrets
             .secret()
             .is_some_and(|held| secret.supersedes(&held))
         {
             secrets.renew(secret);
-            self.data.save_secrets(&secrets)?;
+            self.dirs.save_secrets(&secrets)?;
         }
         Ok(())
     }
@@ -520,16 +520,16 @@ impl Engine {
     ///
     /// Fails if the configuration or the secrets are invalid, the state
     /// cannot be opened, the root created, or the endpoint bound.
-    pub async fn start(data: &DataDir, options: Options) -> Result<Self> {
-        let secrets = data.secrets()?;
+    pub async fn start(dirs: &GroupDirs, options: Options) -> Result<Self> {
+        let secrets = dirs.secrets()?;
         let (Some(key), Some(secret)) = (secrets.key.clone(), secrets.secret()) else {
             bail!(
                 "{} holds no group key: join the group with `pigeon group join`",
-                data.secrets_path().display()
+                dirs.secrets_path().display()
             );
         };
         let machine = secrets.machine.clone();
-        let state = State::open(&data.state_path())?;
+        let state = State::open(&dirs.state_path())?;
         let group = key.group;
         let ledger = state.ledger(group)?;
         let clock = Clock::new(machine.public(), options.max_drift);
@@ -539,14 +539,14 @@ impl Engine {
                 machine: machine.public(),
             });
         }
-        let config = ConfigFile::open(data, clock.stamp().time)?;
+        let config = ConfigFile::open(dirs, clock.stamp().time)?;
         std::fs::create_dir_all(&config.root)
             .with_context(|| format!("creating {}", config.root.display()))?;
         let cert = secrets
             .cert_of(&group, &config.member)
-            .map_err(|reason| anyhow!("{}: {reason}", data.secrets_path().display()))?;
+            .map_err(|reason| anyhow!("{}: {reason}", dirs.secrets_path().display()))?;
         let ledger = Arc::new(SharedLedger::new(ledger));
-        let blobs = Blobs::open(&data.blobs_path(), options.gc).await?;
+        let blobs = Blobs::open(&dirs.blobs_path(), options.gc).await?;
         let (endpoint, mdns) = bind(&machine, &group, &options.network).await?;
         let (node, received) = Node::spawn(
             endpoint,
@@ -564,7 +564,7 @@ impl Engine {
         let (rescans, rescan_events) = mpsc::unbounded_channel();
         let laid_out = state.placed()?;
         let inner = Arc::new(Inner {
-            data: data.clone(),
+            dirs: dirs.clone(),
             member: config.member.clone(),
             root: config.root.clone(),
             cert,

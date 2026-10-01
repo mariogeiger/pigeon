@@ -1,18 +1,20 @@
-//! The user's pigeon folder: one data directory per group, and
-//! `daemon.toml`, which holds the secret token that guards the API and the
-//! address the daemon last listened on. The folder of an older pigeon
-//! moves here, and its files `token` and `address` become `daemon.toml`,
-//! once.
+//! The user's pigeon folders, as the XDG base directories lay them out on
+//! Linux: the configuration, which the user may edit, one `config.toml` per
+//! group; the data, each group's secrets, state database and blobs; and
+//! the state, `daemon.toml` with the secret token that guards the API and
+//! the address the daemon last listened on, the daemon's log, and the
+//! relay's certificates. Elsewhere, and in `$PIGEON_HOME`, one folder holds
+//! all three. What older pigeons kept elsewhere moves here, once.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use data_encoding::BASE32_NOPAD;
-use pigeon_store::data_dir::{DataDir, read_if_present, write_private};
+use pigeon_store::group_dirs::{GroupDirs, move_into_place, read_if_present, write_private};
 use serde::{Deserialize, Serialize};
 
-/// The environment variable that moves the pigeon folder.
+/// The environment variable that names one folder for all of pigeon's.
 pub const HOME_VARIABLE: &str = "PIGEON_HOME";
 
 /// What `daemon.toml` starts with.
@@ -57,24 +59,53 @@ fn remove_if_present(path: &Path) -> Result<()> {
     }
 }
 
-/// The user's pigeon folder.
+/// The names of the folders in `folder`, sorted, none if it is missing.
+fn folder_names(folder: &Path) -> Result<Vec<String>> {
+    let entries = match std::fs::read_dir(folder) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", folder.display())),
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry.with_context(|| format!("reading {}", folder.display()))?;
+        if entry.path().is_dir()
+            && let Some(name) = entry.file_name().to_str()
+        {
+            names.push(name.to_owned());
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+/// The user's pigeon folders.
 #[derive(Clone, Debug)]
 pub struct Home {
-    path: PathBuf,
+    config: PathBuf,
+    data: PathBuf,
+    state: PathBuf,
 }
 
 impl Home {
+    /// The folders all in the one folder `path`.
     #[must_use]
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        let path = path.into();
+        Self {
+            config: path.clone(),
+            data: path.clone(),
+            state: path,
+        }
     }
 
-    /// `$PIGEON_HOME`, or `pigeon` in the user's local data folder, where
-    /// the folder an older pigeon kept in the roaming one moves.
+    /// `$PIGEON_HOME`, or `pigeon` in the user's local configuration, data
+    /// and state folders, where it moves what older pigeons kept elsewhere.
     ///
     /// # Errors
     ///
-    /// Fails if the system names no data folder.
+    /// Fails if the system names no data folder, or what older pigeons kept
+    /// cannot move.
     pub fn locate() -> Result<Self> {
         if let Some(path) = std::env::var_os(HOME_VARIABLE) {
             return Ok(Self::new(path));
@@ -82,65 +113,71 @@ impl Home {
         let local = dirs::data_local_dir()
             .ok_or_else(|| anyhow!("this system has no data folder: set {HOME_VARIABLE}"))?;
         let roaming = dirs::data_dir().map(|data| data.join("pigeon"));
-        Ok(Self::new(moved_home(local.join("pigeon"), roaming)))
-    }
-
-    #[must_use]
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// The folder holding one data directory per group.
-    #[must_use]
-    pub fn groups_path(&self) -> PathBuf {
-        self.path.join("groups")
-    }
-
-    /// The data directory of the group `name`.
-    #[must_use]
-    pub fn group(&self, name: &str) -> DataDir {
-        DataDir::new(self.groups_path().join(name))
-    }
-
-    /// The names of the folders in the groups folder, sorted.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the groups folder exists but cannot be read.
-    pub fn folder_names(&self) -> Result<Vec<String>> {
-        let path = self.groups_path();
-        let entries = match std::fs::read_dir(&path) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+        let data = moved_home(local.join("pigeon"), roaming);
+        let pigeon = |folder: Option<PathBuf>| {
+            folder.map_or_else(|| data.clone(), |folder| folder.join("pigeon"))
         };
-        let mut names = Vec::new();
-        for entry in entries {
-            let entry = entry.with_context(|| format!("reading {}", path.display()))?;
-            if entry.path().is_dir()
-                && let Some(name) = entry.file_name().to_str()
-            {
-                names.push(name.to_owned());
-            }
-        }
-        names.sort();
-        Ok(names)
+        let home = Self {
+            config: pigeon(dirs::config_local_dir()),
+            state: pigeon(dirs::state_dir()),
+            data: data.clone(),
+        };
+        home.relocate()?;
+        Ok(home)
     }
 
-    /// The names of the groups, whose data directories hold a
-    /// configuration, sorted.
+    /// Moves to the state folder what pigeon kept in the data folder until
+    /// 0.2.4.
+    fn relocate(&self) -> Result<()> {
+        for name in ["daemon.toml", "daemon.log", "relay"] {
+            move_into_place(&self.data.join(name), &self.state.join(name))?;
+        }
+        Ok(())
+    }
+
+    /// The folders of the group `name`.
+    #[must_use]
+    pub fn group(&self, name: &str) -> GroupDirs {
+        GroupDirs::new(
+            self.config.join("groups").join(name),
+            self.data.join("groups").join(name),
+        )
+    }
+
+    /// The names of the groups' data folders, sorted.
     ///
     /// # Errors
     ///
-    /// Fails if the groups folder exists but cannot be read.
+    /// Fails if the groups' data folder exists but cannot be read.
+    pub fn folder_names(&self) -> Result<Vec<String>> {
+        folder_names(&self.data.join("groups"))
+    }
+
+    /// The names of the groups, whose folders hold a configuration, sorted.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the groups' configuration folder exists but cannot be read.
     pub fn group_names(&self) -> Result<Vec<String>> {
-        let mut names = self.folder_names()?;
+        let mut names = folder_names(&self.config.join("groups"))?;
         names.retain(|name| self.group(name).config_path().is_file());
         Ok(names)
     }
 
+    /// Where a daemon started apart from any terminal writes its output.
+    #[must_use]
+    pub fn log_path(&self) -> PathBuf {
+        self.state.join("daemon.log")
+    }
+
+    /// Where the relay keeps its certificates.
+    #[must_use]
+    pub fn relay_path(&self) -> PathBuf {
+        self.state.join("relay")
+    }
+
     fn daemon_path(&self) -> PathBuf {
-        self.path.join("daemon.toml")
+        self.state.join("daemon.toml")
     }
 
     fn save_daemon_file(&self, file: &DaemonFile) -> Result<()> {
@@ -161,7 +198,7 @@ impl Home {
                 toml::from_str(&text).with_context(|| format!("reading {}", path.display()))?;
             return Ok(Some(file));
         }
-        let (token_path, address_path) = (self.path.join("token"), self.path.join("address"));
+        let (token_path, address_path) = (self.data.join("token"), self.data.join("address"));
         let Some(token) = read_if_present(&token_path)? else {
             return Ok(None);
         };
@@ -254,24 +291,52 @@ mod tests {
     #[test]
     fn an_older_token_and_address_become_the_daemon_file() {
         let dir = tempfile::tempdir().unwrap();
-        let home = Home::new(dir.path());
-        std::fs::write(dir.path().join("token"), "abc\n").unwrap();
-        std::fs::write(dir.path().join("address"), "127.0.0.1:6767").unwrap();
+        let home = apart(dir.path());
+        write_private(&home.data.join("token"), b"abc\n").unwrap();
+        write_private(&home.data.join("address"), b"127.0.0.1:6767").unwrap();
         assert_eq!(home.address().unwrap().port(), 6767);
         assert_eq!(home.token().unwrap(), "abc");
-        assert!(!dir.path().join("token").exists() && !dir.path().join("address").exists());
+        assert!(home.daemon_path().starts_with(&home.state));
+        assert!(!home.data.join("token").exists() && !home.data.join("address").exists());
+    }
+
+    /// Folders apart, as on Linux.
+    fn apart(dir: &Path) -> Home {
+        Home {
+            config: dir.join("config"),
+            data: dir.join("data"),
+            state: dir.join("state"),
+        }
     }
 
     #[test]
     fn groups_need_a_configuration() {
         let dir = tempfile::tempdir().unwrap();
-        let home = Home::new(dir.path());
+        let home = apart(dir.path());
         assert!(home.group_names().unwrap().is_empty());
-        std::fs::create_dir_all(home.groups_path().join("heard")).unwrap();
-        std::fs::create_dir_all(home.groups_path().join("cheapmo")).unwrap();
-        std::fs::write(home.group("cheapmo").config_path(), "").unwrap();
+        for name in ["heard", "cheapmo"] {
+            std::fs::create_dir_all(home.group(name).data()).unwrap();
+        }
+        let cheapmo = home.group("cheapmo");
+        assert!(cheapmo.config_path().starts_with(dir.path().join("config")));
+        assert!(cheapmo.secrets_path().starts_with(dir.path().join("data")));
+        write_private(&cheapmo.config_path(), b"").unwrap();
         assert_eq!(home.folder_names().unwrap(), ["cheapmo", "heard"]);
         assert_eq!(home.group_names().unwrap(), ["cheapmo"]);
+    }
+
+    #[test]
+    fn what_the_data_folder_held_until_0_2_4_moves_to_the_state_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = apart(dir.path());
+        write_private(&home.data.join("daemon.toml"), b"token = \"abc\"\n").unwrap();
+        write_private(&home.data.join("relay").join("cert"), b"").unwrap();
+        home.relocate().unwrap();
+        assert_eq!(home.token().unwrap(), "abc");
+        assert!(home.relay_path().join("cert").is_file());
+        assert!(!home.data.join("daemon.toml").exists() && !home.data.join("relay").exists());
+        assert!(home.log_path().starts_with(&home.state));
+        home.relocate().unwrap();
     }
 
     #[test]

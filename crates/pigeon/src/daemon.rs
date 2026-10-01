@@ -1,10 +1,10 @@
 //! The groups running on this machine: one engine per group, started from
-//! the data directories in the pigeon folder, restarted from them when the
-//! user reloads their configurations, and created when the user founds or
-//! joins a group, which then waits for the group's verdict on the member's
-//! name; the groups heard before joining, to show the names one may join
-//! under; and why the daemon stops, which a restart onto a newly installed
-//! program is one reason for.
+//! each group's folders, restarted from them when the user reloads their
+//! configurations, and created when the user founds or joins a group,
+//! which then waits for the group's verdict on the member's name; the
+//! groups heard before joining, to show the names one may join under; and
+//! why the daemon stops, which a restart onto a newly installed program is
+//! one reason for.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -15,7 +15,7 @@ use pigeon_core::clock::ntp_time;
 use pigeon_core::name::MemberName;
 use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_store::config::{Config, ConfigFile};
-use pigeon_store::data_dir::DataDir;
+use pigeon_store::group_dirs::GroupDirs;
 use pigeon_store::group_key::GroupKey;
 use pigeon_store::legacy;
 use pigeon_sync::{Engine, JoinState, Listener, Names, Options};
@@ -35,8 +35,8 @@ const HEARING: Duration = Duration::from_secs(30);
 
 /// The configuration of `data` once `member` claims it, following their
 /// personal folder.
-fn claimed(data: &DataDir, member: MemberName) -> Result<Config> {
-    let mut config = data.load_config(ntp_time(SystemTime::now()))?;
+fn claimed(dirs: &GroupDirs, member: MemberName) -> Result<Config> {
+    let mut config = dirs.load_config(ntp_time(SystemTime::now()))?;
     config.selection.set(Rule {
         pattern: format!("{}/", member.tag()),
         cutoff: Cutoff::PlusInfinity,
@@ -154,8 +154,8 @@ impl Daemon {
     /// start.
     pub async fn create(&self, name: &str, member: &str, root: Option<PathBuf>) -> Result<String> {
         let name = MemberName::parse(name).context("the group name")?;
-        let data = self.home.group(name.as_str());
-        let machine = data.secrets()?.machine;
+        let dirs = self.home.group(name.as_str());
+        let machine = dirs.secrets()?.machine;
         let key = GroupKey::generate(name, vec![machine.public()]);
         self.add(key, member, root).await
     }
@@ -225,20 +225,20 @@ impl Daemon {
         }
         let root = root.unwrap_or_else(|| shared_root(&name));
         create_root(&root)?;
-        let data = self.home.group(&name);
-        let mut secrets = data.secrets()?;
+        let dirs = self.home.group(&name);
+        let mut secrets = dirs.secrets()?;
         secrets.key = Some(key);
         secrets.renewal = None;
-        data.save_secrets(&secrets)?;
-        ConfigFile::create(&data, Config::new(member, root))?;
-        let key = match Engine::start(&data, self.options.clone()).await {
+        dirs.save_secrets(&secrets)?;
+        ConfigFile::create(&dirs, Config::new(member, root))?;
+        let key = match Engine::start(&dirs, self.options.clone()).await {
             Ok(engine) => {
                 let key = engine.group_key();
                 groups.insert(name.clone(), engine);
                 key
             }
             Err(error) => {
-                let _ = std::fs::remove_dir_all(data.path());
+                let _ = dirs.remove();
                 return Err(error);
             }
         };
@@ -287,11 +287,11 @@ impl Daemon {
             .remove(group)
             .ok_or_else(|| anyhow!("no group {group} on this machine: see `pigeon group list`"))?;
         let status = engine.status().await;
-        let data = self.home.group(group);
+        let dirs = self.home.group(group);
         let claimed = if status.join == JoinState::Joined {
             Err(anyhow!("{} has already joined {group}", status.member))
         } else {
-            claimed(&data, member)
+            claimed(&dirs, member)
         };
         let config = match claimed {
             Ok(config) => config,
@@ -301,14 +301,14 @@ impl Daemon {
             }
         };
         engine.shutdown().await?;
-        ConfigFile::create(&data, config)?;
-        let engine = Engine::start(&data, self.options.clone()).await?;
+        ConfigFile::create(&dirs, config)?;
+        let engine = Engine::start(&dirs, self.options.clone()).await?;
         groups.insert(group.to_owned(), engine);
         drop(groups);
         self.verdict(group).await
     }
 
-    /// Restarts every group from its data directory, so that the edits of
+    /// Restarts every group from its folders, so that the edits of
     /// its `config.toml` apply; starts the groups added there and stops
     /// those gone. Changes nothing unless every configuration reads.
     /// Returns the groups running.

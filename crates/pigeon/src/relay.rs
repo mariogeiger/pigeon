@@ -22,7 +22,7 @@ pub async fn run(home: &Home, hostname: &str, contact: Option<&str>, port: u16) 
         hostname: hostname.to_owned(),
         contact: contact.to_owned(),
         https: any(443),
-        cache: home.path().join("relay"),
+        cache: home.relay_path(),
     });
     let server = serve_relay(any(port), certified).await?;
     let url = relay_url(&server, hostname)?;

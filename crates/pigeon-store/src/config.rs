@@ -14,8 +14,8 @@ use pigeon_core::retention::Retention;
 use pigeon_core::selection::{Cutoff, Rule, Selection};
 use serde::{Deserialize, Serialize};
 
-use crate::data_dir::{DataDir, read_if_present, write_private};
 use crate::error::{Result, StoreError};
+use crate::group_dirs::{GroupDirs, read_if_present, write_private};
 
 /// What `config.toml` starts with.
 pub const HEADER: &str = "\
@@ -156,7 +156,7 @@ fn render_at(path: &Path, config: &Config) -> Result<String> {
         .map_err(|reason| StoreError::Invalid(format!("{}: {reason}", path.display())))
 }
 
-impl DataDir {
+impl GroupDirs {
     /// Reads the group's configuration, `now` giving the time of `pin now`.
     ///
     /// # Errors
@@ -180,15 +180,15 @@ pub struct ConfigFile {
 }
 
 impl ConfigFile {
-    /// Reads the configuration of `data`, `now` giving the time of `pin
+    /// Reads the configuration of `group`, `now` giving the time of `pin
     /// now`, and writes it back if pigeon spells it otherwise.
     ///
     /// # Errors
     ///
     /// Fails, naming the file and what in it is wrong, if it is missing or
     /// invalid, or cannot be written back.
-    pub fn open(data: &DataDir, now: u64) -> Result<Self> {
-        let path = data.config_path();
+    pub fn open(group: &GroupDirs, now: u64) -> Result<Self> {
+        let path = group.config_path();
         let text = std::fs::read_to_string(&path).map_err(StoreError::io(&path))?;
         let (config, respelled) = parse_at(&path, &text, now)?;
         let mut file = Self { path, text, config };
@@ -198,13 +198,13 @@ impl ConfigFile {
         Ok(file)
     }
 
-    /// Writes `config` as the configuration of `data`, replacing any.
+    /// Writes `config` as the configuration of `group`, replacing any.
     ///
     /// # Errors
     ///
     /// Fails if the file cannot be written.
-    pub fn create(data: &DataDir, config: Config) -> Result<Self> {
-        let path = data.config_path();
+    pub fn create(group: &GroupDirs, config: Config) -> Result<Self> {
+        let path = group.config_path();
         let text = render_at(&path, &config)?;
         write_private(&path, text.as_bytes())?;
         Ok(Self { path, text, config })

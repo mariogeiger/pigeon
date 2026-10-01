@@ -1,9 +1,10 @@
-//! A group's data directory as pigeon wrote it before `config.toml`:
+//! A group's files as older versions of pigeon wrote them. Before 0.2.3,
 //! `config.json` held the key, the member, the root and the machine's
 //! certificate, `machine.key` the machine's secret key, and a settings
 //! table of the state database the selection, the retention in seconds,
-//! and the places wanted and placed. Upgrading writes them in today's
-//! files, then removes the old ones.
+//! and the places wanted and placed; until 0.2.4, `config.toml` lay in the
+//! data folder. Upgrading puts them in today's files and places, then
+//! removes the old ones.
 
 use std::path::{Path, PathBuf};
 
@@ -18,8 +19,8 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use crate::config::{Config, ConfigFile};
-use crate::data_dir::{DataDir, read_if_present};
 use crate::error::{Result, StoreError};
+use crate::group_dirs::{GroupDirs, move_into_place, read_if_present};
 use crate::group_key::GroupKey;
 use crate::secrets::Secrets;
 use crate::state::State;
@@ -86,7 +87,7 @@ fn remove(path: &Path) -> Result<()> {
     std::fs::remove_file(path).map_err(StoreError::io(path))
 }
 
-/// Upgrades `data` if an older pigeon wrote it, and says whether it did.
+/// Upgrades `group` if an older pigeon wrote it, and says whether it did.
 /// The old configuration goes last but for leftovers, so that a crash
 /// before leaves it to upgrade again.
 ///
@@ -94,21 +95,22 @@ fn remove(path: &Path) -> Result<()> {
 ///
 /// Fails, naming what is wrong, if an old file cannot be read or a new one
 /// written.
-pub fn upgrade(data: &DataDir) -> Result<bool> {
-    let config_path = data.path().join("config.json");
+pub fn upgrade(group: &GroupDirs) -> Result<bool> {
+    let moved = move_into_place(&group.data().join("config.toml"), &group.config_path())?;
+    let config_path = group.data().join("config.json");
     let Some(text) = read_if_present(&config_path)? else {
-        return Ok(false);
+        return Ok(moved);
     };
     let old: OldConfig = serde_json::from_str(&text).map_err(|source| StoreError::Json {
         path: config_path.clone(),
         source,
     })?;
-    let key_path = data.path().join("machine.key");
+    let key_path = group.data().join("machine.key");
     let bytes = std::fs::read(&key_path).map_err(StoreError::io(&key_path))?;
     let machine: [u8; 32] = bytes.try_into().map_err(|_| {
         StoreError::Invalid(format!("{} does not hold 32 bytes", key_path.display()))
     })?;
-    let state = State::open(&data.state_path())?;
+    let state = State::open(&group.state_path())?;
     let rules: Vec<Rule> = setting(&state, "selection")?.unwrap_or_default();
     let selection =
         Selection::exactly(rules).map_err(|error| StoreError::Invalid(error.to_string()))?;
@@ -123,10 +125,10 @@ pub fn upgrade(data: &DataDir) -> Result<bool> {
         retention,
         places: Places::new(wanted),
     };
-    ConfigFile::create(data, config)?;
+    ConfigFile::create(group, config)?;
     let machine = SecretKey::from_bytes(&machine);
     let derived = MachineCert::derive(&old.key.group, old.cert.name.clone(), machine.public());
-    data.save_secrets(&Secrets {
+    group.save_secrets(&Secrets {
         machine,
         key: Some(old.key),
         renewal: old.renewal,

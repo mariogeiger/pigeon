@@ -217,7 +217,7 @@ async fn a_configuration_edited_by_hand_applies_at_restart_and_survives_until_th
         bob.read("+alice/a.txt").as_deref() == Some("aaaa")
     })
     .await;
-    let config = bob.data.config_path();
+    let config = bob.dirs.config_path();
     let text = std::fs::read_to_string(&config).unwrap();
     assert!(text.contains("\"follow /+alice/a.txt\""), "{text}");
     let edited = text

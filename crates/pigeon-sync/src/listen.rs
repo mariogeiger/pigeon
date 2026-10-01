@@ -15,7 +15,7 @@ use pigeon_core::identity::{RenewedSecret, member_key};
 use pigeon_core::ledger::Ledger;
 use pigeon_core::name::MemberName;
 use pigeon_net::{Node, Received};
-use pigeon_store::data_dir::DataDir;
+use pigeon_store::group_dirs::GroupDirs;
 use pigeon_store::group_key::GroupKey;
 use pigeon_store::state::State;
 use serde::Serialize;
@@ -112,16 +112,16 @@ pub struct Listener {
 }
 
 impl Listener {
-    /// Starts listening to the group `key` admits, from the data directory
-    /// its engine will use.
+    /// Starts listening to the group `key` admits, from the folders its
+    /// engine will use.
     ///
     /// # Errors
     ///
-    /// Fails if the data directory, its secrets or its state cannot be
-    /// opened, or the endpoint bound.
-    pub async fn start(data: &DataDir, key: GroupKey, options: &Options) -> Result<Self> {
-        let machine = data.secrets()?.machine;
-        let state = State::open(&data.state_path())?;
+    /// Fails if the group's secrets or state cannot be opened, or the
+    /// endpoint bound.
+    pub async fn start(dirs: &GroupDirs, key: GroupKey, options: &Options) -> Result<Self> {
+        let machine = dirs.secrets()?.machine;
+        let state = State::open(&dirs.state_path())?;
         let group = key.group;
         let ledger = Arc::new(SharedLedger::new(state.ledger(group)?));
         let (endpoint, mdns) = bind(&machine, &group, &options.network).await?;

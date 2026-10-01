@@ -120,29 +120,29 @@ fn an_invalid_configuration_says_what_is_wrong() {
 #[test]
 fn pigeon_writes_back_what_it_completes_and_never_over_unread_edits() {
     let dir = tempfile::tempdir().unwrap();
-    let data = DataDir::new(dir.path().join("g"));
+    let group = GroupDirs::new(dir.path().join("config"), dir.path().join("data"));
     let root = std::env::temp_dir().join("g");
-    write_private(&data.config_path(), written(&root, "").as_bytes()).unwrap();
-    let mut file = ConfigFile::open(&data, 0).unwrap();
-    let on_disk = std::fs::read_to_string(data.config_path()).unwrap();
+    write_private(&group.config_path(), written(&root, "").as_bytes()).unwrap();
+    let mut file = ConfigFile::open(&group, 0).unwrap();
+    let on_disk = std::fs::read_to_string(group.config_path()).unwrap();
     assert_eq!(on_disk, file.text());
     assert!(on_disk.contains("follow +mario/"), "{on_disk}");
     let mut config = Config::clone(&file);
     config.retention.every = 2;
     file.save(config.clone()).unwrap();
-    assert_eq!(data.load_config(0).unwrap().retention.every, 2);
+    assert_eq!(group.load_config(0).unwrap().retention.every, 2);
     std::fs::write(
-        data.config_path(),
+        group.config_path(),
         on_disk.replace("every = 1", "every = 9"),
     )
     .unwrap();
     let error = file.save(config).unwrap_err().to_string();
     assert!(error.contains("pigeon daemon reload"), "{error}");
-    assert_eq!(data.load_config(0).unwrap().retention.every, 9);
-    let reopened = ConfigFile::open(&data, 0).unwrap();
+    assert_eq!(group.load_config(0).unwrap().retention.every, 9);
+    let reopened = ConfigFile::open(&group, 0).unwrap();
     assert_eq!(reopened.retention.every, 9);
-    let invalid = data.config_path();
+    let invalid = group.config_path();
     std::fs::write(&invalid, "member = 1\n").unwrap();
-    let error = data.load_config(0).unwrap_err().to_string();
+    let error = group.load_config(0).unwrap_err().to_string();
     assert!(error.starts_with(&invalid.display().to_string()), "{error}");
 }
