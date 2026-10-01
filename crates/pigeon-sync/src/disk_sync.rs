@@ -462,8 +462,9 @@ impl Inner {
         Ok(())
     }
 
-    /// Fetches a blob from its author's machine or any peer, then wakes the
-    /// paths waiting for it; after a failure it waits before trying again.
+    /// Fetches a blob from its author's machine and every peer at once, then
+    /// wakes the paths waiting for it; after a failure it waits before
+    /// trying again.
     /// The blob is protected from the start, so that garbage collection
     /// never takes it before the paths waiting for it protect it.
     pub(crate) fn fetch(

@@ -10,6 +10,7 @@ rust-version.workspace = true
 [dependencies]
 pigeon-core.workspace = true
 anyhow.workspace = true
+bao-tree.workspace = true
 iroh.workspace = true
 iroh-blobs.workspace = true
 iroh-mdns-address-lookup.workspace = true

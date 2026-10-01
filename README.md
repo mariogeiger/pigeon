@@ -87,6 +87,9 @@ the shell's completion script. The daemon keeps its state in
   nothing in it syncs, and nothing is taken for deleted.
 - **Peer to peer.** Machines connect directly, end-to-end encrypted, over the
   local network or the internet.
+- **Many sources at once.** A file arrives in pieces from every machine that
+  holds it, even one still downloading it, so the fastest machines deliver the
+  most and machines downloading together trade pieces.
 
 ## License
 

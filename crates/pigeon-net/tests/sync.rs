@@ -1,13 +1,18 @@
 //! Tests of the network on this host: admitted machines exchange what the
 //! other lacks and every later patch, a machine without the group secret
 //! learns nothing unless the member list recognizes it, recognized machines
-//! receive the latest secret, and blobs move only between admitted machines.
+//! receive the latest secret, and blobs move only between admitted machines,
+//! each from several machines at once, which serve what they hold while
+//! still downloading.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use bao_tree::ChunkNum;
 use iroh::address_lookup::MemoryLookup;
 use iroh_base::SecretKey;
+use iroh_blobs::Hash;
+use iroh_blobs::protocol::{ChunkRanges, GetRequest};
 use iroh_blobs::store::mem::MemStore;
 use pigeon_core::clock::Stamp;
 use pigeon_core::identity::{
@@ -132,6 +137,40 @@ impl Machine {
 
     fn hold(&self, patch: &SignedPatch) {
         self.log.0.lock().unwrap().insert(patch.clone()).unwrap();
+    }
+
+    async fn meet(&self, other: &Machine) {
+        self.node.dial(other.node.id());
+        timeout(Duration::from_secs(10), async {
+            while !self.node.peers().contains(&other.node.id()) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the machines meet");
+    }
+
+    /// Takes chunks `range` of `hash` from `other` alone.
+    async fn take(&self, other: &Machine, hash: Hash, range: std::ops::Range<u64>) {
+        let connection = self
+            .node
+            .endpoint()
+            .connect(other.node.id(), iroh_blobs::ALPN)
+            .await
+            .unwrap();
+        let ranges = ChunkRanges::from(ChunkNum(range.start)..ChunkNum(range.end));
+        self.blobs
+            .remote()
+            .execute_get(connection, GetRequest::blob_ranges(hash, ranges))
+            .await
+            .unwrap();
+    }
+
+    async fn holds(&self, hash: Hash, data: &[u8]) {
+        assert_eq!(
+            self.blobs.blobs().get_bytes(hash).await.unwrap().to_vec(),
+            data
+        );
     }
 
     async fn next_times(&mut self) -> Vec<u64> {
@@ -273,4 +312,86 @@ async fn a_recognized_machine_with_an_old_secret_gets_every_later_one() {
     .unwrap();
     a.node.shutdown().await.unwrap();
     b.node.shutdown().await.unwrap();
+}
+
+fn varied(size: usize) -> Vec<u8> {
+    (0..size)
+        .map(|i| u8::try_from(i * 7 % 251).unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_blob_held_in_halves_by_two_machines_arrives_whole() {
+    let lookup = MemoryLookup::new();
+    let a = Machine::start(first(5), &lookup).await;
+    let b = Machine::start(first(5), &lookup).await;
+    let c = Machine::start(first(5), &lookup).await;
+    let d = Machine::start(first(5), &lookup).await;
+    let data = varied(4 << 20);
+    let tag = a.blobs.add_bytes(data.clone()).temp_tag().await.unwrap();
+    b.meet(&a).await;
+    c.meet(&a).await;
+    b.take(&a, tag.hash(), 0..2048).await;
+    c.take(&a, tag.hash(), 2048..4096).await;
+    a.node.shutdown().await.unwrap();
+    d.meet(&b).await;
+    d.meet(&c).await;
+    let nobody = Hash::new(b"held by nobody");
+    let none = d.node.fetch(nobody, vec![b.node.id(), c.node.id()]);
+    assert!(
+        timeout(Duration::from_secs(5), none)
+            .await
+            .expect("a blob nobody holds fails at once")
+            .is_err()
+    );
+    let both = d.node.fetch(tag.hash(), vec![b.node.id(), c.node.id()]);
+    timeout(Duration::from_secs(20), both)
+        .await
+        .unwrap()
+        .unwrap();
+    d.holds(tag.hash(), &data).await;
+    for machine in [b, c, d] {
+        machine.node.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_machine_serves_what_it_holds_while_still_downloading() {
+    let lookup = MemoryLookup::new();
+    let a = Machine::start(first(5), &lookup).await;
+    let b = Machine::start(first(5), &lookup).await;
+    let c = Machine::start(first(5), &lookup).await;
+    let data = varied(4 << 20);
+    let tag = a.blobs.add_bytes(data.clone()).temp_tag().await.unwrap();
+    b.meet(&a).await;
+    c.meet(&b).await;
+    b.take(&a, tag.hash(), 0..1024).await;
+    let node = c.node.clone();
+    let (hash, from) = (tag.hash(), b.node.id());
+    let fetching = tokio::spawn(async move { node.fetch(hash, vec![from]).await });
+    timeout(Duration::from_secs(10), async {
+        while !c
+            .blobs
+            .observe(tag.hash())
+            .await
+            .unwrap()
+            .ranges
+            .contains(&ChunkNum(0))
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the first piece arrives before the rest exists there");
+    assert!(!fetching.is_finished());
+    b.take(&a, tag.hash(), 1024..4096).await;
+    timeout(Duration::from_secs(20), fetching)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    c.holds(tag.hash(), &data).await;
+    for machine in [a, b, c] {
+        machine.node.shutdown().await.unwrap();
+    }
 }

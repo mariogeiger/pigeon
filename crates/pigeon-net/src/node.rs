@@ -2,22 +2,22 @@
 //! machines the member list recognizes or that prove they know the group
 //! secret, keeps a sync session with every machine it reaches, passes the
 //! latest group secret to recognized machines, and serves and fetches blobs
-//! among admitted machines.
+//! among admitted machines, each from several machines at once.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use iroh::Endpoint;
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh_blobs::api::Store;
-use iroh_blobs::api::downloader::Downloader;
 use iroh_blobs::provider::events::{
     AbortReason, ConnectMode, EventMask, EventSender, ProviderMessage,
 };
+use iroh_blobs::util::connection_pool::{self, ConnectionPool};
 use iroh_blobs::{BlobsProtocol, Hash};
 use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
 use n0_future::StreamExt;
@@ -25,6 +25,7 @@ use pigeon_core::clock::{MachineId, Stamp};
 use pigeon_core::identity::{GroupId, MachineCert, RenewedSecret};
 use tokio::sync::{broadcast, mpsc, watch};
 
+use crate::swarm;
 use crate::wire::{self, Hello, Message, Patches, SYNC_ALPN, Vector};
 
 /// The patches a node holds, as its sessions need them.
@@ -275,12 +276,18 @@ fn blob_gate(shared: &Arc<Shared>) -> EventSender {
 /// How often a node dials the machines it wants but lacks.
 pub const REDIAL: Duration = Duration::from_secs(15);
 
+/// How long a blob connection to a machine stays open unused.
+const IDLE: Duration = Duration::from_secs(30);
+/// How long reaching a machine for blobs may take, relays included.
+const CONNECT: Duration = Duration::from_secs(15);
+
 /// One group's node.
 #[derive(Clone)]
 pub struct Node {
     shared: Arc<Shared>,
     router: Router,
-    downloader: Downloader,
+    store: Store,
+    pool: ConnectionPool,
 }
 
 impl Node {
@@ -310,7 +317,15 @@ impl Node {
             admitted: Mutex::default(),
             wanted: Mutex::default(),
         });
-        let downloader = blobs.downloader(&endpoint);
+        let pool = ConnectionPool::new(
+            endpoint.clone(),
+            iroh_blobs::ALPN,
+            connection_pool::Options {
+                idle_timeout: IDLE,
+                connect_timeout: CONNECT,
+                ..connection_pool::Options::default()
+            },
+        );
         let router = Router::builder(endpoint)
             .accept(SYNC_ALPN, SyncProtocol(shared.clone()))
             .accept(
@@ -336,7 +351,8 @@ impl Node {
             Self {
                 shared,
                 router,
-                downloader,
+                store: blobs.clone(),
+                pool,
             },
             received,
         )
@@ -413,17 +429,17 @@ impl Node {
         lock(&self.shared.connected).keys().copied().collect()
     }
 
-    /// Fetches a blob from any of `providers`, resuming what is held.
+    /// Fetches a blob from `providers` at once, resuming what is held.
     ///
     /// # Errors
     ///
-    /// Fails if no provider delivers the whole blob.
+    /// Fails if no provider can deliver what is missing, or none delivered
+    /// more for [`swarm::STALL`].
     pub async fn fetch(&self, hash: Hash, providers: Vec<MachineId>) -> Result<()> {
-        if providers.is_empty() {
-            bail!("no machine holds {hash}");
-        }
-        self.downloader
-            .download(hash, providers)
+        let rotation = self.id().as_bytes()[..8]
+            .iter()
+            .fold(0, |rotation, byte| rotation << 8 | u64::from(*byte));
+        swarm::fetch(&self.store, &self.pool, rotation, hash, providers)
             .await
             .with_context(|| format!("fetching {hash}"))
     }
