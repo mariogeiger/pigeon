@@ -1,30 +1,32 @@
 //! Tests of upgrading a data directory an older pigeon wrote: every setting
-//! reaches today's files, the old ones go, and upgrading again does
-//! nothing.
+//! reaches today's files, a certificate the name does not derive stays,
+//! the old files go, and upgrading again does nothing.
 
 use pigeon_core::clock::Stamp;
-use pigeon_core::identity::MachineCert;
+use pigeon_core::identity::{MachineCert, member_key};
 use pigeon_core::path::GroupPath;
 use pigeon_core::selection::Cutoff;
 use serde_json::json;
 
 use super::*;
 
-/// Writes the data directory an older pigeon would have, with the settings
-/// `settings`, and returns its machine key.
+/// Writes the data directory an older pigeon would have, with mario's
+/// certificate by `member` and the settings `settings`, and returns its
+/// machine key and the certificate.
 fn old_layout(
     data: &DataDir,
     key: &GroupKey,
+    member: &SecretKey,
     renewal: Renewal,
     settings: &[(&str, serde_json::Value)],
-) -> SecretKey {
+) -> (SecretKey, MachineCert) {
     let machine = SecretKey::generate();
-    let member = MemberName::parse("mario").unwrap();
-    let cert = MachineCert::derive(&key.group, member.clone(), machine.public());
+    let name = MemberName::parse("mario").unwrap();
+    let cert = MachineCert::issue(&key.group, name.clone(), member, machine.public());
     let config = json!({
         "key": key,
         "renewal": renewal,
-        "member": member,
+        "member": name,
         "root": std::env::temp_dir().join("cheapmo"),
         "cert": cert,
     });
@@ -40,7 +42,17 @@ fn old_layout(
         }
     }
     transaction.commit().unwrap();
-    machine
+    (machine, cert)
+}
+
+fn renewal() -> Renewal {
+    Renewal {
+        after: Stamp {
+            time: (1_790_856_000 << 32) + 3,
+            machine: SecretKey::generate().public(),
+        },
+        by: SecretKey::generate().public(),
+    }
 }
 
 #[test]
@@ -48,13 +60,8 @@ fn an_old_data_directory_upgrades_once_and_keeps_every_setting() {
     let dir = tempfile::tempdir().unwrap();
     let data = DataDir::new(dir.path().join("cheapmo"));
     let key = GroupKey::generate(MemberName::parse("cheapmo").unwrap(), Vec::new());
-    let renewal = Renewal {
-        after: Stamp {
-            time: (1_790_856_000 << 32) + 3,
-            machine: SecretKey::generate().public(),
-        },
-        by: SecretKey::generate().public(),
-    };
+    let renewal = renewal();
+    let random_member = SecretKey::generate();
     let destination = std::env::temp_dir().join("disk").join("videos");
     let place = json!([{ "folder": "videos", "destination": destination }]);
     let rules = json!([
@@ -62,9 +69,10 @@ fn an_old_data_directory_upgrades_once_and_keeps_every_setting() {
         { "pattern": "/report/", "cutoff": { "At": 7 } },
     ]);
     let seconds = json!({ "every": 2 * DAY, "daily": 7 * DAY, "quota_percent": 5 });
-    let machine = old_layout(
+    let (machine, cert) = old_layout(
         &data,
         &key,
+        &random_member,
         renewal,
         &[
             ("selection", rules),
@@ -98,8 +106,14 @@ fn an_old_data_directory_upgrades_once_and_keeps_every_setting() {
     assert_eq!(config.places.get(&videos), Some(destination.as_path()));
     let secrets = data.secrets().unwrap();
     assert_eq!(secrets.machine.public(), machine.public());
-    assert_eq!(secrets.key, Some(key));
+    assert_eq!(secrets.key.as_ref(), Some(&key));
     assert_eq!(secrets.renewal, Some(renewal));
+    assert_eq!(secrets.cert, Some(cert.clone()));
+    let mario = MemberName::parse("mario").unwrap();
+    assert_eq!(secrets.cert_of(&key.group, &mario), Ok(cert));
+    let carol = MemberName::parse("carol").unwrap();
+    let derived = MachineCert::derive(&key.group, carol.clone(), machine.public());
+    assert_eq!(secrets.cert_of(&key.group, &carol), Ok(derived));
     let state = State::open(&data.state_path()).unwrap();
     assert_eq!(state.placed().unwrap(), config.places);
     assert_eq!(
@@ -108,4 +122,17 @@ fn an_old_data_directory_upgrades_once_and_keeps_every_setting() {
     );
     drop(state);
     assert!(!upgrade(&data).unwrap());
+}
+
+#[test]
+fn a_certificate_the_name_derives_is_not_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = DataDir::new(dir.path().join("cheapmo"));
+    let key = GroupKey::generate(MemberName::parse("cheapmo").unwrap(), Vec::new());
+    let mario = MemberName::parse("mario").unwrap();
+    let (_, cert) = old_layout(&data, &key, &member_key(&key.group, &mario), renewal(), &[]);
+    assert!(upgrade(&data).unwrap());
+    let secrets = data.secrets().unwrap();
+    assert_eq!(secrets.cert, None);
+    assert_eq!(secrets.cert_of(&key.group, &mario), Ok(cert));
 }

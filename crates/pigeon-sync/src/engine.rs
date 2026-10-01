@@ -10,7 +10,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use iroh::Endpoint;
 use iroh::address_lookup::MemoryLookup;
 use iroh_base::SecretKey;
@@ -528,7 +528,7 @@ impl Engine {
                 data.secrets_path().display()
             );
         };
-        let machine = secrets.machine;
+        let machine = secrets.machine.clone();
         let state = State::open(&data.state_path())?;
         let group = key.group;
         let ledger = state.ledger(group)?;
@@ -542,7 +542,9 @@ impl Engine {
         let config = ConfigFile::open(data, clock.stamp().time)?;
         std::fs::create_dir_all(&config.root)
             .with_context(|| format!("creating {}", config.root.display()))?;
-        let cert = MachineCert::derive(&group, config.member.clone(), machine.public());
+        let cert = secrets
+            .cert_of(&group, &config.member)
+            .map_err(|reason| anyhow!("{}: {reason}", data.secrets_path().display()))?;
         let ledger = Arc::new(SharedLedger::new(ledger));
         let blobs = Blobs::open(&data.blobs_path(), options.gc).await?;
         let (endpoint, mdns) = bind(&machine, &group, &options.network).await?;

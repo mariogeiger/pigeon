@@ -1,12 +1,14 @@
 //! A group's secrets on one machine, `secrets.toml`, readable only by its
-//! owner: the machine's secret key, made on first use, and once the machine
-//! joins, the group key and the renewal that made its secret. Times read as
-//! RFC 3339, which holds them exactly.
+//! owner: the machine's secret key, made on first use, once the machine
+//! joins the group key and the renewal that made its secret, and the
+//! certificate of a member whose key does not derive from their name.
+//! Times read as RFC 3339, which holds them exactly.
 
 use data_encoding::HEXLOWER;
-use iroh_base::SecretKey;
+use iroh_base::{PublicKey, SecretKey, Signature};
 use pigeon_core::clock::{MachineId, Stamp, parse_rfc3339, rfc3339};
-use pigeon_core::identity::{Renewal, RenewedSecret};
+use pigeon_core::identity::{GroupId, MachineCert, Renewal, RenewedSecret};
+use pigeon_core::name::MemberName;
 use serde::{Deserialize, Serialize};
 
 use crate::data_dir::{DataDir, read_if_present, write_private};
@@ -28,9 +30,33 @@ pub struct Secrets {
     pub key: Option<GroupKey>,
     /// The renewal that made the key's secret, none for the first secret.
     pub renewal: Option<Renewal>,
+    /// The certificate of this machine by a member whose key does not
+    /// derive from their name, as for members of groups founded before
+    /// keys did; none when the name gives the key.
+    pub cert: Option<MachineCert>,
 }
 
 impl Secrets {
+    /// The certificate by which `member` vouches for this machine in
+    /// `group`: the one kept for them, or the one their name derives.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the certificate kept for them is invalid.
+    pub fn cert_of(&self, group: &GroupId, member: &MemberName) -> Result<MachineCert, String> {
+        match self.cert.as_ref().filter(|cert| cert.name == *member) {
+            Some(cert) if cert.is_valid(group) => Ok(cert.clone()),
+            Some(_) => Err(format!(
+                "the certificate of {member} does not vouch for this machine in this group"
+            )),
+            None => Ok(MachineCert::derive(
+                group,
+                member.clone(),
+                self.machine.public(),
+            )),
+        }
+    }
+
     /// The group secret this machine holds and its renewal.
     #[must_use]
     pub fn secret(&self) -> Option<RenewedSecret> {
@@ -58,6 +84,17 @@ struct Spelled {
     machine: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     renewal: Option<SpelledRenewal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cert: Option<SpelledCert>,
+}
+
+/// A certificate of this machine, without the machine.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SpelledCert {
+    name: MemberName,
+    member: PublicKey,
+    signature: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -86,6 +123,11 @@ impl Spelled {
                     machine: renewal.after.machine,
                 },
             }),
+            cert: secrets.cert.as_ref().map(|cert| SpelledCert {
+                name: cert.name.clone(),
+                member: cert.member,
+                signature: HEXLOWER.encode(&cert.signature.to_bytes()),
+            }),
         }
     }
 
@@ -105,10 +147,28 @@ impl Spelled {
             }),
             None => None,
         };
+        let machine = SecretKey::from_bytes(&bytes);
+        let cert = match self.cert {
+            Some(cert) => {
+                let signature = HEXLOWER
+                    .decode(cert.signature.as_bytes())
+                    .ok()
+                    .and_then(|bytes| <[u8; 64]>::try_from(bytes).ok())
+                    .ok_or("the certificate's signature is not 128 lowercase hexadecimal digits")?;
+                Some(MachineCert {
+                    name: cert.name,
+                    member: cert.member,
+                    machine: machine.public(),
+                    signature: Signature::from_bytes(&signature),
+                })
+            }
+            None => None,
+        };
         Ok(Secrets {
-            machine: SecretKey::from_bytes(&bytes),
+            machine,
             key: self.key,
             renewal,
+            cert,
         })
     }
 }
@@ -128,6 +188,7 @@ impl DataDir {
                 machine: SecretKey::generate(),
                 key: None,
                 renewal: None,
+                cert: None,
             };
             self.save_secrets(&secrets)?;
             return Ok(secrets);
@@ -210,6 +271,24 @@ mod tests {
         assert_eq!(read.machine.to_bytes(), secrets.machine.to_bytes());
         assert_eq!(read.key, secrets.key);
         assert_eq!(read.secret(), Some(renewed));
+        let group = secrets.key.as_ref().unwrap().group;
+        let mario = MemberName::parse("mario").unwrap();
+        let random = SecretKey::generate();
+        let cert = MachineCert::issue(&group, mario.clone(), &random, read.machine.public());
+        let kept = Secrets {
+            cert: Some(cert.clone()),
+            ..read
+        };
+        data.save_secrets(&kept).unwrap();
+        let read = data.secrets().unwrap();
+        assert_eq!(read.cert, Some(cert.clone()));
+        assert_eq!(read.cert_of(&group, &mario), Ok(cert));
+        let other = GroupKey::generate(MemberName::parse("h").unwrap(), Vec::new()).group;
+        assert!(
+            read.cert_of(&other, &mario)
+                .unwrap_err()
+                .contains("does not vouch")
+        );
         std::fs::write(data.secrets_path(), "machine = \"00\"\n").unwrap();
         let error = data.secrets().unwrap_err().to_string();
         assert!(error.contains("hexadecimal"), "{error}");

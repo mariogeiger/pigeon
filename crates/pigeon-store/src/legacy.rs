@@ -1,13 +1,14 @@
 //! A group's data directory as pigeon wrote it before `config.toml`:
-//! `config.json` held the key, the member and the root, `machine.key` the
-//! machine's secret key, and a settings table of the state database the
-//! selection, the retention in seconds, and the places wanted and placed.
-//! Upgrading writes them in today's files, then removes the old ones.
+//! `config.json` held the key, the member, the root and the machine's
+//! certificate, `machine.key` the machine's secret key, and a settings
+//! table of the state database the selection, the retention in seconds,
+//! and the places wanted and placed. Upgrading writes them in today's
+//! files, then removes the old ones.
 
 use std::path::{Path, PathBuf};
 
 use iroh_base::SecretKey;
-use pigeon_core::identity::Renewal;
+use pigeon_core::identity::{MachineCert, Renewal};
 use pigeon_core::name::MemberName;
 use pigeon_core::places::{Place, Places};
 use pigeon_core::retention::{DAY, Retention};
@@ -25,7 +26,7 @@ use crate::state::State;
 
 const SETTINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("settings");
 
-/// What `config.json` held; its certificate now derives from the rest.
+/// What `config.json` held.
 #[derive(Deserialize)]
 struct OldConfig {
     key: GroupKey,
@@ -33,6 +34,7 @@ struct OldConfig {
     renewal: Option<Renewal>,
     member: MemberName,
     root: PathBuf,
+    cert: MachineCert,
 }
 
 /// The retention as the settings table held it, in seconds.
@@ -122,10 +124,13 @@ pub fn upgrade(data: &DataDir) -> Result<bool> {
         places: Places::new(wanted),
     };
     ConfigFile::create(data, config)?;
+    let machine = SecretKey::from_bytes(&machine);
+    let derived = MachineCert::derive(&old.key.group, old.cert.name.clone(), machine.public());
     data.save_secrets(&Secrets {
-        machine: SecretKey::from_bytes(&machine),
+        machine,
         key: Some(old.key),
         renewal: old.renewal,
+        cert: (old.cert != derived).then_some(old.cert),
     })?;
     state.set_placed(&Places::new(laid_out))?;
     remove(&config_path)?;

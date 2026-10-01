@@ -4,6 +4,15 @@ All notable user-visible changes to pigeon are documented here. While the
 version is 0.x, a change that breaks compatibility increments the second
 number, and any other change the third.
 
+## 0.2.4 — 2026-10-01
+
+### Fixed
+
+- A machine of a group founded before member keys derived from names
+  speaks again for its member: upgrading keeps its certificate in
+  `secrets.toml` rather than deriving one that the group does not know,
+  which made 0.2.3 see the member's name as taken.
+
 ## 0.2.3 — 2026-10-01
 
 ### Changed
