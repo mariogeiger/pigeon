@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// The protocol's name on the wire.
-pub const SYNC_ALPN: &[u8] = b"pigeon/sync/5";
+pub const SYNC_ALPN: &[u8] = b"pigeon/sync/6";
 
 /// The largest message either side accepts.
 pub const MAX_MESSAGE: usize = 64 << 20;
@@ -21,12 +21,12 @@ pub const MAX_MESSAGE: usize = 64 << 20;
 pub type Vector = BTreeMap<MachineId, u64>;
 
 /// The first message each side sends: which group it belongs to, the
-/// certificate of its machine, a proof that it knows the group secret, and
-/// which patches it already holds.
+/// certificate of its machine unless it has no member name yet, a proof
+/// that it knows the group secret, and which patches it already holds.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hello {
     pub group: GroupId,
-    pub cert: MachineCert,
+    pub cert: Option<MachineCert>,
     pub admission: [u8; 32],
     pub vector: Vector,
 }

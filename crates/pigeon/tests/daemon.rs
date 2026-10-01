@@ -309,6 +309,49 @@ async fn joining_with_a_members_name_adds_a_machine_of_theirs() {
 }
 
 #[tokio::test]
+async fn a_machine_hears_the_group_before_choosing_its_name() {
+    let lookup = MemoryLookup::new();
+    let a = Peer::start(&lookup).await;
+    let b = Peer::start(&lookup).await;
+    let created = a
+        .call(
+            "group",
+            "create",
+            json!({"name": "cheapmo", "member": "alice", "root": a.root("cheapmo")}),
+        )
+        .await
+        .unwrap();
+    eventually("alice joined", async || a.joined().await).await;
+    a.call(
+        "file",
+        "write",
+        json!({"path": "docs/+carol/plan.txt", "content": base64("plan\n")}),
+    )
+    .await
+    .unwrap();
+    let key = created["key"].as_str().unwrap();
+    let names = b.call("group", "names", json!({"key": key})).await.unwrap();
+    assert_eq!(names["heard"], true, "{names}");
+    assert_eq!(names["members"], json!(["alice"]));
+    let names = b.call("group", "names", json!({"key": key})).await.unwrap();
+    assert_eq!(names["taken"], json!(["alice", "carol"]));
+    assert_eq!(b.call("group", "list", json!({})).await, Ok(json!([])));
+    b.call(
+        "group",
+        "join",
+        json!({"key": key, "member": "bob", "root": b.root("cheapmo")}),
+    )
+    .await
+    .unwrap();
+    assert!(b.joined().await);
+    let error = b
+        .call("group", "names", json!({"key": key}))
+        .await
+        .unwrap_err();
+    assert!(error.contains("already in the group cheapmo"), "{error}");
+}
+
+#[tokio::test]
 async fn web_forms_run_their_action_and_return() {
     let lookup = MemoryLookup::new();
     let peer = Peer::start(&lookup).await;

@@ -1,7 +1,8 @@
 //! The groups running on this machine: one engine per group, started from
 //! the data directories in the pigeon folder, and created when the user
 //! founds or joins a group, which then waits for the group's verdict on
-//! the member's name; and why the daemon stops, which a restart onto a
+//! the member's name; the groups heard before joining, to show the names
+//! one may join under; and why the daemon stops, which a restart onto a
 //! newly installed program is one reason for.
 
 use std::collections::BTreeMap;
@@ -13,8 +14,8 @@ use pigeon_core::name::MemberName;
 use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_store::config::GroupConfig;
 use pigeon_store::group_key::GroupKey;
-use pigeon_sync::{Engine, JoinState, Options};
-use tokio::sync::{RwLock, RwLockReadGuard, watch};
+use pigeon_sync::{Engine, JoinState, Listener, Names, Options};
+use tokio::sync::{Mutex, RwLock, RwLockReadGuard, watch};
 
 use crate::home::Home;
 use crate::program::Program;
@@ -23,6 +24,10 @@ use crate::shared_root::{create_root, shared_root};
 /// How long, beyond the time a new machine listens, joining waits for the
 /// group's verdict on the name.
 const VERDICT: Duration = Duration::from_secs(30);
+
+/// How long hearing a group before joining it waits for one of its
+/// machines.
+const HEARING: Duration = Duration::from_secs(30);
 
 /// Why the daemon stops.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +42,7 @@ pub struct Daemon {
     home: Home,
     options: Options,
     groups: RwLock<BTreeMap<String, Engine>>,
+    listeners: Mutex<BTreeMap<String, Listener>>,
     program: Program,
     stop: watch::Sender<Option<Stop>>,
 }
@@ -63,6 +69,7 @@ impl Daemon {
             home,
             options,
             groups: RwLock::new(groups),
+            listeners: Mutex::new(BTreeMap::new()),
             program,
             stop: watch::Sender::new(None),
         })
@@ -142,14 +149,57 @@ impl Daemon {
         self.add(key, member, root).await
     }
 
+    /// Fails, naming the command that shows it, if this machine is in the
+    /// group `name`.
+    fn not_in(&self, groups: &BTreeMap<String, Engine>, name: &str) -> Result<()> {
+        if groups.contains_key(name) || self.home.group_names()?.iter().any(|group| group == name) {
+            bail!(
+                "this machine is already in the group {name}: see `pigeon group status --group {name}`"
+            );
+        }
+        Ok(())
+    }
+
+    /// Hears the group `key` admits without joining it, waiting a while
+    /// for one of its machines, and returns the names one may join under.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the key is invalid, this machine is in the group, or the
+    /// group cannot be heard.
+    pub async fn hear(&self, key: &str) -> Result<Names> {
+        let key: GroupKey = key.parse().context("the group key")?;
+        let name = key.name.to_string();
+        self.not_in(&*self.groups.read().await, &name)?;
+        let mut listeners = self.listeners.lock().await;
+        if listeners
+            .get(&name)
+            .is_some_and(|listener| *listener.key() != key)
+            && let Some(listener) = listeners.remove(&name)
+        {
+            listener.shutdown().await?;
+        }
+        if !listeners.contains_key(&name) {
+            let listener = Listener::start(&self.home.group(&name), key, &self.options).await?;
+            listeners.insert(name.clone(), listener);
+        }
+        let mut heard = listeners[&name].heard();
+        drop(listeners);
+        let _ = tokio::time::timeout(HEARING, heard.wait_for(|heard| *heard)).await;
+        let listeners = self.listeners.lock().await;
+        let listener = listeners
+            .get(&name)
+            .ok_or_else(|| anyhow!("this machine joined {name} meanwhile"))?;
+        Ok(listener.names())
+    }
+
     async fn add(&self, key: GroupKey, member: &str, root: Option<PathBuf>) -> Result<String> {
         let member = MemberName::parse(member).context("the member name")?;
         let name = key.name.to_string();
         let mut groups = self.groups.write().await;
-        if groups.contains_key(&name) || self.home.group_names()?.contains(&name) {
-            bail!(
-                "this machine is already in the group {name}: see `pigeon group status --group {name}`"
-            );
+        self.not_in(&groups, &name)?;
+        if let Some(listener) = self.listeners.lock().await.remove(&name) {
+            listener.shutdown().await?;
         }
         let root = root.unwrap_or_else(|| shared_root(&name));
         create_root(&root)?;
@@ -240,6 +290,11 @@ impl Daemon {
 
     /// Stops every group.
     pub async fn shutdown(self) {
+        for (name, listener) in self.listeners.into_inner() {
+            if let Err(error) = listener.shutdown().await {
+                eprintln!("pigeon: hearing {name} did not stop cleanly: {error:#}");
+            }
+        }
         for (name, engine) in self.groups.into_inner() {
             if let Err(error) = engine.shutdown().await {
                 eprintln!("pigeon: group {name} did not stop cleanly: {error:#}");

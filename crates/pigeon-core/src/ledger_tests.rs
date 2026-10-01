@@ -271,6 +271,13 @@ fn a_tag_claims_a_name_until_no_path_bears_it() {
     ledger.insert(mario.join(1)).unwrap();
     let dropped = mario.patch(2, vec![change("docs/+Build/a", Some(1), None)], None);
     ledger.insert(dropped.clone()).unwrap();
+    assert_eq!(
+        ledger
+            .tag_claims()
+            .map(MemberName::as_str)
+            .collect::<Vec<_>>(),
+        ["build"]
+    );
     let blocked = build.join(3);
     ledger.insert(blocked.clone()).unwrap();
     assert!(matches!(
@@ -284,6 +291,7 @@ fn a_tag_claims_a_name_until_no_path_bears_it() {
             Some("r"),
         ))
         .unwrap();
+    assert_eq!(ledger.tag_claims().count(), 0);
     let joined = build.join(5);
     ledger.insert(joined.clone()).unwrap();
     assert!(ledger.outcome(&joined.stamp()).unwrap().is_ok());

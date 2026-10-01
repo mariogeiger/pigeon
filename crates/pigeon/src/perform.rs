@@ -83,6 +83,7 @@ pub async fn perform(daemon: &Daemon, args: &Args) -> Result<Value> {
                 .await?;
             Ok(json!({ "key": key }))
         }
+        ("group", "names") => to_json(daemon.hear(args.required("key")?).await?),
         ("group", "join") => {
             let key = daemon
                 .join(args.required("key")?, args.required("member")?, root())

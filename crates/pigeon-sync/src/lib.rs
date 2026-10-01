@@ -2,7 +2,8 @@
 //! publishes what the machine may write, materializes what the selection
 //! holds, sets aside what it may not publish, applies requests, excludes
 //! members, follows the group's relay, and keeps placed folders at their
-//! destinations.
+//! destinations; and the listener that hears a group before its machine
+//! chooses a member name.
 
 mod actions;
 mod disk_sync;
@@ -10,6 +11,7 @@ pub mod edit;
 pub mod engine;
 mod exclude;
 mod layout;
+pub mod listen;
 mod protect;
 mod publish;
 pub mod reconcile;
@@ -23,6 +25,7 @@ pub mod watch;
 pub use edit::{Edit, Edited};
 pub use engine::{Engine, JoinState, Network, Options};
 pub use layout::PlaceView;
+pub use listen::{Listener, Names};
 pub use selection_change::{
     Amount, Changed, Delta, DeltaFiles, LISTED, OwnFreed, Preview, RuleEffect,
 };

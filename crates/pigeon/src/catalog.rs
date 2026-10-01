@@ -111,6 +111,7 @@ const MEMBER: Param = required(
     "Your name in the group: 1 to 32 characters among a-z and 0-9",
     Kind::Text,
 );
+const KEY: Param = required("key", "The group key a member shared", Kind::Text);
 const WHO: Param = required("member", "The member's name", Kind::Text);
 const ROOT: Param = optional(
     "root",
@@ -236,15 +237,18 @@ pub const ACTIONS: &[Action] = &[
             ROOT,
         ],
     )),
+    on_machine(view(
+        "group",
+        "names",
+        "Hear a group with its key, without joining it, and list the names to join under: a member's, to add a machine of theirs, or any name not taken",
+        &[KEY],
+        &[],
+    )),
     on_machine(action(
         "group",
         "join",
         "Join a group with the key a member shared",
-        &[
-            required("key", "The group key a member shared", Kind::Text),
-            MEMBER,
-            ROOT,
-        ],
+        &[KEY, MEMBER, ROOT],
     )),
     view(
         "group",

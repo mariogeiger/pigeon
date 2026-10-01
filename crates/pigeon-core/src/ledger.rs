@@ -452,6 +452,16 @@ impl Ledger {
         &self.state.members
     }
 
+    /// The names that a live path's tag claims while no member holds them,
+    /// under which nobody may join.
+    pub fn tag_claims(&self) -> impl Iterator<Item = &MemberName> {
+        self.state
+            .claims
+            .iter()
+            .filter(|(_, count)| **count > 0)
+            .map(|(name, _)| name)
+    }
+
     /// Whether `cert` names a member key its name is bound to now: whether
     /// the member list recognizes the machine it vouches for.
     #[must_use]

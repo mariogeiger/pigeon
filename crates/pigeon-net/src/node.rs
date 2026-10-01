@@ -56,7 +56,7 @@ type Counts = Mutex<HashMap<MachineId, usize>>;
 struct Shared {
     endpoint: Endpoint,
     group: GroupId,
-    cert: MachineCert,
+    cert: Option<MachineCert>,
     secret: watch::Sender<RenewedSecret>,
     log: Arc<dyn Log>,
     outgoing: broadcast::Sender<Arc<Message>>,
@@ -108,9 +108,9 @@ impl Shared {
             hello.group == self.group,
             "{remote} belongs to another group"
         );
-        let recognized = hello.cert.machine == remote
-            && hello.cert.is_valid(&self.group)
-            && self.log.recognizes(&hello.cert);
+        let recognized = hello.cert.as_ref().is_some_and(|cert| {
+            cert.machine == remote && cert.is_valid(&self.group) && self.log.recognizes(cert)
+        });
         let knows = || {
             let held = self.secret.borrow();
             let stale = self
@@ -178,7 +178,7 @@ impl Shared {
                     changed = secrets.changed() => {
                         changed?;
                         let secret = secrets.borrow_and_update().clone();
-                        if !self.log.recognizes(&theirs.cert) {
+                        if !theirs.cert.as_ref().is_some_and(|cert| self.log.recognizes(cert)) {
                             continue;
                         }
                         Arc::new(Message::Secret(secret))
@@ -327,13 +327,14 @@ pub struct Node {
 
 impl Node {
     /// Starts serving sync and blobs on `endpoint` for the machine `cert`
-    /// vouches for, and returns the node with the stream of patches its
+    /// vouches for, or for a machine with no member name yet that only
+    /// listens, and returns the node with the stream of patches its
     /// peers send.
     #[must_use]
     pub fn spawn(
         endpoint: Endpoint,
         group: GroupId,
-        cert: MachineCert,
+        cert: Option<MachineCert>,
         secret: RenewedSecret,
         log: Arc<dyn Log>,
         blobs: &Store,

@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
+use iroh::Endpoint;
 use iroh::address_lookup::MemoryLookup;
 use iroh_base::SecretKey;
 use iroh_blobs::api::TempTag;
@@ -44,6 +45,22 @@ pub enum Network {
     Internet,
     /// Only the machines added to this lookup, on this host.
     Local(MemoryLookup),
+}
+
+/// Binds the endpoint of `machine` in `group` on `network`, with the
+/// discovery on the local network that the internet brings.
+pub(crate) async fn bind(
+    machine: &SecretKey,
+    group: &GroupId,
+    network: &Network,
+) -> Result<(Endpoint, Option<MdnsAddressLookup>)> {
+    Ok(match network {
+        Network::Internet => {
+            let (endpoint, mdns) = bind_internet(machine.clone(), group).await?;
+            (endpoint, Some(mdns))
+        }
+        Network::Local(lookup) => (bind_local(machine.clone(), lookup).await?, None),
+    })
 }
 
 /// The engine's timings.
@@ -108,6 +125,10 @@ impl JoinState {
 pub(crate) struct SharedLedger(Mutex<Ledger>);
 
 impl SharedLedger {
+    pub(crate) fn new(ledger: Ledger) -> Self {
+        Self(Mutex::new(ledger))
+    }
+
     pub(crate) fn lock(&self) -> MutexGuard<'_, Ledger> {
         self.0.lock().expect("no panic holds the ledger")
     }
@@ -504,19 +525,13 @@ impl Engine {
             })?;
             state.set_selection(&selection)?;
         }
-        let ledger = Arc::new(SharedLedger(Mutex::new(ledger)));
+        let ledger = Arc::new(SharedLedger::new(ledger));
         let blobs = Blobs::open(&data.blobs_path(), options.gc).await?;
-        let (endpoint, mdns) = match &options.network {
-            Network::Internet => {
-                let (endpoint, mdns) = bind_internet(machine.clone(), &group).await?;
-                (endpoint, Some(mdns))
-            }
-            Network::Local(lookup) => (bind_local(machine.clone(), lookup).await?, None),
-        };
+        let (endpoint, mdns) = bind(&machine, &group, &options.network).await?;
         let (node, received) = Node::spawn(
             endpoint,
             group,
-            config.cert.clone(),
+            Some(config.cert.clone()),
             config.secret(),
             ledger.clone(),
             blobs.store(),

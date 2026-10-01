@@ -130,8 +130,14 @@ impl Machine {
         let name = MemberName::parse("mario").unwrap();
         let member = member_key(&group(), &name);
         let cert = MachineCert::issue(&group(), name, &member, key.public());
-        let (node, received) =
-            Node::spawn(endpoint, group(), cert.clone(), secret, log.clone(), &blobs);
+        let (node, received) = Node::spawn(
+            endpoint,
+            group(),
+            Some(cert.clone()),
+            secret,
+            log.clone(),
+            &blobs,
+        );
         Self {
             cert,
             key,
