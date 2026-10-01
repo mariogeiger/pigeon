@@ -7,8 +7,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
 use pigeon_core::name::MemberName;
+use pigeon_core::path::GroupPath;
 use pigeon_core::selection::{Cutoff, Rule};
-use pigeon_core::statement::Decision;
 use pigeon_sync::{Edit, Engine};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -144,6 +144,11 @@ async fn on_config(daemon: &Daemon, args: &Args, verb: &str) -> Result<Value> {
     }
 }
 
+/// The requests an action filed.
+fn requested(requests: &[GroupPath]) -> Value {
+    json!({ "requests": requests })
+}
+
 /// The member a call names.
 fn member(args: &Args) -> Result<MemberName> {
     MemberName::parse(args.required("member")?).context("the member name")
@@ -189,32 +194,27 @@ async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
             engine.set_rule(rule(cutoff)?).await?;
             Ok(Value::Null)
         }
-        ("request", "list") => to_json(engine.requests().await),
-        ("request", verb @ ("accept" | "refuse")) => {
-            let decision = if verb == "accept" {
-                Decision::Accept
-            } else {
-                Decision::Refuse
-            };
-            engine.decide(&args.path("request")?, decision).await?;
-            Ok(Value::Null)
+        ("change", "list") => to_json(engine.waiting_changes().await),
+        ("change", "apply") => {
+            let requests = engine.apply_change(&args.path("entry")?, message).await?;
+            Ok(requested(&requests))
         }
-        ("aside", "list") => to_json(engine.aside().await),
-        ("aside", "discard") => {
-            let requests = engine.discard_aside(&args.path("file")?).await?;
-            Ok(json!({ "requests": requests }))
+        ("change", "ask") => {
+            let requests = engine.ask_change(&args.path("entry")?, message).await?;
+            Ok(requested(&requests))
         }
-        ("aside", "restore") => {
+        ("change", "place") => {
+            let (entry, to) = (args.path("entry")?, args.path("to")?);
             let requests = engine
-                .restore_aside(&args.path("file")?, &args.path("to")?)
+                .place_change(&entry, &to, args.mode(), message)
                 .await?;
-            Ok(json!({ "requests": requests }))
+            Ok(requested(&requests))
         }
-        ("aside", "request") => {
+        ("change", "discard") => {
             let requests = engine
-                .request_aside(&args.path("file")?, args.mode(), message)
+                .discard_change(&args.path("entry")?, args.mode())
                 .await?;
-            Ok(json!({ "requests": requests }))
+            Ok(requested(&requests))
         }
         _ => bail!("{} is not implemented", action.command()),
     }

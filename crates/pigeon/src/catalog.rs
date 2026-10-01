@@ -100,7 +100,7 @@ const fn optional(name: &'static str, about: &'static str, kind: Kind) -> Param 
 const MODES: &[&str] = &["propose", "force"];
 const MODE: Param = optional(
     "mode",
-    "For files one may not write: propose the change to their owner, or force it",
+    "Ask the files' owners first, or apply it now; one's own files change at once either way",
     Kind::Choice(MODES),
 );
 const MESSAGE: Param = optional("message", "Why, for the files' owners", Kind::Text);
@@ -131,14 +131,9 @@ const FOLDER: Param = required(
     "The folder of the group, such as videos",
     Kind::Path,
 );
-const ASIDE_FILE: Param = required(
-    "file",
-    "The item's set-aside file in `pigeon aside list`",
-    Kind::Path,
-);
-const REQUEST: Param = required(
-    "request",
-    "The request's path, from `pigeon request list`",
+const ENTRY: Param = required(
+    "entry",
+    "The change's entry in `pigeon change list`: its request or set-aside file",
     Kind::Path,
 );
 
@@ -207,10 +202,9 @@ pub const NOUNS: &[(&str, &str)] = &[
         "config",
         "The group's config.toml on this machine: its member, root, selection, retention and places",
     ),
-    ("request", "Changes asked of a file's owner"),
     (
-        "aside",
-        "What the group's machines may not publish as it is",
+        "change",
+        "The changes waiting for someone: requests and what machines set aside",
     ),
     (
         "daemon",
@@ -489,56 +483,40 @@ pub const ACTIONS: &[Action] = &[
         ],
     ),
     view(
-        "request",
+        "change",
         "list",
-        "List the requests",
+        "List the changes waiting for someone, one per file: requests neither applied nor refused, and what machines set aside",
         &[],
+        &["entry", "path", "author", "owner", "waits", "outdated"],
+    ),
+    action(
+        "change",
+        "apply",
+        "Apply a waiting change: accept a proposal, or force a set-aside item on its owner",
+        &[ENTRY, MESSAGE],
+    ),
+    action(
+        "change",
+        "ask",
+        "Ask the owner of a set-aside item's path to accept it",
+        &[ENTRY, MESSAGE],
+    ),
+    action(
+        "change",
+        "place",
+        "Place a waiting change at another, free path instead, its author's unless the path names its owner",
         &[
-            "path",
-            "author",
-            "statement.owner",
-            "statement.mode",
-            "decision",
-            "applied",
-            "outdated",
+            ENTRY,
+            required("to", "Where to place it", Kind::Path),
+            MODE,
+            MESSAGE,
         ],
     ),
     action(
-        "request",
-        "accept",
-        "Accept a request addressed to you",
-        &[REQUEST],
-    ),
-    action(
-        "request",
-        "refuse",
-        "Refuse a request addressed to you",
-        &[REQUEST],
-    ),
-    view(
-        "aside",
-        "list",
-        "List what the group's machines set aside and nobody resolved yet",
-        &[],
-        &["file", "member", "path", "reason", "content.size"],
-    ),
-    action(
-        "aside",
+        "change",
         "discard",
-        "Discard a set-aside item for the whole group",
-        &[ASIDE_FILE],
-    ),
-    action(
-        "aside",
-        "restore",
-        "Publish a set-aside item as a new file, its member's unless its path names its owner",
-        &[ASIDE_FILE, required("to", "Where to put it", Kind::Path)],
-    ),
-    action(
-        "aside",
-        "request",
-        "Request a set-aside item from the owner of its path",
-        &[ASIDE_FILE, MODE, MESSAGE],
+        "Discard a waiting change: refuse a proposal, or delete a set-aside item for the whole group",
+        &[ENTRY, MODE],
     ),
     on_machine(Action {
         columns: &["group", "download", "free", "freeze"],

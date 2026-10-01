@@ -70,7 +70,6 @@ pub fn action(noun: &str, verb: &str) -> &'static Action {
 pub enum Tab {
     Overview,
     Files,
-    Changes,
 }
 
 /// Where a group's page stands in the bar: its group, its tab if it is
@@ -101,11 +100,10 @@ fn bar(bar: Option<&Bar<'_>>) -> Markup {
                     @for (tab, label, address) in [
                         (Tab::Overview, "Overview", ""),
                         (Tab::Files, "Files", "/files"),
-                        (Tab::Changes, "Changes", "/changes"),
                     ] {
                         a class=[(bar.tab == Some(tab)).then_some("current")] href={ "/g/" (bar.group) (address) } {
                             (label)
-                            @if tab == Tab::Changes && bar.waiting > 0 { " (" (bar.waiting) ")" }
+                            @if tab == Tab::Files && bar.waiting > 0 { " (" (bar.waiting) ")" }
                         }
                     }
                 }

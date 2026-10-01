@@ -2,17 +2,22 @@
 //! `files.js` opens and closes in place. Each row has a box that follows
 //! it, checked when every file under it is followed and mixed when only
 //! some are, its size, owner, time and statuses, one emoji each, which a
-//! legend below the tree explains, and a menu of what can be done to it.
-//! The drafts other machines announce show greyed with their author.
+//! legend below the tree explains, and a menu of what can be done to it,
+//! the changes waiting at it included. The drafts other machines announce,
+//! and the changes waiting at paths without a file, show greyed. Every
+//! change asks whether to apply it now or ask its owners, or only to
+//! confirm it when it is all the member's.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use maud::{Markup, html};
 use pigeon_core::path::GroupPath;
 use pigeon_core::selection::{exact_pattern, folder_pattern};
-use serde_json::Value;
+use serde_json::{Value, json};
 
-use crate::file_status::{countdown, file_status, folder_status, legend};
+use crate::file_status::{
+    change_title, changes_status, countdown, file_status, folder_status, legend,
+};
 use crate::file_tree::{self, Facts, Folder, Followed, Leaf, Row};
 use crate::form::form;
 use crate::group_pages::{encode, file_link, fill};
@@ -33,13 +38,25 @@ fn follows(item: &Value) -> bool {
     item["cutoff"] == "PlusInfinity"
 }
 
+/// Whether the change `change`, as `change list` gives it, waits for the
+/// member `me`: a proposal to them, or what their machines set aside.
+#[must_use]
+pub fn waits_for(change: &Value, me: &str) -> bool {
+    match &change["waits"] {
+        Value::String(waits) => waits == "Proposed" && change["owner"] == me,
+        _ => change["author"] == me,
+    }
+}
+
 /// One path of the group: its published file, the edit of it waiting
-/// here, and the drafts of it other machines announced.
+/// here, the drafts of it other machines announced, and the changes of it
+/// waiting for someone.
 struct Entry<'a> {
     path: &'a str,
     file: Option<&'a Value>,
     waiting: Option<&'a Value>,
     drafts: Vec<&'a Value>,
+    changes: Vec<&'a Value>,
 }
 
 impl Leaf for Entry<'_> {
@@ -51,29 +68,42 @@ impl Leaf for Entry<'_> {
         let size = match (self.file, self.waiting, self.drafts.first().copied()) {
             (Some(file), _, _) => &file["content"]["size"],
             (None, Some(item), _) | (None, None, Some(item)) => &item["size"],
-            (None, None, None) => &Value::Null,
+            (None, None, None) => self
+                .changes
+                .first()
+                .map_or(&Value::Null, |change| &change["content"]["size"]),
         };
         Facts {
             size: size.as_u64().unwrap_or_default(),
             followed: self.file.or(self.waiting).map(follows),
             time: self.file.and_then(|file| file["time"].as_str()),
             waiting: self.waiting.is_some(),
+            changes: self.changes.len(),
         }
     }
 }
 
-/// The files and the waiting edits, one entry per path.
-fn entries<'a>(files: &'a [Value], waiting: &'a [Value]) -> Vec<Entry<'a>> {
+/// The items of a list result.
+fn listed(list: &Value) -> &[Value] {
+    list.as_array().map(Vec::as_slice).unwrap_or_default()
+}
+
+/// The files, the waiting edits and the waiting changes, one entry per
+/// path.
+fn entries<'a>(files: &'a [Value], waiting: &'a [Value], changes: &'a [Value]) -> Vec<Entry<'a>> {
     let mut entries: BTreeMap<&str, Entry> = BTreeMap::new();
-    for item in files.iter().chain(waiting) {
+    for item in files.iter().chain(waiting).chain(changes) {
         let path = item["path"].as_str().unwrap_or_default();
         let entry = entries.entry(path).or_insert(Entry {
             path,
             file: None,
             waiting: None,
             drafts: Vec::new(),
+            changes: Vec::new(),
         });
-        if item.get("here").is_none() {
+        if item.get("entry").is_some() {
+            entry.changes.push(item);
+        } else if item.get("here").is_none() {
             entry.file = Some(item);
         } else if item["here"] == true {
             entry.waiting = Some(item);
@@ -187,10 +217,32 @@ fn menu_button(
     };
     let freezes = waiting.iter().any(|item| item["freezes"] == true);
     let published = entry.is_some_and(|entry| entry.file.is_some());
+    let editable = entry.is_none_or(|entry| entry.file.or(entry.waiting).is_some());
+    let changes: Vec<Value> = entry
+        .map(|entry| entry.changes.as_slice())
+        .unwrap_or_default()
+        .iter()
+        .map(|change| {
+            let waits = match &change["waits"] {
+                Value::String(waits) if waits == "Proposed" => "proposed",
+                Value::String(_) => "applying",
+                _ => "aside",
+            };
+            json!({
+                "entry": change["entry"],
+                "waits": waits,
+                "owned": change["owner"] == member,
+                "made": change["author"] == member,
+                "title": change_title(change, member),
+            })
+        })
+        .collect();
+    let changes = Value::Array(changes).to_string();
     html! {
         button type="button" class="more" title="Actions" data-kind=(kind) data-path=(path)
             data-pattern=[pattern] data-writable=(writable) data-waiting=(waiting.len())
-            data-freezes=(freezes) data-published=(published) data-addable=[addable] { "⋯" }
+            data-freezes=(freezes) data-published=(published) data-editable=(editable)
+            data-addable=[addable] data-changes=(changes) { "⋯" }
     }
 }
 
@@ -201,16 +253,27 @@ fn dialogs(group: &str, back: &str) -> Markup {
         input type="hidden" name="back" value=(back);
         input type="hidden" name="group" value=(group);
     };
-    let request = html! {
-        div class="request" {
-            p { "You may not write this: it becomes a request to its owner." }
-            label { span { "Why, for the owner" } input type="text" name="message"; }
+    let close = html! { button type="button" value="" class="close" { "Cancel" } };
+    let choice = |message: bool| {
+        html! {
+            p class="mine" { button name="mode" value="force" { "Confirm" } " " (close) }
+            div class="theirs" {
+                p { "It is not all yours: apply it now, or ask the owners first." }
+                @if message {
+                    label { span { "Why, for the owners" } input type="text" name="message"; }
+                }
+                p {
+                    button name="mode" value="force" { "Apply now" } " "
+                    button name="mode" value="propose" { "Ask the owners" } " " (close)
+                }
+            }
         }
     };
-    let close = html! { button type="button" value="" class="close" { "Cancel" } };
+    let request = choice(true);
     html! {
         dialog id="menu" {
             p { strong class="subject" {} }
+            div class="waiting" {}
             div class="choices" {
                 button type="button" data-open="rename" { "Rename…" }
                 button type="button" data-open="replace" { "Replace…" }
@@ -230,14 +293,14 @@ fn dialogs(group: &str, back: &str) -> Markup {
             form method="post" action="/act/file/rename" enctype="multipart/form-data" {
                 p { "Rename " strong class="subject" {} } (start) (hidden("from"))
                 label { span { "New path" } input type="text" name="to" required; }
-                (request) button { "Rename" } " " (close)
+                (request)
             }
         }
         dialog id="replace" {
             form method="post" action="/act/file/write" enctype="multipart/form-data" {
                 p { "Replace " strong class="subject" {} } (start) (hidden("path"))
                 label { span { "New content" } input type="file" name="content" required; }
-                (request) button { "Replace" } " " (close)
+                (request)
             }
         }
         dialog id="add" {
@@ -245,13 +308,26 @@ fn dialogs(group: &str, back: &str) -> Markup {
                 p { "Add a file to " strong class="subject" {} } (start)
                 label { span { "Path" } input type="text" name="path" required; }
                 label { span { "Content" } input type="file" name="content" required; }
-                (request) button { "Add" } " " (close)
+                (request)
             }
         }
         dialog id="delete" {
             form method="post" action="/act/file/delete" enctype="multipart/form-data" {
                 p { "Delete " strong class="subject" {} "?" } (start) (hidden("path"))
-                (request) button { "Delete" } " " (close)
+                (request)
+            }
+        }
+        dialog id="place" {
+            form method="post" action="/act/change/place" enctype="multipart/form-data" {
+                p { "Place this change of " strong class="subject" {} " at another path" } (start) (hidden("entry"))
+                label { span { "New path" } input type="text" name="to" required; }
+                (choice(true))
+            }
+        }
+        dialog id="discard" {
+            form method="post" action="/act/change/discard" enctype="multipart/form-data" {
+                p { "Discard this change of " strong class="subject" {} " for the whole group?" } (start) (hidden("entry"))
+                (choice(false))
             }
         }
         dialog id="unfollow" {
@@ -296,7 +372,7 @@ fn row(
                     td { (size(summary.size)) }
                     td {}
                     td { @if let Some(time) = &summary.time { (short_time(time)) } }
-                    td { (folder_status(summary.waiting)) }
+                    td { (folder_status(summary.waiting, summary.changes)) }
                     td { (menu_button("folder", path, Some(folder), None, member)) }
                 }
             }
@@ -314,28 +390,43 @@ fn row(
                 tr data-path=(path) class=[target.or(item.is_none().then_some("draft"))] hidden[hidden] {
                     td { (follow_box(path, exact_pattern, item.map(|item| if follows(item) { Followed::All } else { Followed::None }))) }
                     td style=(indent) {
-                        @if entry.file.is_some() { a href=(file_link(group, path)) { (name) } }
-                        @else { (name) }
+                        @if entry.file.is_some() || (!entry.changes.is_empty() && GroupPath::parse(path).is_ok()) {
+                            a href=(file_link(group, path)) { (name) }
+                        } @else { (name) }
                     }
                     td { (size(facts.size)) }
                     td { (owner.unwrap_or_default()) }
                     td { @if let Some(time) = facts.time { (short_time(time)) } }
-                    td { (file_status(entry.file, entry.waiting, &entry.drafts)) }
-                    td { @if item.is_some() { (menu_button("file", path, None, Some(entry), member)) } }
+                    td {
+                        (file_status(entry.file, entry.waiting, &entry.drafts))
+                        (changes_status(&entry.changes, member))
+                    }
+                    td {
+                        @if item.is_some() || !entry.changes.is_empty() {
+                            (menu_button("file", path, None, Some(entry), member))
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-/// The whole group as a tree: the folders above `under` open, and those
-/// of `member`, until one opens or closes others.
+/// The whole group as a tree, with the changes waiting at each path: the
+/// folders above `under` open, and those of `member`, until one opens or
+/// closes others.
 #[must_use]
-pub fn files(bar: &Bar<'_>, member: &str, under: &str, files: &Value, waiting: &Value) -> Markup {
+pub fn files(
+    bar: &Bar<'_>,
+    member: &str,
+    under: &str,
+    files: &Value,
+    waiting: &Value,
+    changes: &Value,
+) -> Markup {
     let group = bar.group;
-    let files = files.as_array().map(Vec::as_slice).unwrap_or_default();
-    let waiting = waiting.as_array().map(Vec::as_slice).unwrap_or_default();
-    let tree = Folder::root(entries(files, waiting));
+    let (files, waiting, changes) = (listed(files), listed(waiting), listed(changes));
+    let tree = Folder::root(entries(files, waiting, changes));
     let rows = tree.rows();
     let open = first_open(&rows, member, under);
     let back = if under.is_empty() {
@@ -364,7 +455,7 @@ pub fn files(bar: &Bar<'_>, member: &str, under: &str, files: &Value, waiting: &
                 td { (size(tree.summary.size)) }
                 td {}
                 td { @if let Some(time) = &tree.summary.time { (short_time(time)) } }
-                td { (folder_status(tree.summary.waiting)) }
+                td { (folder_status(tree.summary.waiting, tree.summary.changes)) }
                 td { (menu_button("root", "", Some(&tree), None, member)) }
             }
             @for one in &rows { (row(group, member, under, one, &open)) }
@@ -408,7 +499,7 @@ mod tests {
             file("docs/none/e.txt", &json!("MinusInfinity")),
             file("docs/[x].txt", &json!({"At": 5})),
         ]);
-        let page = files(&BAR, "alice", "", &list, &json!([])).into_string();
+        let page = files(&BAR, "alice", "", &list, &json!([]), &json!([])).into_string();
         assert!(
             row_of(&page, "docs/all")
                 .contains(r#"data-pattern="/docs/all/" data-state="checked" checked"#)
@@ -439,7 +530,7 @@ mod tests {
             file("team/+alice/b.txt", &json!("PlusInfinity")),
             file("team/+bob/c.txt", &json!("PlusInfinity")),
         ]);
-        let page = files(&BAR, "alice", "docs/deep", &list, &json!([])).into_string();
+        let page = files(&BAR, "alice", "docs/deep", &list, &json!([]), &json!([])).into_string();
         assert!(row_of(&page, "docs").contains("data-open"));
         assert!(!row_of(&page, "docs/deep/a.txt").contains("hidden"));
         assert!(!row_of(&page, "team/+alice/b.txt").contains("hidden"));
@@ -457,7 +548,7 @@ mod tests {
             {"path": "+alice/new/b.txt", "here": true, "due_in": 3, "freezes": false, "deleted": false, "cutoff": "PlusInfinity", "size": 4},
             {"path": "+alice/c.txt", "here": true, "due_in": 192, "freezes": true, "deleted": false, "cutoff": "MinusInfinity", "size": 5},
         ]);
-        let page = files(&BAR, "alice", "", &list, &waiting).into_string();
+        let page = files(&BAR, "alice", "", &list, &waiting, &json!([])).into_string();
         assert!(page.contains(r#"⏳ <span data-due="2">0:02</span>"#));
         assert!(page.contains(r#"<span data-due="192">3:12</span>"#));
         assert!(row_of(&page, "+alice/new").contains("⏳ 1"));
@@ -481,7 +572,7 @@ mod tests {
              "deleted": false, "cutoff": "MinusInfinity", "size": 7,
              "rivals": [{"author": "alice", "path": "inbox/Report.txt", "due_in": 200, "wins": false}]},
         ]);
-        let page = files(&BAR, "alice", "", &json!([]), &waiting).into_string();
+        let page = files(&BAR, "alice", "", &json!([]), &waiting, &json!([])).into_string();
         let mine = row_of(&page, "inbox/Report.txt");
         assert!(mine.contains(r#"🛑 bob <span data-due="42">0:42</span>"#));
         assert!(mine.contains("rename it to keep both"));
@@ -493,5 +584,39 @@ mod tests {
         assert!(!theirs.contains("checkbox") && !theirs.contains("⋯"));
         assert!(!theirs.contains("set aside"));
         assert!(!page.contains("edits wait to be published."));
+    }
+
+    #[test]
+    fn waiting_changes_show_on_their_rows_with_what_resolves_them() {
+        let list = json!([file("+alice/list.txt", &json!("PlusInfinity"))]);
+        let changes = json!([
+            {"entry": ".pigeon/requests/1.json", "path": "+alice/list.txt", "author": "bob",
+             "owner": "alice", "content": {"size": 3}, "message": "bread", "waits": "Proposed"},
+            {"entry": ".pigeon/aside/2.json", "path": "docs/Plan.txt", "author": "papy",
+             "owner": "papy", "content": {"size": 9}, "message": "",
+             "waits": {"SetAside": {"reason": {"Rejected": "taken"}, "machine": "m"}}},
+        ]);
+        let page = files(&BAR, "alice", "", &list, &json!([]), &changes).into_string();
+        let proposal = row_of(&page, "+alice/list.txt");
+        assert!(proposal.contains("📬 bob → alice"), "{proposal}");
+        assert!(
+            proposal.contains("&quot;waits&quot;:&quot;proposed&quot;"),
+            "{proposal}"
+        );
+        assert!(proposal.contains("&quot;owned&quot;:true"), "{proposal}");
+        let aside = row_of(&page, "docs/Plan.txt");
+        assert!(aside.contains(r#"class="draft""#), "{aside}");
+        assert!(aside.contains("📬 papy"), "{aside}");
+        assert!(aside.contains("the group rejected it: taken"), "{aside}");
+        assert!(aside.contains(r#"data-editable="false""#), "{aside}");
+        assert!(aside.contains("9 B"), "{aside}");
+        assert!(row_of(&page, "docs").contains("📬 1"), "{page}");
+        assert!(
+            page.contains(r#"<dialog id="place">"#) && page.contains(r#"<dialog id="discard">"#)
+        );
+        assert!(page.contains(r#"value="propose">Ask the owners"#), "{page}");
+        let waiting = changes.as_array().unwrap();
+        assert!(waits_for(&waiting[0], "alice") && !waits_for(&waiting[0], "bob"));
+        assert!(waits_for(&waiting[1], "papy") && !waits_for(&waiting[1], "alice"));
     }
 }

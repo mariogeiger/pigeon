@@ -7,7 +7,7 @@
 
 mod common;
 
-use common::{Machine, content, eventually, family, settle};
+use common::{Machine, content, eventually, family, published, settle};
 use iroh::address_lookup::MemoryLookup;
 use serde_json::{Value, json};
 
@@ -18,7 +18,7 @@ async fn aside_at(machine: &Machine, path: &str) -> Vec<Value> {
         .await
         .into_iter()
         .filter(|item| item["path"] == path)
-        .map(|item| item["reason"].clone())
+        .map(|item| item["waits"]["SetAside"]["reason"].clone())
         .collect()
 }
 
@@ -54,7 +54,7 @@ async fn an_edit_made_offline_loses_to_a_later_one_of_the_same_member_and_stays_
         .await;
     }
     let item = &alice.aside().await[0];
-    assert_eq!(item["member"], "papy", "{item}");
+    assert_eq!(item["author"], "papy", "{item}");
     assert_eq!(item["content"], content("from the train\n"), "{item}");
     assert!(desktop.shows("+papy/budget.txt", "from home, later\n"));
     let history = desktop.history("+papy/budget.txt").await;
@@ -91,38 +91,35 @@ async fn an_editor_saving_over_a_read_only_file_is_set_aside_then_proposed_and_a
     )
     .await;
     let item = &desktop.aside().await[0];
-    assert_eq!(item["here"], true, "{item}");
+    assert_eq!(
+        (&item["author"], &item["owner"]),
+        (&json!("papy"), &json!("alice")),
+        "{item}"
+    );
     desktop
         .run(
-            "aside",
-            "request",
-            json!({"file": item["file"], "mode": "propose", "message": "sugar"}),
+            "change",
+            "ask",
+            json!({"entry": item["entry"], "message": "sugar"}),
         )
         .await;
-    eventually("alice hears the proposal", &all, async || {
-        alice
-            .requests()
-            .await
-            .iter()
-            .any(|request| request["statement"]["mode"] == "propose")
+    eventually("alice hears the proposal alone", &all, async || {
+        let changes = alice.changes().await;
+        changes.len() == 1 && changes[0]["waits"] == "Proposed"
     })
     .await;
-    let requests = alice.requests().await;
-    let proposal = requests
-        .iter()
-        .find(|request| request["statement"]["mode"] == "propose")
-        .unwrap();
+    let proposal = alice.changes().await[0]["entry"].clone();
     alice
-        .run("request", "accept", json!({"request": proposal["path"]}))
+        .run("change", "apply", json!({"entry": proposal}))
         .await;
     eventually(
-        "both hold papy's recipe and nothing stays aside",
+        "both hold papy's recipe and nothing waits",
         &all,
         async || {
             alice.shows("+alice/recipe.txt", "flour, sugar\n")
                 && desktop.shows("+alice/recipe.txt", "flour, sugar\n")
-                && desktop.aside().await.is_empty()
-                && alice.aside().await.is_empty()
+                && desktop.changes().await.is_empty()
+                && alice.changes().await.is_empty()
         },
     )
     .await;
@@ -136,9 +133,9 @@ async fn two_members_dropping_one_name_while_apart_both_keep_their_content() {
     alice.go_offline().await;
     desktop.go_offline().await;
     alice.write("docs/plan.txt", "alice's plan\n");
-    settle().await;
+    published(&alice, "docs/plan.txt", 1).await;
     desktop.write("docs/Plan.txt", "papy's plan\n");
-    settle().await;
+    published(&desktop, "docs/Plan.txt", 1).await;
     alice.go_online().await;
     desktop.go_online().await;
 
@@ -159,13 +156,16 @@ async fn two_members_dropping_one_name_while_apart_both_keep_their_content() {
     .await;
     let item = &alice.aside().await[0];
     assert_eq!(item["path"], "docs/Plan.txt", "{item}");
-    assert!(item["reason"]["Rejected"].is_string(), "{item}");
+    assert!(
+        item["waits"]["SetAside"]["reason"]["Rejected"].is_string(),
+        "{item}"
+    );
     assert_eq!(item["content"], content("papy's plan\n"), "{item}");
     desktop
         .run(
-            "aside",
-            "restore",
-            json!({"file": item["file"], "to": "docs/Plan (papy).txt"}),
+            "change",
+            "place",
+            json!({"entry": item["entry"], "to": "docs/Plan (papy).txt"}),
         )
         .await;
     alice
@@ -198,12 +198,15 @@ async fn a_name_windows_cannot_hold_is_set_aside_and_restored_under_one_it_can()
     })
     .await;
     let item = &desktop.aside().await[0];
-    assert!(item["reason"]["Unportable"].is_string(), "{item}");
+    assert!(
+        item["waits"]["SetAside"]["reason"]["Unportable"].is_string(),
+        "{item}"
+    );
     desktop
         .run(
-            "aside",
-            "restore",
-            json!({"file": item["file"], "to": "+papy/Facture - mars.txt"}),
+            "change",
+            "place",
+            json!({"entry": item["entry"], "to": "+papy/Facture - mars.txt"}),
         )
         .await;
     alice
@@ -287,13 +290,13 @@ async fn a_proposal_made_before_the_owners_edit_says_it_is_outdated() {
         )
         .await;
     eventually("alice hears it", &both, async || {
-        alice.requests().await.len() == 1
+        alice.changes().await.len() == 1
     })
     .await;
-    assert_eq!(alice.requests().await[0]["outdated"], false);
+    assert_eq!(alice.changes().await[0]["outdated"], false);
     alice.write("+alice/list.txt", "milk, eggs\n");
     eventually("the proposal is outdated", &both, async || {
-        alice.requests().await[0]["outdated"] == true
+        alice.changes().await[0]["outdated"] == true
     })
     .await;
 }
@@ -316,7 +319,7 @@ async fn deleting_someone_elses_file_on_disk_only_stops_holding_it() {
     settle().await;
     assert!(alice.shows("+alice/recipe.txt", "flour, eggs\n"));
     assert!(desktop.read("+alice/recipe.txt").is_none());
-    assert!(desktop.aside().await.is_empty());
+    assert!(desktop.changes().await.is_empty());
 }
 
 #[tokio::test]

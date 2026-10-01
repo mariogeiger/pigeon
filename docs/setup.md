@@ -143,23 +143,24 @@ newcomer.
   frozen, and only a request changes it. `pigeon file pending` lists the
   edits still waiting, and `pigeon file publish --path <file or folder>`
   publishes them at once.
-- To change a file you do not own, write it anyway with
-  `pigeon file write --path <path> --content <local file> --mode propose`,
-  or `--mode force`. Its owner sees the request with `pigeon request list`
-  and answers with `pigeon request accept` or `pigeon request refuse`. A
-  forced request is applied without waiting.
+- Every change made through pigeon, `pigeon file write`, `rename` or
+  `delete` and the web interface alike, becomes a request to the owner of
+  each file, one per file: `--mode propose` asks the owner first, and
+  `--mode force` applies it without waiting. A request to oneself is
+  applied at once.
 - A `.pigeonignore` file, in the gitignore syntax, keeps files out of
   publication. pigeon never publishes them, not even their names.
 - A file pigeon may not publish, such as an edit in someone else's folder,
-  is set aside, and the whole group sees it: `pigeon aside list` shows what
-  every machine set aside. Anyone, from any machine, resolves an item with
-  `pigeon aside restore`, `request` or `discard --file <its set-aside
-  file>`, which asks the machines of the item's member to carry it out, so
-  that the group can sort out the items of someone who never opens pigeon.
-  A restored file belongs to the item's member unless its path names its
-  owner. The web interface's Changes page lists your machines' items under
-  "Set aside, not sent" and those of others under "Set aside by others",
-  between the requests addressed to you and those waiting for others.
+  is set aside, and the whole group sees it. `pigeon change list` shows,
+  one per file, every change waiting for someone: the requests neither
+  applied nor refused, and what machines set aside. Anyone, from any
+  machine, resolves one with `pigeon change apply`, `ask`, `place --to
+  <path>` or `discard --entry <its entry>`: apply accepts a proposal or
+  forces a set-aside item, ask proposes a set-aside item to the owner of
+  its path, place puts the change at another path, and discard refuses a
+  proposal or drops a set-aside item. The first decision on a proposal is
+  final, whoever makes it, so the group can sort out the changes of
+  someone who never opens pigeon.
 
 ## 6. Choose what each machine holds
 
@@ -221,8 +222,15 @@ deletion waiting, ✍️ another member's draft, ⚠️ and 🛑 rival drafts.
 Drafts other members are adding to drop folders show greyed, with their
 author and the time left; when two members add the same path, both are
 warned, and the one whose copy will be set aside is told to rename it.
-`pigeon file pending` lists the same drafts. The group's pages update
-themselves as files change.
+`pigeon file pending` lists the same drafts. 📬 marks each change
+waiting for someone, on the line of its file, greyed when the file does
+not exist yet, and folders count them; the Files tab counts the proposals
+addressed to you and what your machines set aside. A line's menu applies
+a change, asks its owner, places it elsewhere or discards it, and the
+file's page shows the difference it makes. Every change asks only to
+confirm it when it is all yours, and otherwise whether to apply it now or
+ask the owners first. The group's pages update themselves as files
+change.
 
 `pigeon selection place --folder videos --destination /mnt/big/videos`
 keeps a folder on another disk and leaves a link at its place, a junction

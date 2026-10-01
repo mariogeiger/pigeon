@@ -162,13 +162,13 @@ mod tests {
         .unwrap();
         assert!(unfollow.flag("free"));
         let discard = args(
-            "aside",
+            "change",
             "discard",
-            json!({"file": ".pigeon/aside/a.json", "group": "g"}),
+            json!({"entry": ".pigeon/aside/a.json", "group": "g"}),
         )
         .unwrap();
         assert_eq!(
-            discard.path("file").unwrap().as_str(),
+            discard.path("entry").unwrap().as_str(),
             ".pigeon/aside/a.json"
         );
         assert_eq!(discard.text("group"), Some("g"));

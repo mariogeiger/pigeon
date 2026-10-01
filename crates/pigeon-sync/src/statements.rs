@@ -1,8 +1,9 @@
 //! Requests and decisions: statements in the statements folder through
-//! which a member asks an owner to change the owner's files, the owner
-//! answers, and the owner's machine applies what was forced or accepted.
+//! which a member asks an owner to change one of the owner's files, anyone
+//! decides it once, and the owner's machine applies what was forced,
+//! accepted, or asked of the owner by the owner.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
@@ -52,9 +53,10 @@ impl Inner {
 
     /// Asks the owners of the changed files to apply `changes`, a new
     /// file belonging to `adder` unless its path names its owner: one
-    /// request per owner, whose file is named after its patch's stamp.
+    /// request per change, whose file is named after its patch's stamp;
+    /// then applies at once those this member's machine may.
     pub(crate) async fn request(
-        &self,
+        self: &Arc<Self>,
         work: &mut Work,
         changes: Vec<Change>,
         mode: Mode,
@@ -64,22 +66,15 @@ impl Inner {
         if work.join != JoinState::Joined {
             bail!("the member has not joined the group yet");
         }
-        let mut by_owner: BTreeMap<MemberName, Vec<Change>> = BTreeMap::new();
-        {
-            let ledger = self.ledger.lock();
-            for change in changes {
-                let owner = ledger.owner_of(&change.path, adder);
-                by_owner.entry(owner).or_default().push(change);
-            }
-        }
         let mut paths = Vec::new();
-        for (owner, changes) in by_owner {
+        for change in changes {
+            let owner = self.ledger.lock().owner_of(&change.path, adder);
             let stamp = self.clock.stamp();
             let path = request_path(&stamp);
             let statement = RequestStatement {
                 owner,
                 mode,
-                changes,
+                changes: vec![change],
                 message: message.to_owned(),
             };
             let body = serde_json::to_vec_pretty(&statement)?;
@@ -87,11 +82,12 @@ impl Inner {
                 .await?;
             paths.push(path);
         }
+        self.apply_requests(work).await;
         Ok(paths)
     }
 
-    /// Answers the request at `request`, which must be addressed to this
-    /// member.
+    /// Decides the proposal at `request`, which nobody decided yet,
+    /// whoever it is addressed to.
     pub(crate) async fn decide(
         &self,
         work: &mut Work,
@@ -99,8 +95,14 @@ impl Inner {
         decision: Decision,
     ) -> Result<()> {
         let statement = self.request_statement(request).await?;
-        if statement.owner != self.member {
-            bail!("{request} is addressed to {}", statement.owner);
+        if statement.mode == Mode::Force {
+            bail!("{request} is forced: it needs no decision");
+        }
+        if self.applied_requests().contains(request) {
+            bail!("{request} is applied already");
+        }
+        if let Some(decided) = self.decision(request).await {
+            bail!("{request} is decided already: {decided:?}");
         }
         let body = serde_json::to_vec_pretty(&DecisionStatement {
             request: request.clone(),
@@ -122,18 +124,15 @@ impl Inner {
         }
     }
 
-    /// The owner's decision on `request`, if the owner made one.
-    pub(crate) async fn decision(
-        &self,
-        request: &GroupPath,
-        owner: &MemberName,
-    ) -> Option<Decision> {
+    /// The decision on `request`, if anyone made one: the first, as its
+    /// file freezes once published.
+    pub(crate) async fn decision(&self, request: &GroupPath) -> Option<Decision> {
         let head = self
             .ledger
             .lock()
             .head(&decision_path(request).key())
             .cloned()?;
-        let content = head.content.filter(|_| head.owner == *owner)?;
+        let content = head.content?;
         let statement: DecisionStatement = self.read_statement(&content).await.ok()?;
         (statement.request == *request).then_some(statement.decision)
     }
@@ -188,7 +187,8 @@ impl Inner {
         }
         let wanted = match statement.mode {
             Mode::Force => Some(Decision::Accept),
-            Mode::Propose => self.decision(&request.path, me).await,
+            Mode::Propose if request.owner == *me => Some(Decision::Accept),
+            Mode::Propose => self.decision(&request.path).await,
         };
         if wanted == Some(Decision::Refuse) {
             return Ok(());

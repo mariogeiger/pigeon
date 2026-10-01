@@ -242,10 +242,8 @@ async fn two_daemons_share_files_and_answer_requests() {
         )
         .await
         .unwrap();
-    assert_eq!(
-        wrote,
-        json!({"published": ["+alice/notes.txt"], "requests": []})
-    );
+    assert_eq!(wrote["published"], json!([]));
+    assert_eq!(wrote["requests"].as_array().unwrap().len(), 1, "{wrote}");
     b.call("selection", "follow", json!({"pattern": "/+alice/"}))
         .await
         .unwrap();
@@ -265,21 +263,26 @@ async fn two_daemons_share_files_and_answer_requests() {
         .unwrap();
     assert_eq!(asked["published"], json!([]));
     let request = asked["requests"][0].as_str().unwrap().to_owned();
-    eventually("alice sees the request", async || {
-        let requests = a.call("request", "list", json!({})).await.unwrap();
-        requests.as_array().unwrap().len() == 1
+    eventually("alice sees the proposal", async || {
+        let changes = a.call("change", "list", json!({})).await.unwrap();
+        changes.as_array().unwrap().len() == 1
     })
     .await;
     eventually("alice reviews the difference", async || {
-        let page = a.page("/g/cheapmo/changes").await;
+        let page = a.page("/g/cheapmo/file?path=%2Balice/notes.txt").await;
         page.contains("- hello") && page.contains("+ bonjour")
     })
     .await;
-    let page = a.page("/g/cheapmo/changes").await;
-    assert!(page.contains("<h2>To you</h2>"), "{page}");
-    assert!(page.contains(r#"action="/act/request/accept""#));
-    assert!(page.contains("Changes (1)"), "{page}");
-    a.call("request", "accept", json!({"request": request}))
+    let page = a.page("/g/cheapmo/file?path=%2Balice/notes.txt").await;
+    assert!(
+        page.contains("bob proposes a change to alice: in French"),
+        "{page}"
+    );
+    assert!(page.contains(r#"action="/act/change/apply""#), "{page}");
+    let page = a.page("/g/cheapmo/files").await;
+    assert!(page.contains("Files (1)"), "{page}");
+    assert!(page.contains("📬 bob → alice"), "{page}");
+    a.call("change", "apply", json!({"entry": request}))
         .await
         .unwrap();
     let on_a = a.root("cheapmo").join("+alice/notes.txt");
@@ -347,8 +350,11 @@ async fn a_machine_hears_the_group_before_choosing_its_name() {
     let names = b.call("group", "names", json!({"key": key})).await.unwrap();
     assert_eq!(names["heard"], true, "{names}");
     assert_eq!(names["members"], json!(["alice"]));
-    let names = b.call("group", "names", json!({"key": key})).await.unwrap();
-    assert_eq!(names["taken"], json!(["alice", "carol"]));
+    eventually("the plan names carol", async || {
+        let names = b.call("group", "names", json!({"key": key})).await.unwrap();
+        names["taken"] == json!(["alice", "carol"])
+    })
+    .await;
     assert_eq!(b.call("group", "list", json!({})).await, Ok(json!([])));
     b.call(
         "group",

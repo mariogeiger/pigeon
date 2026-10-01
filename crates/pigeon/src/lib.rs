@@ -6,7 +6,6 @@
 pub mod api;
 pub mod args;
 pub mod catalog;
-mod changes_page;
 pub mod cli;
 pub mod client;
 pub mod config_preview;

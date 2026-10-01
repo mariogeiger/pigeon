@@ -25,7 +25,6 @@ use serde_json::{Map, Value, json};
 
 use crate::api::{App, call};
 use crate::catalog::{Kind, find};
-use crate::changes_page::{self, AsideCard, RequestCard};
 use crate::config_preview;
 use crate::files_page;
 use crate::form::BACK;
@@ -102,10 +101,14 @@ async fn home(State(app): State<Arc<App>>) -> Page {
 /// How many changes of `group` wait for its member to act.
 async fn waiting(app: &App, group: &str) -> Result<usize, Failure> {
     let status = view(app, "group", "status", json!({ "group": group })).await?;
-    let requests = view(app, "request", "list", json!({ "group": group })).await?;
-    let aside = view(app, "aside", "list", json!({ "group": group })).await?;
+    let changes = view(app, "change", "list", json!({ "group": group })).await?;
     let me = status["member"].as_str().unwrap_or_default();
-    Ok(changes_page::waiting(&requests, &aside, me))
+    Ok(changes
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|change| files_page::waits_for(change, me))
+        .count())
 }
 
 /// The bar of `group`'s page at `tab`.
@@ -146,10 +149,11 @@ async fn files(
     let status = view(&app, "group", "status", json!({ "group": group })).await?;
     let list = view(&app, "file", "list", json!({ "group": group })).await?;
     let waiting = view(&app, "file", "pending", json!({ "group": group })).await?;
+    let changes = view(&app, "change", "list", json!({ "group": group })).await?;
     let member = status["member"].as_str().unwrap_or_default();
     let bar = bar(&app, &group, Some(Tab::Files)).await?;
     Ok(html_page(&files_page::files(
-        &bar, member, under, &list, &waiting,
+        &bar, member, under, &list, &waiting, &changes,
     )))
 }
 
@@ -194,10 +198,19 @@ async fn file(
         })
         .cloned()
         .unwrap_or(Value::Null);
+    let (member, changes) = with_engine(&app, &group, async |engine| {
+        let member = engine.status().await.member.to_string();
+        (member, change_cards(engine, path).await)
+    })
+    .await?;
     let bar = bar(&app, &group, None).await?;
-    Ok(html_page(&group_pages::file(
-        &bar, path, &current, &history, &waiting,
-    )))
+    let shown = group_pages::Shown {
+        file: &current,
+        history: &history,
+        waiting: &waiting,
+        changes: &changes,
+    };
+    Ok(html_page(&group_pages::file(&bar, &member, path, &shown)))
 }
 
 /// The side of a comparison that `content` is.
@@ -227,75 +240,21 @@ fn version_content(engine: &Engine, path: &GroupPath, time: Option<u64>) -> Opti
     version.and_then(|version| version.content)
 }
 
-/// The changes of `group`'s requests, each with its difference.
-async fn request_cards(engine: &Engine) -> Vec<RequestCard> {
+/// The changes waiting at `path`, each with the difference it makes to
+/// the current version, as far as this machine holds the contents.
+async fn change_cards(engine: &Engine, path: &str) -> Vec<(Value, Markup)> {
+    let current = GroupPath::parse(path)
+        .ok()
+        .and_then(|path| version_content(engine, &path, None));
     let mut cards = Vec::new();
-    for request in engine.requests().await {
-        let mut changes = Vec::new();
-        for change in &request.statement.changes {
-            let old = change.replaces.and_then(|stamp| {
-                engine
-                    .history(&change.path)
-                    .into_iter()
-                    .find(|version| version.stamp == stamp)
-                    .and_then(|version| version.content)
-            });
-            let markup = change_diff(engine, old.as_ref(), change.content.as_ref()).await;
-            changes.push((change.path.as_str().to_owned(), markup));
+    for change in engine.waiting_changes().await {
+        if change.path != path {
+            continue;
         }
-        cards.push(RequestCard {
-            request: serde_json::to_value(&request).unwrap_or(Value::Null),
-            changes,
-        });
+        let diff = change_diff(engine, current.as_ref(), change.content.as_ref()).await;
+        cards.push((serde_json::to_value(&change).unwrap_or(Value::Null), diff));
     }
     cards
-}
-
-/// The items every machine set aside, each with its difference from the
-/// current version of its path, as far as this machine holds the content.
-async fn aside_cards(engine: &Engine) -> Vec<AsideCard> {
-    let mut cards = Vec::new();
-    for item in engine.aside().await {
-        let diff = match GroupPath::parse(&item.item.path) {
-            Ok(path) => {
-                let current = version_content(engine, &path, None);
-                change_diff(engine, current.as_ref(), item.item.content.as_ref()).await
-            }
-            Err(error) => html! { p class="mark" { (error) } },
-        };
-        cards.push(AsideCard {
-            item: serde_json::to_value(&item).unwrap_or(Value::Null),
-            diff,
-        });
-    }
-    cards
-}
-
-async fn changes(
-    State(app): State<Arc<App>>,
-    Path(group): Path<String>,
-    Query(query): Query<HashMap<String, String>>,
-) -> Page {
-    let (me, requests, aside) = with_engine(&app, &group, async |engine| {
-        let me = engine.status().await.member.to_string();
-        (me, request_cards(engine).await, aside_cards(engine).await)
-    })
-    .await?;
-    let listed = |values: Vec<Value>| Value::Array(values);
-    let waiting = changes_page::waiting(
-        &listed(requests.iter().map(|card| card.request.clone()).collect()),
-        &listed(aside.iter().map(|card| card.item.clone()).collect()),
-        &me,
-    );
-    let bar = Bar {
-        group: &group,
-        tab: Some(Tab::Changes),
-        waiting,
-    };
-    let done = query.contains_key("done");
-    Ok(html_page(&changes_page::changes(
-        &bar, &me, &requests, &aside, done,
-    )))
 }
 
 /// What applying the text in the form field `text` as the group's
@@ -420,6 +379,19 @@ fn local_page(back: &str) -> bool {
     back.starts_with('/') && !back.starts_with("//") && !back.contains('\\')
 }
 
+/// Whether an action's `result` says nothing its page does not show: no
+/// result, or only the requests it filed and the drafts it published,
+/// which the group's pages show by themselves.
+fn shown_by_its_page(result: &Value) -> bool {
+    match result {
+        Value::Null => true,
+        Value::Object(fields) => fields
+            .keys()
+            .all(|name| name == "requests" || name == "published"),
+        _ => false,
+    }
+}
+
 /// Runs a form's action, then returns to its page, or shows the result
 /// when there is one to read.
 async fn act(
@@ -469,7 +441,7 @@ async fn act(
         "/".clone_into(&mut back);
     }
     match call(&app, &noun, &verb, values).await {
-        Ok(Value::Null) => Redirect::to(&back).into_response(),
+        Ok(result) if shown_by_its_page(&result) => Redirect::to(&back).into_response(),
         Ok(result) => {
             let body = html! {
                 (pages::fields(&result))
@@ -489,7 +461,6 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/g/{group}", get(overview))
         .route("/g/{group}/files", get(files))
         .route("/g/{group}/file", get(file))
-        .route("/g/{group}/changes", get(changes))
         .route("/g/{group}/config/preview", post(config_preview))
         .route("/g/{group}/raw", get(raw))
         .route("/g/{group}/events", get(events))
@@ -502,6 +473,16 @@ pub fn routes() -> Router<Arc<App>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forms_return_to_their_page_unless_the_result_tells_more() {
+        assert!(shown_by_its_page(&Value::Null));
+        assert!(shown_by_its_page(
+            &json!({"published": [], "requests": [".pigeon/requests/a.json"]})
+        ));
+        assert!(!shown_by_its_page(&json!({"key": "k"})));
+        assert!(!shown_by_its_page(&json!([])));
+    }
 
     #[test]
     fn forms_return_only_to_local_pages() {

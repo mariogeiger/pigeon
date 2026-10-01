@@ -1,8 +1,9 @@
 //! What a person changes in the tree through an action: writing, deleting
 //! and renaming files or whole folders, drafts not yet published included.
-//! Each file changes under its own rule: the files the member may write
-//! change on disk and are published at once, and the others become
-//! requests to their owners, one per owner.
+//! Every change of a published file, or of a new one, becomes a request to
+//! its owner, one per change, which the owner's machine applies at once
+//! when the owner asks it; a draft, which only this machine's disk holds,
+//! moves or goes on disk and is published at once.
 
 use std::sync::Arc;
 
@@ -11,7 +12,7 @@ use pigeon_core::ledger::{Ledger, Version};
 use pigeon_core::patch::{Change, Content};
 use pigeon_core::path::GroupPath;
 use pigeon_core::statement::Mode;
-use pigeon_store::disk::{self, fs_path, install, temporary_path};
+use pigeon_store::disk::{self, fs_path};
 use serde::Serialize;
 
 use crate::disk_sync::file_stat;
@@ -27,9 +28,9 @@ pub enum Edit {
     Rename { from: GroupPath, to: GroupPath },
 }
 
-/// Where an edit went: the paths changed on disk and published at once,
-/// or as soon as the member has joined, and the requests filed for the
-/// rest.
+/// Where an edit went: the drafts it moved or removed on disk and
+/// published at once, or as soon as the member has joined, and the
+/// requests filed for the rest.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Edited {
     pub published: Vec<GroupPath>,
@@ -39,10 +40,8 @@ pub struct Edited {
 /// The content one path is to hold.
 enum Target {
     Bytes(Vec<u8>),
-    Moved {
-        from: GroupPath,
-        content: Content,
-    },
+    /// The content of a published file it moves from.
+    Moved(Content),
     /// The draft at `from`, which only this machine's disk holds.
     Draft {
         from: GroupPath,
@@ -99,8 +98,7 @@ fn targets(ledger: &Ledger, drafts: &[GroupPath], edit: Edit) -> Result<Vec<(Gro
                 .into_iter()
                 .map(|version| {
                     let content = version.content.expect("a live version has content");
-                    let from = version.path.clone();
-                    (version.path.clone(), Target::Moved { from, content })
+                    (version.path.clone(), Target::Moved(content))
                 })
                 .chain(moved_drafts.into_iter().map(|draft| {
                     (
@@ -135,49 +133,23 @@ fn targets(ledger: &Ledger, drafts: &[GroupPath], edit: Edit) -> Result<Vec<(Gro
 }
 
 impl Inner {
-    /// Makes the disk at `path` hold `target`, for a path the member may
-    /// write.
-    async fn edit_disk(&self, work: &Work, path: &GroupPath, target: Target) -> Result<()> {
+    /// Makes the disk at `path` hold the draft `target`, which moves from
+    /// its place or goes.
+    fn edit_draft(&self, path: &GroupPath, target: &Target) -> Result<()> {
         let root = &self.root;
         let location = fs_path(root, path);
-        if let Some(parent) = location.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
-        }
         match target {
-            Target::Bytes(bytes) => {
-                let temporary = temporary_path(&location);
-                std::fs::write(&temporary, bytes)
-                    .with_context(|| format!("writing {}", temporary.display()))?;
-                let executable = file_stat(&location)
-                    .and_then(|stat| stat.executable)
-                    .unwrap_or(false);
-                install(&temporary, &location, executable, true)?;
-            }
-            Target::Moved { from, content } => {
-                let source = fs_path(root, &from);
-                let movable = file_stat(&source).is_some() && {
-                    let ledger = self.ledger.lock();
-                    self.writable(&ledger, work, &from)
-                };
-                if movable {
-                    std::fs::rename(&source, &location)
-                        .with_context(|| format!("moving {from} to {path}"))?;
-                    disk::remove(root, &source)?;
-                } else {
-                    self.blobs
-                        .export(&content.hash, &location, content.executable, true)
-                        .await
-                        .with_context(|| format!("{from} is not on this machine"))?;
-                }
-            }
             Target::Draft { from } => {
-                let source = fs_path(root, &from);
+                if let Some(parent) = location.parent() {
+                    std::fs::create_dir_all(parent)
+                        .with_context(|| format!("creating {}", parent.display()))?;
+                }
+                let source = fs_path(root, from);
                 std::fs::rename(&source, &location)
                     .with_context(|| format!("moving {from} to {path}"))?;
                 disk::remove(root, &source)?;
             }
-            Target::Gone => {
+            _ => {
                 if file_stat(&location).is_some() {
                     disk::remove(root, &location)?;
                 }
@@ -203,7 +175,7 @@ impl Inner {
                     .is_some_and(|old| old.executable);
                 Some(content)
             }
-            Target::Moved { content, .. } => Some(content),
+            Target::Moved(content) => Some(content),
             Target::Draft { from } => {
                 bail!("{from} is not published yet: only its machine moves it")
             }
@@ -236,21 +208,26 @@ impl Inner {
                 planned.extend(targets(&ledger, &drafts, edit)?);
             }
         }
-        let mut published = Vec::new();
+        let mut moved = Vec::new();
         let mut changes = Vec::new();
         for (path, target) in planned {
-            let writable = {
-                let ledger = self.ledger.lock();
-                self.writable(&ledger, work, &path)
+            let draft = match &target {
+                Target::Draft { .. } => true,
+                Target::Gone => !self
+                    .ledger
+                    .lock()
+                    .head(&path.key())
+                    .is_some_and(Version::is_live),
+                Target::Bytes(_) | Target::Moved(_) => false,
             };
-            if writable {
-                self.edit_disk(work, &path, target).await?;
-                published.push(path);
+            if draft {
+                self.edit_draft(&path, &target)?;
+                moved.push(path);
             } else {
                 changes.push(self.edit_change(work, path, target).await?);
             }
         }
-        self.publish_now(work, &published).await?;
+        self.publish_now(work, &moved).await?;
         let requests = if changes.is_empty() {
             Vec::new()
         } else {
@@ -258,16 +235,17 @@ impl Inner {
                 .await?
         };
         Ok(Edited {
-            published,
+            published: moved,
             requests,
         })
     }
 }
 
 impl Engine {
-    /// Carries out `edits`: what the member may write changes on disk and
-    /// is published at once, and the rest is requested from its owners in
-    /// `mode`, with `message`.
+    /// Carries out `edits`: drafts move or go on disk and are published at
+    /// once, and every other change is requested from its owner in `mode`,
+    /// with `message`, which the owner's machine applies at once when the
+    /// owner is this member.
     ///
     /// # Errors
     ///

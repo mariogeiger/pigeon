@@ -4,6 +4,27 @@ All notable user-visible changes to pigeon are documented here. While the
 version is 0.x, a change that breaks compatibility increments the second
 number, and any other change the third.
 
+## 0.6.0 — 2026-10-01
+
+### Changed
+
+- The Changes page is gone: the Files page shows, with 📬 on the line of
+  its file, every change waiting for someone, one per file, a request or
+  what a machine set aside, greyed when the file does not exist yet, and
+  folders count them. A line's menu applies the change, asks its owner,
+  places it at another path or discards it, and the file's page shows the
+  difference it makes. The Files tab counts the proposals addressed to you
+  and what your machines set aside.
+- `pigeon change list`, `apply`, `ask`, `place` and `discard` replace
+  `pigeon request` and `pigeon aside`, each change named by its `--entry`.
+- A request holds one change, so each file is decided on its own, and
+  anyone may accept or refuse any proposal: the first decision is final.
+- Every change made through pigeon, from the web interface or `pigeon file
+  write`, `rename` and `delete`, becomes a request, which the owner's
+  machine applies at once when the owner made it. Each dialog asks only to
+  confirm a change that is all yours, and otherwise whether to apply it
+  now or ask the owners first.
+
 ## 0.5.0 — 2026-10-01
 
 ### Changed

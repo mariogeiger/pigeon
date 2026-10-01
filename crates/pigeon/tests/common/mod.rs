@@ -264,22 +264,25 @@ impl Machine {
         file.set_modified(SystemTime::now() - ago).unwrap();
     }
 
-    /// The items `pigeon aside list` shows, whichever machine set them
-    /// aside.
-    pub async fn aside(&self) -> Vec<Value> {
-        let list = self.run("aside", "list", json!({})).await;
+    /// The changes `pigeon change list` shows waiting for someone.
+    pub async fn changes(&self) -> Vec<Value> {
+        let list = self.run("change", "list", json!({})).await;
         list.as_array().unwrap().clone()
     }
 
-    /// The requests `pigeon request list` shows.
-    pub async fn requests(&self) -> Vec<Value> {
-        let list = self.run("request", "list", json!({})).await;
-        list.as_array().unwrap().clone()
+    /// The set-aside items among the changes, whichever machine set them
+    /// aside.
+    pub async fn aside(&self) -> Vec<Value> {
+        let changes = self.changes().await;
+        changes
+            .into_iter()
+            .filter(|change| change["waits"].get("SetAside").is_some())
+            .collect()
     }
 
     /// What this machine holds, for a failing scenario to show: the files
-    /// it lists with their owners, those on its disk, what it lists as set
-    /// aside, and its latest errors.
+    /// it lists with their owners, those on its disk, the changes it lists
+    /// as waiting, and its latest errors.
     pub async fn describe(&self) -> String {
         let mut lines = vec![format!("{}:", self.name)];
         let files = self.run("file", "list", json!({})).await;
@@ -312,10 +315,10 @@ impl Machine {
                 }
             }
         }
-        for item in self.aside().await {
+        for change in self.changes().await {
             lines.push(format!(
-                "  aside {} {} by {} here {}",
-                item["path"], item["reason"], item["member"], item["here"]
+                "  change {} by {} to {} waits {}",
+                change["path"], change["author"], change["owner"], change["waits"]
             ));
         }
         let status = self.run("group", "status", json!({})).await;
@@ -377,6 +380,16 @@ where
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+/// Waits until `machine` knows `versions` versions of `path`, as once it
+/// published its own edit of it.
+pub async fn published(machine: &Machine, path: &str, versions: usize) {
+    let what = format!("{} publishes {path}", machine.name);
+    eventually(&what, &[machine], async || {
+        machine.history(path).await.len() == versions
+    })
+    .await;
 }
 
 /// Waits long enough for the engines to settle and publish what they saw.

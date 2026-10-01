@@ -107,11 +107,11 @@ mod tests {
         assert!(markup.contains(r#"<input type="hidden" name="path" value="+alice/a.txt">"#));
         assert!(markup.contains(r#"<input type="file" name="content" required>"#));
         assert!(markup.contains(r#"<option value="force" selected>"#));
-        let accept = find("request", "accept").unwrap();
+        let download = find("selection", "download").unwrap();
         let fill = Fill {
-            fixed: &[("request", ".pigeon/requests/x.json")],
+            fixed: &[("pattern", "/docs/")],
             ..Fill::default()
         };
-        assert!(!form(accept, "/", fill).into_string().contains("<details"));
+        assert!(!form(download, "/", fill).into_string().contains("<details"));
     }
 }

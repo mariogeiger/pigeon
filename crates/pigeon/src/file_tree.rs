@@ -1,6 +1,7 @@
 //! A group's files as a tree of folders, which the web UI's Files page and
 //! the tree of `pigeon setup` both draw: each folder sums the sizes under
-//! it, keeps their latest time, counts the edits waiting in it, and tells
+//! it, keeps their latest time, counts the edits waiting to be published in
+//! it and the changes waiting for someone, and tells
 //! whether every file under it with a box is followed, some, or none. Rows
 //! come folders first, then files, each by name; a row shows once every
 //! folder above it is open.
@@ -25,6 +26,8 @@ pub struct Facts<'a> {
     pub time: Option<&'a str>,
     /// Whether an edit of it waits to be published.
     pub waiting: bool,
+    /// How many changes of it wait for someone.
+    pub changes: usize,
 }
 
 /// A file of the tree.
@@ -50,6 +53,7 @@ pub struct Summary {
     pub size: u64,
     pub time: Option<String>,
     pub waiting: usize,
+    pub changes: usize,
     boxes: usize,
     followed: usize,
 }
@@ -63,6 +67,7 @@ impl Summary {
             self.time = Some(time.to_owned());
         }
         self.waiting += usize::from(facts.waiting);
+        self.changes += facts.changes;
         if let Some(followed) = facts.followed {
             self.boxes += 1;
             self.followed += usize::from(followed);
@@ -230,6 +235,7 @@ mod tests {
                 followed: self.2,
                 time: Some(self.3),
                 waiting: self.4,
+                changes: usize::from(self.4),
             }
         }
     }
@@ -283,6 +289,7 @@ mod tests {
         assert_eq!(docs.summary.size, 324);
         assert_eq!(docs.summary.time.as_deref(), Some("2026-04-01T00:00:00Z"));
         assert_eq!(docs.summary.waiting, 2);
+        assert_eq!(docs.summary.changes, 2);
         assert_eq!(docs.summary.followed(), Some(Followed::Some));
         assert_eq!(a.summary.followed(), Some(Followed::None));
         assert_eq!(a.name(), "a");

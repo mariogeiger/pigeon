@@ -1,9 +1,9 @@
 //! The statuses a row of the Files page shows, one emoji each, with the
 //! legend that explains them: whether this machine is catching up with a
 //! followed file or keeps a frozen copy, whether changes become requests,
-//! the edits and drafts waiting with the time left, and the drafts of one
-//! path that rival each other. A file up to date, or neither followed nor
-//! held, shows nothing.
+//! the edits and drafts waiting with the time left, the drafts of one
+//! path that rival each other, and the changes waiting for someone. A file
+//! up to date, or neither followed nor held, shows nothing.
 
 use maud::{Markup, html};
 use serde_json::Value;
@@ -19,10 +19,11 @@ pub enum Status {
     Drafted,
     Rival,
     Overtaken,
+    Change,
 }
 
 impl Status {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Updating,
         Self::Frozen,
         Self::ByRequest,
@@ -31,6 +32,7 @@ impl Status {
         Self::Drafted,
         Self::Rival,
         Self::Overtaken,
+        Self::Change,
     ];
 
     #[must_use]
@@ -44,6 +46,7 @@ impl Status {
             Self::Drafted => "✍️",
             Self::Rival => "⚠️",
             Self::Overtaken => "🛑",
+            Self::Change => "📬",
         }
     }
 
@@ -63,6 +66,9 @@ impl Status {
             Self::Rival => "another draft of the same path: the first published wins",
             Self::Overtaken => {
                 "another draft of the same path is published first: rename yours to keep it"
+            }
+            Self::Change => {
+                "a change waits for someone: its menu applies it, asks its owner, places it elsewhere or discards it"
             }
         }
     }
@@ -147,9 +153,82 @@ pub fn file_status(file: Option<&Value>, waiting: Option<&Value>, drafts: &[&Val
     }
 }
 
-/// The edits waiting in a folder.
+/// Why pigeon set aside an item of `member`, as a reason of `change list`
+/// says, for the member `me`.
 #[must_use]
-pub fn folder_status(waiting: usize) -> Markup {
+pub fn reason(reason: &Value, member: &str, me: &str) -> String {
+    let (who, whose) = if member == me {
+        ("you".to_owned(), "your".to_owned())
+    } else {
+        (member.to_owned(), format!("{member}'s"))
+    };
+    match reason {
+        Value::String(name) if name == "NotWritable" => format!("{who} may not write it"),
+        Value::String(name) if name == "Superseded" => {
+            format!("another of {whose} machines changed it meanwhile")
+        }
+        Value::Object(fields) => fields
+            .iter()
+            .map(|(name, detail)| {
+                let detail = detail.as_str().unwrap_or_default();
+                match name.as_str() {
+                    "Unportable" => format!("a name not every machine can hold: {detail}"),
+                    "Rejected" => format!("the group rejected it: {detail}"),
+                    _ => format!("{name}: {detail}"),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+        other => other.to_string(),
+    }
+}
+
+/// What `change`, as `change list` gives it, is and who must act, for the
+/// member `me`.
+#[must_use]
+pub fn change_title(change: &Value, me: &str) -> String {
+    let author = change["author"].as_str().unwrap_or_default();
+    let owner = change["owner"].as_str().unwrap_or_default();
+    let what = if change["content"].is_null() {
+        "deletion"
+    } else {
+        "change"
+    };
+    let message = change["message"]
+        .as_str()
+        .filter(|message| !message.is_empty());
+    let said = message
+        .map(|message| format!(": {message}"))
+        .unwrap_or_default();
+    match &change["waits"] {
+        Value::String(waits) if waits == "Proposed" => {
+            format!("{author} proposes a {what} to {owner}{said}")
+        }
+        Value::String(_) => format!("{author}'s {what} is on its way to {owner}'s machines{said}"),
+        waits => format!(
+            "set aside on {author}'s machine, as {}",
+            reason(&waits["SetAside"]["reason"], author, me)
+        ),
+    }
+}
+
+/// The changes waiting at one path, for the member `me`.
+#[must_use]
+pub fn changes_status(changes: &[&Value], me: &str) -> Markup {
+    html! {
+        @for change in changes {
+            @let author = change["author"].as_str().unwrap_or_default();
+            @let owner = change["owner"].as_str().unwrap_or_default();
+            (mark(Status::Change, Some(change_title(change, me)),
+                &html! { @if author == owner { (author) } @else { (author) " → " (owner) } }))
+        }
+    }
+}
+
+/// The edits waiting to be published in a folder, and the changes waiting
+/// for someone.
+#[must_use]
+pub fn folder_status(waiting: usize, changes: usize) -> Markup {
     html! {
         @if waiting > 0 {
             @let title = if waiting == 1 {
@@ -159,6 +238,14 @@ pub fn folder_status(waiting: usize) -> Markup {
             };
             (mark(Status::Waiting, Some(title),
                 &html! { (waiting) }))
+        }
+        @if changes > 0 {
+            @let title = if changes == 1 {
+                "1 change waits for someone here".to_owned()
+            } else {
+                format!("{changes} changes wait for someone here")
+            };
+            (mark(Status::Change, Some(title), &html! { (changes) }))
         }
     }
 }
@@ -227,11 +314,39 @@ mod tests {
                 .into_string()
                 .contains("🗑️")
         );
-        assert_eq!(folder_status(0).into_string(), "");
-        assert!(folder_status(3).into_string().contains("⏳ 3"));
+        assert_eq!(folder_status(0, 0).into_string(), "");
+        assert!(folder_status(3, 0).into_string().contains("⏳ 3"));
+        assert!(folder_status(0, 2).into_string().contains("📬 2"));
         assert_eq!(
             legend().into_string().matches("<li>").count(),
             Status::ALL.len()
+        );
+    }
+
+    #[test]
+    fn a_waiting_change_says_who_asks_whom_and_why() {
+        let proposal = json!({"author": "bob", "owner": "alice", "content": {"size": 1},
+            "message": "bread", "waits": "Proposed"});
+        let shown = changes_status(&[&proposal], "alice").into_string();
+        assert!(shown.contains("📬 bob → alice"), "{shown}");
+        assert!(
+            shown.contains("bob proposes a change to alice: bread"),
+            "{shown}"
+        );
+        let aside = json!({"author": "papy", "owner": "alice", "content": {"size": 1},
+            "message": "", "waits": {"SetAside": {"reason": "NotWritable", "machine": "m"}}});
+        assert_eq!(
+            change_title(&aside, "alice"),
+            "set aside on papy's machine, as papy may not write it"
+        );
+        assert_eq!(
+            change_title(&aside, "papy"),
+            "set aside on papy's machine, as you may not write it"
+        );
+        let unportable = json!({"Unportable": "a colon"});
+        assert_eq!(
+            reason(&unportable, "papy", "alice"),
+            "a name not every machine can hold: a colon"
         );
     }
 }

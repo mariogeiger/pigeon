@@ -1,9 +1,10 @@
 // The Files page's tree: folders open and close in place, the open ones
 // are remembered per group for the session and opened again each time
 // live.js swaps the page, and ?under= opens the tree down to a folder and
-// scrolls to it. Each row's ⋯ opens a menu of what can be done to it; each
-// choice opens its dialog, filled for that row, which says when a change
-// becomes a request to the owner.
+// scrolls to it. Each row's ⋯ opens a menu of what can be done to it, the
+// changes waiting at it included; each choice opens its dialog, filled for
+// that row, which asks only to confirm a change that is all the member's,
+// and otherwise whether to apply it now or ask the owners first.
 "use strict";
 (() => {
   const table = () => document.querySelector("table.tree");
@@ -55,14 +56,24 @@
   };
 
   let row = null;
+  let chosen = null;
+
+  // Whether what `dialog` changes is all the member's.
+  const mine = (dialog) => {
+    if (dialog.id === "add") return row.dataset.addable !== "false";
+    if (dialog.id === "place") return chosen.made && chosen.owned;
+    if (dialog.id === "discard") return chosen.made;
+    return row.dataset.writable !== "false";
+  };
 
   const fill = (dialog) => {
-    const { kind, path, pattern, writable } = row.dataset;
+    const { kind, path, pattern } = row.dataset;
     for (const subject of dialog.querySelectorAll(".subject")) {
       subject.textContent = path === "" ? table().dataset.group : path + (kind === "file" ? "" : "/");
     }
-    const free = dialog.id === "add" ? row.dataset.addable : writable;
-    for (const request of dialog.querySelectorAll(".request")) request.hidden = free !== "false";
+    const own = dialog.id === "menu" || mine(dialog);
+    for (const part of dialog.querySelectorAll(".mine")) part.hidden = !own;
+    for (const part of dialog.querySelectorAll(".theirs")) part.hidden = own;
     const set = (name, value) => {
       for (const field of dialog.querySelectorAll(`[name=${name}]`)) field.value = value;
     };
@@ -72,14 +83,72 @@
     set("to", path);
     set("pattern", pattern ?? "");
     set("message", "");
+    set("entry", chosen?.entry ?? "");
     for (const file of dialog.querySelectorAll("input[type=file]")) file.value = "";
   };
 
+  // A button that posts `entry` to `change <verb>` at once.
+  const post = (verb, entry, label) => {
+    const form = document.createElement("form");
+    form.method = "post";
+    form.action = `/act/change/${verb}`;
+    form.enctype = "multipart/form-data";
+    const fields = { back: location.pathname + location.search, group: table().dataset.group, entry };
+    for (const [name, value] of Object.entries(fields)) {
+      const field = document.createElement("input");
+      field.type = "hidden";
+      field.name = name;
+      field.value = value;
+      form.append(field);
+    }
+    const button = document.createElement("button");
+    button.textContent = label;
+    form.append(button);
+    return form;
+  };
+
+  // A button that opens the dialog `id` for `waiting`.
+  const opener = (id, waiting, label) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.addEventListener("click", () => {
+      chosen = waiting;
+      const dialog = document.getElementById(id);
+      document.getElementById("menu").close();
+      fill(dialog);
+      dialog.showModal();
+    });
+    return button;
+  };
+
+  // The lines of the changes waiting at the row, each with what resolves it.
+  const waitingLines = () =>
+    JSON.parse(row.dataset.changes ?? "[]").map((waiting) => {
+      const line = document.createElement("div");
+      line.className = "change";
+      const what = document.createElement("p");
+      what.textContent = `📬 ${waiting.title}`;
+      line.append(what);
+      if (waiting.waits === "applying") return line;
+      line.append(post("apply", waiting.entry, "Apply"));
+      if (waiting.waits === "aside" && !waiting.owned) {
+        line.append(post("ask", waiting.entry, "Ask the owner"));
+      }
+      line.append(opener("place", waiting, "Place elsewhere…"));
+      line.append(
+        waiting.waits === "proposed"
+          ? post("discard", waiting.entry, "Discard")
+          : opener("discard", waiting, "Discard…"),
+      );
+      return line;
+    });
+
   const showMenu = () => {
     const menu = document.getElementById("menu");
-    const { kind, waiting, freezes, published, path } = row.dataset;
+    const { kind, waiting, freezes, published, editable, path } = row.dataset;
     const file = kind === "file" && published === "true";
-    const draft = kind === "file" && published === "false";
+    const draft = kind === "file" && published === "false" && editable === "true";
     const folder = kind === "folder";
     const offered = {
       rename: file || draft || folder,
@@ -90,6 +159,7 @@
     for (const choice of menu.querySelectorAll("[data-open]")) {
       choice.hidden = !offered[choice.dataset.open];
     }
+    menu.querySelector(".waiting").replaceChildren(...waitingLines());
     menu.querySelector("#download").hidden = !(file || folder);
     const publish = menu.querySelector("#publish");
     publish.hidden = Number(waiting) === 0;

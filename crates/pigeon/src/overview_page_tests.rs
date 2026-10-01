@@ -136,7 +136,7 @@ fn the_page_holds_the_file_and_offers_to_exclude_others_or_leave() {
     );
     assert!(!page.contains(r#"name="member" value="carol""#), "{page}");
     assert!(page.contains(r#"action="/act/group/leave""#), "{page}");
-    assert!(page.contains("Changes (2)"), "{page}");
+    assert!(page.contains("Files (2)"), "{page}");
     assert!(
         page.contains(r#"class="current" href="/g/cheapmo""#),
         "{page}"
