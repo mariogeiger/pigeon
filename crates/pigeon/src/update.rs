@@ -24,37 +24,63 @@ fn cache_folder(name: &str) -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("this system names no cache folder to build pigeon in"))
 }
 
+/// The git options that make a transfer slower than 1000 bytes a second
+/// for 30 seconds fail, so that a stalled connection ends the update
+/// rather than hangs it.
+const STALL: [&str; 4] = [
+    "-c",
+    "http.lowSpeedLimit=1000",
+    "-c",
+    "http.lowSpeedTime=30",
+];
+
+/// A git command that gives up on a stalled connection.
+fn git() -> Command {
+    let mut command = Command::new("git");
+    command.args(STALL);
+    command
+}
+
 /// Runs `command`, failing with `what` unless it succeeds.
 fn run_git(command: &mut Command, what: &str) -> Result<()> {
     let status = command
         .status()
         .context("running git: install it from https://git-scm.com")?;
     if !status.success() {
-        bail!("git could not {what}; the daemon keeps running the program it has");
+        bail!(
+            "git could not {what}: check the connection to GitHub and run pigeon update again; the daemon keeps running the program it has"
+        );
     }
     Ok(())
 }
 
-/// Brings the clone at `source` to the head of main, cloning it first.
+/// Brings the clone at `source` to the head of main, cloning it first,
+/// showing git's progress.
 fn fetch_main(source: &Path) -> Result<()> {
+    eprintln!("pigeon: fetching the head of main from {REPOSITORY}");
     if !source.join(".git").exists() {
-        let mut clone = Command::new("git");
-        clone
-            .args(["clone", "--quiet", "--branch", "main", REPOSITORY])
-            .arg(source);
-        return run_git(&mut clone, "clone pigeon");
+        return run_git(
+            git()
+                .args(["clone", "--branch", "main", REPOSITORY])
+                .arg(source),
+            "clone pigeon",
+        );
     }
-    let git = || {
-        let mut command = Command::new("git");
-        command.arg("-C").arg(source);
-        command
-    };
     run_git(
-        git().args(["fetch", "--quiet", REPOSITORY, "main"]),
+        git()
+            .arg("-C")
+            .arg(source)
+            .args(["fetch", REPOSITORY, "main"]),
         "fetch pigeon",
     )?;
     run_git(
-        git().args(["checkout", "--quiet", "--force", "--detach", "FETCH_HEAD"]),
+        git().arg("-C").arg(source).args([
+            "checkout",
+            "--quiet",
+            "--force",
+            "--detach",
+            "FETCH_HEAD",
+        ]),
         "check out the head of main",
     )
 }
@@ -137,6 +163,11 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn git_gives_up_on_a_stalled_connection() {
+        assert_eq!(arguments(&git()), STALL);
     }
 
     #[test]

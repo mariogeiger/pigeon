@@ -74,11 +74,17 @@ main() {
     echo "✓ Rust  $(cargo --version)"
 
     source=$cache/pigeon/source
+    stall="-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30"
+    echo "Fetching the head of main from $repository"
     if [ -d "$source/.git" ]; then
-        git -C "$source" fetch --quiet "$repository" main
+        # shellcheck disable=SC2086
+        git $stall -C "$source" fetch "$repository" main ||
+            fail "git could not fetch pigeon: check the connection to GitHub and try again"
         git -C "$source" checkout --quiet --force --detach FETCH_HEAD
     else
-        git clone --quiet --branch main "$repository" "$source"
+        # shellcheck disable=SC2086
+        git $stall clone --branch main "$repository" "$source" ||
+            fail "git could not clone pigeon: check the connection to GitHub and try again"
     fi
     cargo install --locked --target-dir "$cache/pigeon/build" --path "$source/crates/pigeon" </dev/null
     echo "✓ pigeon built  $("$bin/pigeon" --version | sed 's/^pigeon //')"
