@@ -226,18 +226,18 @@ async fn two_daemons_share_files_and_answer_requests() {
         .call(
             "file",
             "write",
-            json!({"path": "@alice/notes.txt", "content": base64("hello\n")}),
+            json!({"path": "_alice/notes.txt", "content": base64("hello\n")}),
         )
         .await
         .unwrap();
     assert_eq!(
         wrote,
-        json!({"published": ["@alice/notes.txt"], "requests": []})
+        json!({"published": ["_alice/notes.txt"], "requests": []})
     );
-    b.call("selection", "follow", json!({"pattern": "/@alice/"}))
+    b.call("selection", "follow", json!({"pattern": "/_alice/"}))
         .await
         .unwrap();
-    let on_b = b.root("cheapmo").join("@alice/notes.txt");
+    let on_b = b.root("cheapmo").join("_alice/notes.txt");
     eventually("bob holds the note", async || {
         std::fs::read_to_string(&on_b).ok().as_deref() == Some("hello\n")
     })
@@ -247,7 +247,7 @@ async fn two_daemons_share_files_and_answer_requests() {
         .call(
             "file",
             "write",
-            json!({"path": "@alice/notes.txt", "content": base64("bonjour\n"), "message": "in French"}),
+            json!({"path": "_alice/notes.txt", "content": base64("bonjour\n"), "message": "in French"}),
         )
         .await
         .unwrap();
@@ -268,14 +268,14 @@ async fn two_daemons_share_files_and_answer_requests() {
     a.call("request", "accept", json!({"request": request}))
         .await
         .unwrap();
-    let on_a = a.root("cheapmo").join("@alice/notes.txt");
+    let on_a = a.root("cheapmo").join("_alice/notes.txt");
     eventually("both hold the accepted note", async || {
         std::fs::read_to_string(&on_a).ok().as_deref() == Some("bonjour\n")
             && std::fs::read_to_string(&on_b).ok().as_deref() == Some("bonjour\n")
     })
     .await;
     let history = a
-        .call("file", "history", json!({"path": "@alice/notes.txt"}))
+        .call("file", "history", json!({"path": "_alice/notes.txt"}))
         .await
         .unwrap();
     assert_eq!(history.as_array().unwrap().len(), 2);
@@ -357,7 +357,7 @@ async fn web_forms_run_their_action_and_return() {
     assert_eq!(answer.status, 303, "{}", answer.body);
     assert_eq!(answer.location.as_deref(), Some("/g/cheapmo/selection"));
     let rules = peer.call("selection", "list", json!({})).await.unwrap();
-    assert_eq!(rules, json!("follow @alice/\nfollow /docs/\n"));
+    assert_eq!(rules, json!("follow _alice/\nfollow /docs/\n"));
     let page = peer.page("/g/cheapmo/selection").await;
     assert!(page.contains("/docs/"));
     let set = peer
@@ -384,7 +384,7 @@ async fn web_forms_run_their_action_and_return() {
 fn dummy(kind: Kind, peer: &Peer) -> Value {
     match kind {
         Kind::Text | Kind::Secret => json!("x"),
-        Kind::Path => json!("@alice/dummy.txt"),
+        Kind::Path => json!("_alice/dummy.txt"),
         Kind::Pattern => json!("/dummy/"),
         Kind::Folder => json!(peer.root("dummy")),
         Kind::Bytes => json!(base64("dummy")),
@@ -553,34 +553,34 @@ async fn group_pages_follow_files_and_hear_each_change() {
     peer.call(
         "file",
         "write",
-        json!({"path": "@alice/notes.txt", "content": base64("hello\n")}),
+        json!({"path": "_alice/notes.txt", "content": base64("hello\n")}),
     )
     .await
     .unwrap();
     let lines = next_event(lines).await;
 
-    let page = peer.page("/g/cheapmo/files?under=@alice").await;
+    let page = peer.page("/g/cheapmo/files?under=_alice").await;
     assert!(
-        page.contains(r#"data-pattern="/@alice/notes.txt" data-state="checked" checked"#),
+        page.contains(r#"data-pattern="/_alice/notes.txt" data-state="checked" checked"#),
         "{page}"
     );
     peer.call(
         "selection",
         "unfollow",
-        json!({"pattern": "/@alice/notes.txt"}),
+        json!({"pattern": "/_alice/notes.txt"}),
     )
     .await
     .unwrap();
     drop(next_event(lines).await);
-    let page = peer.page("/g/cheapmo/files?under=@alice").await;
+    let page = peer.page("/g/cheapmo/files?under=_alice").await;
     assert!(page.contains("frozen copy"), "{page}");
     let page = peer.page("/g/cheapmo/files").await;
-    assert!(page.contains(r#"data-pattern="/@alice/" data-state="unchecked">"#));
-    peer.call("selection", "follow", json!({"pattern": "/@alice/"}))
+    assert!(page.contains(r#"data-pattern="/_alice/" data-state="unchecked">"#));
+    peer.call("selection", "follow", json!({"pattern": "/_alice/"}))
         .await
         .unwrap();
     let rules = peer.call("selection", "list", json!({})).await.unwrap();
-    assert_eq!(rules, json!("follow @alice/\nfollow /@alice/\n"));
+    assert_eq!(rules, json!("follow _alice/\nfollow /_alice/\n"));
     assert_eq!(
         peer.call("file", "pending", json!({})).await.unwrap(),
         json!([])
@@ -654,18 +654,18 @@ async fn the_selection_editor_previews_a_draft_and_saves_it_whole() {
     peer.call(
         "file",
         "write",
-        json!({"path": "@alice/notes.txt", "content": base64("hello\n")}),
+        json!({"path": "_alice/notes.txt", "content": base64("hello\n")}),
     )
     .await
     .unwrap();
-    let notes = std::path::Path::new(&peer.root("cheapmo")).join("@alice/notes.txt");
+    let notes = std::path::Path::new(&peer.root("cheapmo")).join("_alice/notes.txt");
     eventually("the notes are on disk", async || notes.exists()).await;
     let page = peer.page("/g/cheapmo/selection").await;
     for part in [
         r#"<section id="editor" class="editor" data-keep"#,
         r#"<script src="/selection.js" defer></script>"#,
-        r#"<option value="/@alice/notes.txt">"#,
-        r#"<option value="/@alice/">"#,
+        r#"<option value="/_alice/notes.txt">"#,
+        r#"<option value="/_alice/">"#,
         "<h2>Places</h2>",
     ] {
         assert!(page.contains(part), "{part}: {page}");
@@ -676,7 +676,7 @@ async fn the_selection_editor_previews_a_draft_and_saves_it_whole() {
     assert_eq!(script.status, 200);
     assert!(script.body.contains("/selection/preview"));
 
-    let parts = editor_preview(&peer, "free @alice/\nkeep x\n").await;
+    let parts = editor_preview(&peer, "free _alice/\nkeep x\n").await;
     assert_eq!(
         parts["rows"][0],
         json!({"effect": "matches 1 file · decides 1 (6 B)", "masked": false})
@@ -691,13 +691,13 @@ async fn the_selection_editor_previews_a_draft_and_saves_it_whole() {
     assert!(parts["confirm"].is_string());
     let panel = parts["panel"].as_str().unwrap();
     assert!(
-        panel.contains("warning: <code>@alice/</code> will no longer be here"),
+        panel.contains("warning: <code>_alice/</code> will no longer be here"),
         "{panel}"
     );
     assert!(panel.contains("free: -1 file, -6 B"), "{panel}");
 
     let preview = peer
-        .call("selection", "preview", json!({"rules": "free @alice/\n"}))
+        .call("selection", "preview", json!({"rules": "free _alice/\n"}))
         .await
         .unwrap();
     assert_eq!(preview["version"], parts["version"]);
@@ -706,7 +706,7 @@ async fn the_selection_editor_previews_a_draft_and_saves_it_whole() {
         .call(
             "selection",
             "set",
-            json!({"rules": "free @alice/\n", "version": "stale"}),
+            json!({"rules": "free _alice/\n", "version": "stale"}),
         )
         .await
         .unwrap_err();
@@ -719,12 +719,12 @@ async fn the_selection_editor_previews_a_draft_and_saves_it_whole() {
     peer.call(
         "selection",
         "set",
-        json!({"rules": "free @alice/\n", "version": preview["version"]}),
+        json!({"rules": "free _alice/\n", "version": preview["version"]}),
     )
     .await
     .unwrap();
     let rules = peer.call("selection", "list", json!({})).await.unwrap();
-    assert_eq!(rules, json!("free @alice/\n"));
+    assert_eq!(rules, json!("free _alice/\n"));
     assert!(!notes.exists());
     peer.call("selection", "set", json!({"rules": ""}))
         .await

@@ -57,7 +57,7 @@ fn patch(time: u64, path: &GroupPath) -> SignedPatch {
 fn patches_survive_reopening_in_stamp_order() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.redb");
-    let file = GroupPath::parse("@mario/a").unwrap();
+    let file = GroupPath::parse("_mario/a").unwrap();
     let join = patch(1, &member_path(&MemberName::parse("mario").unwrap()));
     let write = patch(300, &file);
     {

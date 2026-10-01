@@ -1,9 +1,13 @@
 //! Member names: 1 to 32 characters among `a`–`z` and `0`–`9`, valid in any
-//! path on every system, so that `@<name>` can name a personal folder.
+//! path on every system, so that `_<name>` can name a personal folder.
 
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+
+/// The character that, followed by a member's name, names their personal
+/// folder.
+pub const FOLDER_PREFIX: char = '_';
 
 /// A valid member name.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -43,10 +47,10 @@ impl MemberName {
         &self.0
     }
 
-    /// The personal folder name `@<name>`.
+    /// The personal folder name `_<name>`.
     #[must_use]
     pub fn folder(&self) -> String {
-        format!("@{}", self.0)
+        format!("{FOLDER_PREFIX}{}", self.0)
     }
 }
 

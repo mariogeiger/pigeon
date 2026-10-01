@@ -62,7 +62,7 @@ async fn publish(machine: &Machine, file: &str, text: &str) {
 }
 
 /// Alice and Bob, edits waiting a minute, once Alice published
-/// `@alice/a.txt` and `@alice/big.iso` and Bob `@bob/notes.txt`, which he
+/// `_alice/a.txt` and `_alice/big.iso` and Bob `_bob/notes.txt`, which he
 /// then edits again.
 async fn alice_and_bob() -> Vec<Machine> {
     let machines = group_with(&[("alice", "a"), ("bob", "b")], |options| {
@@ -73,11 +73,11 @@ async fn alice_and_bob() -> Vec<Machine> {
     let [alice, bob] = &machines[..] else {
         unreachable!()
     };
-    publish(alice, "@alice/a.txt", "aaaa").await;
-    publish(alice, "@alice/big.iso", "0123456789").await;
-    publish(bob, "@bob/notes.txt", "notes").await;
+    publish(alice, "_alice/a.txt", "aaaa").await;
+    publish(alice, "_alice/big.iso", "0123456789").await;
+    publish(bob, "_bob/notes.txt", "notes").await;
     eventually("bob sees alice's files", || async {
-        bob.engine.history(&path("@alice/big.iso")).len() == 1
+        bob.engine.history(&path("_alice/big.iso")).len() == 1
     })
     .await;
     machines
@@ -85,7 +85,7 @@ async fn alice_and_bob() -> Vec<Machine> {
 
 /// Waits for Bob's edit of his notes.
 async fn edit_notes(bob: &Machine) {
-    bob.edit("@bob/notes.txt", "changed");
+    bob.edit("_bob/notes.txt", "changed");
     eventually("bob's edit waits", || async {
         !bob.engine.pending(None).await.is_empty()
     })
@@ -98,9 +98,9 @@ async fn a_draft_is_previewed_then_saved_whole_keeping_modified_copies() {
     let bob = &machines[1];
     let draft = vec![
         rule("*.iso", Cutoff::PlusInfinity),
-        rule("@alice/", Cutoff::PlusInfinity),
+        rule("_alice/", Cutoff::PlusInfinity),
         rule("*.iso", Cutoff::MinusInfinity),
-        rule("@bob/", Cutoff::MinusInfinity),
+        rule("_bob/", Cutoff::MinusInfinity),
     ];
     let preview = bob.engine.preview(draft.clone()).await.unwrap();
     let decides = |files, bytes| RuleEffect {
@@ -126,8 +126,8 @@ async fn a_draft_is_previewed_then_saved_whole_keeping_modified_copies() {
                 decides(1, 5),
             ],
             deltas: deltas(
-                vec![changed("@alice/a.txt", 4, 1)],
-                vec![changed("@bob/notes.txt", 5, 3)],
+                vec![changed("_alice/a.txt", 4, 1)],
+                vec![changed("_bob/notes.txt", 5, 3)],
                 vec![],
             ),
             own_freed: vec![OwnFreed {
@@ -152,11 +152,11 @@ async fn a_draft_is_previewed_then_saved_whole_keeping_modified_copies() {
         .unwrap();
     assert_eq!(bob.engine.selection().await, draft);
     eventually("bob holds alice's text", || async {
-        bob.read("@alice/a.txt").as_deref() == Some("aaaa")
+        bob.read("_alice/a.txt").as_deref() == Some("aaaa")
     })
     .await;
-    assert_eq!(bob.read("@bob/notes.txt").as_deref(), Some("changed"));
-    assert!(bob.read("@alice/big.iso").is_none());
+    assert_eq!(bob.read("_bob/notes.txt").as_deref(), Some("changed"));
+    assert!(bob.read("_alice/big.iso").is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -164,20 +164,20 @@ async fn a_saved_draft_frees_untouched_copies_and_previews_freezes() {
     let machines = alice_and_bob().await;
     let bob = &machines[1];
     edit_notes(bob).await;
-    let alice_text = vec![rule("/@alice/a.txt", Cutoff::PlusInfinity)];
+    let alice_text = vec![rule("/_alice/a.txt", Cutoff::PlusInfinity)];
     bob.engine.set_selection(alice_text, None).await.unwrap();
     eventually("bob holds alice's text", || async {
-        bob.read("@alice/a.txt").as_deref() == Some("aaaa")
+        bob.read("_alice/a.txt").as_deref() == Some("aaaa")
     })
     .await;
-    let only_iso = vec![rule("/@alice/big.iso", Cutoff::PlusInfinity)];
+    let only_iso = vec![rule("/_alice/big.iso", Cutoff::PlusInfinity)];
     let preview = bob.engine.preview(only_iso.clone()).await.unwrap();
     assert_eq!(
         preview.deltas,
         deltas(
-            vec![changed("@alice/big.iso", 10, 0)],
+            vec![changed("_alice/big.iso", 10, 0)],
             vec![Changed {
-                path: path("@alice/a.txt"),
+                path: path("_alice/a.txt"),
                 size: 4,
                 rule: None,
             }],
@@ -186,21 +186,21 @@ async fn a_saved_draft_frees_untouched_copies_and_previews_freezes() {
     );
     assert!(preview.own_freed.is_empty());
     bob.engine.set_selection(only_iso, None).await.unwrap();
-    assert!(bob.read("@alice/a.txt").is_none());
+    assert!(bob.read("_alice/a.txt").is_none());
     eventually("bob holds the iso", || async {
-        bob.read("@alice/big.iso").is_some()
+        bob.read("_alice/big.iso").is_some()
     })
     .await;
-    assert_eq!(bob.read("@bob/notes.txt").as_deref(), Some("changed"));
+    assert_eq!(bob.read("_bob/notes.txt").as_deref(), Some("changed"));
 
-    let frozen = vec![rule("@alice/", Cutoff::At(bob.engine.now()))];
+    let frozen = vec![rule("_alice/", Cutoff::At(bob.engine.now()))];
     let preview = bob.engine.preview(frozen).await.unwrap();
     assert_eq!(
         preview.deltas,
         deltas(
-            vec![changed("@alice/a.txt", 4, 0)],
+            vec![changed("_alice/a.txt", 4, 0)],
             vec![],
-            vec![changed("@alice/big.iso", 10, 0)],
+            vec![changed("_alice/big.iso", 10, 0)],
         )
     );
 }

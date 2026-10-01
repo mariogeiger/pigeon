@@ -306,7 +306,7 @@ mod tests {
             cutoff: Cutoff::PlusInfinity,
         }])
         .unwrap();
-        for file in ["a.txt", "@alice/notes.txt", "src/deep/a.rs"] {
+        for file in ["a.txt", "_alice/notes.txt", "src/deep/a.rs"] {
             assert_eq!(selection.cutoff(&path(file)), Cutoff::PlusInfinity);
         }
     }
@@ -367,7 +367,7 @@ mod tests {
             })
         );
         for glob in [
-            "*.pdf", "a/", "/a/*", "/a?", "/[ab]/", "/{a,b}", "@mario/", "/",
+            "*.pdf", "a/", "/a/*", "/a?", "/[ab]/", "/{a,b}", "_mario/", "/",
         ] {
             assert_eq!(Scope::of(glob), None, "{glob}");
         }

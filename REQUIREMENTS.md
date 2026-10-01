@@ -52,14 +52,15 @@ of the first implementation.
   still changes through a request, which everyone sees and which any
   member, its owner included, may force.
 - **P0** A member creates a personal folder by creating, on disk or in the web
-  UI, a folder named `@` followed by their name anywhere outside personal
-  folders, and may have as many as they like, such as `/cheapmo/src/@mario`
-  and `/cheapmo/etc/@mario`. The owner names its subfolders freely.
-- **P0** Outside personal folders, a folder `@<name>` claims the name
+  UI, a folder named `_` followed by their name anywhere outside personal
+  folders, and may have as many as they like, such as `/cheapmo/src/_mario`
+  and `/cheapmo/etc/_mario`. The owner names its subfolders freely.
+- **P0** Outside personal folders, a folder `_<name>` claims the name
   `<name>`, as joining does, and the earliest claim wins: once `<name>` is a
-  member, only they can create `@<name>`, and while a folder `@<name>`
-  exists, nobody can join under `<name>`. A folder `@<name>` whose name no
-  member holds, such as npm's `@types`, is an ordinary folder.
+  member, only they can create `_<name>`, and while a folder `_<name>`
+  exists, nobody can join under `<name>`. A folder `_<name>` whose name no
+  member holds, such as the `_build` or `_site` many tools create, is an
+  ordinary folder.
 - **P0** Every other folder, the root included, is a drop folder.
 - **P0** Every file therefore has exactly one owner: the member whose personal
   folder holds it, or the member who dropped it. Only the owner's machines
@@ -96,7 +97,7 @@ of the first implementation.
   Between machines of one member, the later of two concurrent changes wins
   and the other is set aside; a proposal concurrent with a change is marked
   as based on an old version.
-- **P0** A member name, a folder `@<name>`, and a path in a drop folder are
+- **P0** A member name, a folder `_<name>`, and a path in a drop folder are
   claims, compared without case, and the earliest claim wins: the losing
   machine sets its content aside, or asks for another name.
 

@@ -281,20 +281,20 @@ mod tests {
 
     #[test]
     fn waiting_edits_show_in_their_folder_with_the_time_left_and_a_button() {
-        let list = json!([file("@alice/a.txt", &json!("PlusInfinity"))]);
+        let list = json!([file("_alice/a.txt", &json!("PlusInfinity"))]);
         let waiting = json!([
-            {"path": "@alice/a.txt", "due_in": 2, "freezes": false, "deleted": false, "cutoff": "PlusInfinity"},
-            {"path": "@alice/new/b.txt", "due_in": 3, "freezes": false, "deleted": false, "cutoff": "PlusInfinity"},
-            {"path": "@alice/c.txt", "due_in": 192, "freezes": true, "deleted": false, "cutoff": "MinusInfinity"},
+            {"path": "_alice/a.txt", "due_in": 2, "freezes": false, "deleted": false, "cutoff": "PlusInfinity"},
+            {"path": "_alice/new/b.txt", "due_in": 3, "freezes": false, "deleted": false, "cutoff": "PlusInfinity"},
+            {"path": "_alice/c.txt", "due_in": 192, "freezes": true, "deleted": false, "cutoff": "MinusInfinity"},
         ]);
-        let page = files("cheapmo", "@alice", &list, &waiting).into_string();
+        let page = files("cheapmo", "_alice", &list, &waiting).into_string();
         assert!(page.contains(r#"waiting · published in <span data-due="2">0:02</span>"#));
         assert!(page.contains(r#"<span data-due="192">3:12</span>"#));
         assert!(page.contains(">new/</a>") && page.contains("1 waiting"));
         assert!(page.contains("3 edits wait to be published here."));
-        assert!(page.contains(r#"name="path" value="@alice/c.txt""#));
+        assert!(page.contains(r#"name="path" value="_alice/c.txt""#));
         assert_eq!(page.matches("data-confirm=").count(), 2, "{page}");
-        assert!(page.contains("<td>@alice/c.txt</td>"));
-        assert!(page.contains(r#"data-pattern="/@alice/c.txt" data-state="unchecked""#));
+        assert!(page.contains("<td>_alice/c.txt</td>"));
+        assert!(page.contains(r#"data-pattern="/_alice/c.txt" data-state="unchecked""#));
     }
 }

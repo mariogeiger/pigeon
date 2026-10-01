@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn query_values_are_percent_encoded() {
-        assert_eq!(encode("@alice/a b&c.txt"), "@alice/a%20b%26c.txt");
+        assert_eq!(encode("_alice/a b&c.txt"), "_alice/a%20b%26c.txt");
         assert_eq!(encode("é"), "%C3%A9");
     }
 }
