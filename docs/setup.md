@@ -107,7 +107,9 @@ To manage members:
   tree.
 - Every other folder is a drop folder, where anyone adds files. A new file
   is published once it has not changed for five minutes. After that it is
-  frozen, and only a request changes it.
+  frozen, and only a request changes it. `pigeon file pending` lists the
+  edits still waiting, and `pigeon file publish --path <file or folder>`
+  publishes them at once.
 - To change a file you do not own, write it anyway with
   `pigeon file write --path <path> --content <local file> --mode propose`,
   or `--mode force`. Its owner sees the request with `pigeon request list`
@@ -135,6 +137,12 @@ pigeon selection pin --pattern /report/ --time 2026-10-01T12:00:00Z
 `follow` keeps files in sync, `download` takes their current version once,
 and `unfollow` stops syncing them, keeping the files unless `--free`
 removes them. `pin` holds files as they were at a past time.
+
+In the web UI, the Files page gives each file and folder a box: checked
+when followed, mixed when only part of a folder is. Unchecking asks whether
+to keep the current copy, frozen, or free the space. A rule set this way
+replaces the earlier rules for the paths inside it; hand-written patterns
+such as `*.pdf` stay. The group's pages update themselves as files change.
 
 `pigeon selection place --folder videos --destination /mnt/big/videos`
 keeps a folder on another disk and leaves a link at its place, a junction

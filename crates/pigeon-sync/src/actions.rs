@@ -1,6 +1,6 @@
 //! What a person can ask of the engine besides editing the tree: change
-//! the selection and the retention, file and answer requests, and resolve
-//! set-aside items.
+//! the selection and the retention, publish waiting edits at once, file and
+//! answer requests, and resolve set-aside items.
 
 use std::sync::Arc;
 
@@ -13,7 +13,7 @@ use pigeon_core::statement::{Decision, Mode};
 use pigeon_store::disk::{self, fs_path};
 
 use crate::disk_sync::{Probe, file_stat};
-use crate::engine::{Engine, Inner, Work};
+use crate::engine::{Engine, Inner, JoinState, Work};
 use crate::watch::Rescan;
 
 impl Inner {
@@ -45,6 +45,43 @@ impl Inner {
 }
 
 impl Engine {
+    /// Publishes at once the edits waiting at `under` or inside it, or
+    /// everywhere.
+    ///
+    /// # Errors
+    ///
+    /// Fails if no edit waits there, the member has not joined yet, or a
+    /// file is still changing, whose edit then waits anew.
+    pub async fn publish(&self, under: Option<&GroupPath>) -> Result<()> {
+        let inner = &self.inner;
+        let mut work = inner.work.lock().await;
+        if work.join != JoinState::Joined {
+            bail!("{} has not joined the group yet", inner.config.member);
+        }
+        let keys: Vec<PathKey> = work
+            .pending
+            .keys()
+            .filter(|key| under.is_none_or(|under| key.is_within(&under.key())))
+            .cloned()
+            .collect();
+        if keys.is_empty() {
+            match under {
+                Some(under) => bail!("no edit waits to be published at {under}"),
+                None => bail!("no edit waits to be published"),
+            }
+        }
+        inner.publish_settled(&mut work, &keys).await;
+        let changing: Vec<&str> = keys
+            .iter()
+            .filter_map(|key| work.pending.get(key))
+            .map(|pending| pending.path.as_str())
+            .collect();
+        if !changing.is_empty() {
+            bail!("still changing, so waiting anew: {}", changing.join(", "));
+        }
+        Ok(())
+    }
+
     /// Makes `rule` the last rule of the selection. A rule that stops
     /// holding files also removes the held copies nobody modified.
     ///

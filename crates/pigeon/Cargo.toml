@@ -19,6 +19,7 @@ clap_complete.workspace = true
 data-encoding.workspace = true
 dialoguer.workspace = true
 dirs.workspace = true
+futures-util.workspace = true
 getrandom.workspace = true
 maud.workspace = true
 serde.workspace = true

@@ -1,10 +1,13 @@
 //! Daemons on this host, each with its own pigeon folder, driven through
-//! the API and the web UI as the command line and a browser drive them.
+//! the API and the web UI as the command line and a browser drive them,
+//! including the event stream that keeps a group's pages live.
 
 use std::future::Future;
+use std::io::{BufRead, BufReader, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use data_encoding::BASE64;
@@ -452,4 +455,126 @@ async fn a_new_password_keeps_this_machine_in_and_leaving_takes_it_out() {
     );
     let page = peer.page("/g/cheapmo").await;
     assert!(page.contains("alice left the group"));
+}
+
+/// The next line of an event stream.
+fn next_line(lines: &Receiver<String>) -> String {
+    lines.recv_timeout(Duration::from_secs(20)).unwrap()
+}
+
+/// Opens the event stream of `group`, checks that it is one, and returns
+/// its lines, lowercased.
+async fn listen(peer: &Peer, group: &str) -> Receiver<String> {
+    let (sender, lines) = std::sync::mpsc::channel();
+    let (address, cookie) = (peer.address, peer.cookie());
+    let request = format!(
+        "GET /g/{group}/events HTTP/1.1\r\nhost: {address}\r\n{}: {}\r\n\r\n",
+        cookie.0, cookie.1
+    );
+    std::thread::spawn(move || {
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        stream.write_all(request.as_bytes()).unwrap();
+        for line in BufReader::new(stream).lines() {
+            let Ok(line) = line else {
+                return;
+            };
+            if sender.send(line.to_lowercase()).is_err() {
+                return;
+            }
+        }
+    });
+    tokio::task::spawn_blocking(move || {
+        assert_eq!(next_line(&lines), "http/1.1 200 ok");
+        let mut kind = String::new();
+        loop {
+            let line = next_line(&lines);
+            if line.is_empty() {
+                break;
+            }
+            if let Some(value) = line.strip_prefix("content-type: ") {
+                value.clone_into(&mut kind);
+            }
+        }
+        assert_eq!(kind, "text/event-stream");
+        lines
+    })
+    .await
+    .unwrap()
+}
+
+/// Waits for the next event of a stream.
+async fn next_event(lines: Receiver<String>) -> Receiver<String> {
+    tokio::task::spawn_blocking(move || {
+        while !next_line(&lines).starts_with("data:") {}
+        lines
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn group_pages_follow_files_and_hear_each_change() {
+    let lookup = MemoryLookup::new();
+    let peer = Peer::start(&lookup).await;
+    peer.call(
+        "group",
+        "create",
+        json!({"name": "cheapmo", "member": "alice", "password": "pa", "root": peer.root("cheapmo")}),
+    )
+    .await
+    .unwrap();
+    eventually("alice joined", async || peer.joined().await).await;
+    let script = peer
+        .send("GET", "/live.js", vec![peer.cookie()], None)
+        .await;
+    assert_eq!(script.status, 200);
+    assert!(script.body.contains("new EventSource("));
+    let page = peer.page("/g/cheapmo/files").await;
+    assert!(page.contains(r#"<script src="/live.js" defer></script>"#));
+    assert!(page.contains(r#"<body data-group="cheapmo">"#));
+
+    let lines = listen(&peer, "cheapmo").await;
+    peer.call(
+        "file",
+        "write",
+        json!({"path": "@alice/notes.txt", "content": base64("hello\n")}),
+    )
+    .await
+    .unwrap();
+    let lines = next_event(lines).await;
+
+    let page = peer.page("/g/cheapmo/files?under=@alice").await;
+    assert!(
+        page.contains(r#"data-pattern="/@alice/notes.txt" data-state="checked" checked"#),
+        "{page}"
+    );
+    peer.call(
+        "selection",
+        "unfollow",
+        json!({"pattern": "/@alice/notes.txt"}),
+    )
+    .await
+    .unwrap();
+    drop(next_event(lines).await);
+    let page = peer.page("/g/cheapmo/files?under=@alice").await;
+    assert!(page.contains("frozen copy"), "{page}");
+    let page = peer.page("/g/cheapmo/files").await;
+    assert!(page.contains(r#"data-pattern="/@alice/" data-state="unchecked">"#));
+    peer.call("selection", "follow", json!({"pattern": "/@alice/"}))
+        .await
+        .unwrap();
+    let rules = peer.call("selection", "list", json!({})).await.unwrap();
+    let patterns: Vec<&str> = rules
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|rule| rule["pattern"].as_str().unwrap())
+        .collect();
+    assert_eq!(patterns, ["@alice/", "/@alice/"]);
+    assert_eq!(
+        peer.call("file", "pending", json!({})).await.unwrap(),
+        json!([])
+    );
+    let error = peer.call("file", "publish", json!({})).await.unwrap_err();
+    assert!(error.contains("no edit waits"), "{error}");
 }

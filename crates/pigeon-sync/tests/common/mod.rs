@@ -155,8 +155,13 @@ pub fn options(lookup: &MemoryLookup) -> Options {
 }
 
 /// Starts one machine per `(member, password)`, all in one group whose key
-/// names the first machine, and waits until every member joined.
+/// names the first machine.
 pub async fn group(members: &[(&str, &str)]) -> Vec<Machine> {
+    group_with(members, |_| {}).await
+}
+
+/// The same, with the timings `tune` changes.
+pub async fn group_with(members: &[(&str, &str)], tune: impl Fn(&mut Options)) -> Vec<Machine> {
     let lookup = MemoryLookup::new();
     let dirs: Vec<TempDir> = members
         .iter()
@@ -170,7 +175,9 @@ pub async fn group(members: &[(&str, &str)]) -> Vec<Machine> {
     let mut machines = Vec::new();
     for (dir, (member, password)) in dirs.into_iter().zip(members) {
         let root = dir.path().join("root");
-        machines.push(start(key.clone(), member, password, (dir, root), options(&lookup)).await);
+        let mut options = options(&lookup);
+        tune(&mut options);
+        machines.push(start(key.clone(), member, password, (dir, root), options).await);
     }
     machines
 }

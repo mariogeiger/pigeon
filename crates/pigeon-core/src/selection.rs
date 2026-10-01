@@ -1,6 +1,7 @@
 //! Selections: rules that map a gitignore pattern to a cutoff time, the last
 //! matching rule winning, which say which version of each file a machine
-//! holds. The statements folder is always followed.
+//! holds. The statements folder is always followed. Exact patterns name one
+//! path literally, and a new exact rule drops the exact rules it masks.
 
 use std::fmt;
 
@@ -74,6 +75,65 @@ pub fn matches(matcher: &Gitignore, path: &GroupPath) -> bool {
         .is_ignore()
 }
 
+/// The gitignore pattern that matches exactly the path `path` and, were it
+/// a folder, everything inside it.
+#[must_use]
+pub fn exact_pattern(path: &GroupPath) -> String {
+    let mut pattern = String::from("/");
+    for character in path.as_str().chars() {
+        if matches!(character, '[' | ']' | '*' | '?' | '\\') {
+            pattern.push('\\');
+        }
+        pattern.push(character);
+    }
+    pattern
+}
+
+/// The gitignore pattern that matches everything inside the folder `folder`.
+#[must_use]
+pub fn folder_pattern(folder: &GroupPath) -> String {
+    exact_pattern(folder) + "/"
+}
+
+/// What an exact pattern names: one literal path, and whether only as a
+/// folder.
+#[derive(PartialEq, Eq, Debug)]
+struct Scope {
+    path: String,
+    folder: bool,
+}
+
+impl Scope {
+    /// The scope of `pattern`, when it is anchored and has no wildcard.
+    fn of(pattern: &str) -> Option<Self> {
+        let rest = pattern.strip_prefix('/')?;
+        let (rest, folder) = match rest.strip_suffix('/') {
+            Some(inner) => (inner, true),
+            None => (rest, false),
+        };
+        let mut path = String::new();
+        let mut characters = rest.chars();
+        while let Some(character) = characters.next() {
+            match character {
+                '\\' => path.push(characters.next()?),
+                '*' | '?' | '[' | ']' => return None,
+                _ => path.push(character),
+            }
+        }
+        GroupPath::parse(&path).ok()?;
+        Some(Self { path, folder })
+    }
+
+    /// Whether every path `other` matches, this scope matches too.
+    fn masks(&self, other: &Self) -> bool {
+        let inside = other
+            .path
+            .strip_prefix(&self.path)
+            .is_some_and(|rest| rest.starts_with('/'));
+        inside || (other.path == self.path && (other.folder || !self.folder))
+    }
+}
+
 /// A machine's selection: its rules, compiled.
 #[derive(Clone, Default)]
 pub struct Selection {
@@ -94,12 +154,21 @@ impl Selection {
     }
 
     /// Makes `rule` the last rule, replacing any rule with the same pattern.
+    /// An exact rule also drops the earlier exact rules whose paths it
+    /// covers, which it masks so that they could never win again.
     ///
     /// # Errors
     /// Returns why the pattern is invalid.
     pub fn set(&mut self, rule: Rule) -> Result<(), PatternError> {
         let matcher = compile(&rule.pattern)?;
-        self.rules.retain(|(old, _)| old.pattern != rule.pattern);
+        let scope = Scope::of(&rule.pattern);
+        self.rules.retain(|(old, _)| {
+            let masked = scope
+                .as_ref()
+                .zip(Scope::of(&old.pattern))
+                .is_some_and(|(new, old)| new.masks(&old));
+            old.pattern != rule.pattern && !masked
+        });
         self.rules.push((rule, matcher));
         Ok(())
     }
@@ -201,5 +270,82 @@ mod tests {
             }])
             .is_err()
         );
+    }
+
+    #[test]
+    fn an_exact_pattern_matches_only_its_path() {
+        let file = path("a/[b] c.txt");
+        let pattern = exact_pattern(&file);
+        assert_eq!(pattern, "/a/\\[b\\] c.txt");
+        let matcher = compile(&pattern).unwrap();
+        assert!(matches(&matcher, &file));
+        assert!(!matches(&matcher, &path("a/b c.txt")));
+        assert_eq!(
+            Scope::of(&pattern),
+            Some(Scope {
+                path: "a/[b] c.txt".into(),
+                folder: false
+            })
+        );
+        let folder = folder_pattern(&path("a"));
+        assert_eq!(folder, "/a/");
+        assert!(matches(&compile(&folder).unwrap(), &file));
+        assert_eq!(
+            Scope::of(&folder),
+            Some(Scope {
+                path: "a".into(),
+                folder: true
+            })
+        );
+        for glob in ["*.pdf", "a/", "/a/*", "/a?", "/[ab]/", "@mario/", "/"] {
+            assert_eq!(Scope::of(glob), None, "{glob}");
+        }
+    }
+
+    #[test]
+    fn an_exact_rule_drops_the_exact_rules_it_masks() {
+        let rule = |pattern: &str, cutoff| Rule {
+            pattern: pattern.into(),
+            cutoff,
+        };
+        let earlier = [
+            rule("/a/b.txt", Cutoff::MinusInfinity),
+            rule("/a/c/", Cutoff::At(3)),
+            rule("*.pdf", Cutoff::MinusInfinity),
+            rule("/a", Cutoff::At(4)),
+            rule("/ab.txt", Cutoff::MinusInfinity),
+            rule("/b/", Cutoff::At(5)),
+        ];
+        let mut selection = Selection::new(earlier.clone()).unwrap();
+        let cutoffs = |selection: &Selection| {
+            ["a", "a/b.txt", "a/c/d", "a/e.pdf", "ab.txt", "b/x"]
+                .map(|file| selection.cutoff(&path(file)))
+        };
+        let before = cutoffs(&selection);
+        selection.set(rule("/a/", Cutoff::PlusInfinity)).unwrap();
+        let patterns: Vec<&str> = selection
+            .rules()
+            .map(|rule| rule.pattern.as_str())
+            .collect();
+        assert_eq!(patterns, ["*.pdf", "/a", "/ab.txt", "/b/", "/a/"]);
+        let mut unpruned = Selection::default();
+        for each in earlier
+            .into_iter()
+            .chain([rule("/a/", Cutoff::PlusInfinity)])
+        {
+            unpruned
+                .rules
+                .retain(|(old, _)| old.pattern != each.pattern);
+            let matcher = compile(&each.pattern).unwrap();
+            unpruned.rules.push((each, matcher));
+        }
+        assert_eq!(cutoffs(&selection), cutoffs(&unpruned));
+        assert_ne!(cutoffs(&selection), before);
+        selection.set(rule("/a", Cutoff::MinusInfinity)).unwrap();
+        let patterns: Vec<&str> = selection
+            .rules()
+            .map(|rule| rule.pattern.as_str())
+            .collect();
+        assert_eq!(patterns, ["*.pdf", "/ab.txt", "/b/", "/a"]);
     }
 }

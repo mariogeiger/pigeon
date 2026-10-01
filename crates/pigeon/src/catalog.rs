@@ -200,7 +200,7 @@ pub const NOUNS: &[(&str, &str)] = &[
     ("member", "The group's members"),
     (
         "file",
-        "The group's files: list, write, delete and rename them",
+        "The group's files: list, write, delete, rename and publish them",
     ),
     ("selection", "Which files this machine holds"),
     ("request", "Changes asked of a file's owner"),
@@ -324,6 +324,27 @@ pub const ACTIONS: &[Action] = &[
         "List a file's versions",
         &[required("path", "The file", Kind::Path)],
         &["time", "content.size", "owner", "applies"],
+    ),
+    view(
+        "file",
+        "pending",
+        "List the edits waiting to be published, with the seconds left",
+        &[optional(
+            "under",
+            "Only the edits in this folder",
+            Kind::Path,
+        )],
+        &["path", "due_in", "freezes", "deleted"],
+    ),
+    action(
+        "file",
+        "publish",
+        "Publish waiting edits now rather than once they settle; a file in a drop folder then freezes",
+        &[optional(
+            "path",
+            "The file or folder whose edits to publish; leave it out for every edit",
+            Kind::Path,
+        )],
     ),
     action(
         "file",

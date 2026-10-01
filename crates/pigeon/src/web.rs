@@ -1,13 +1,16 @@
 //! The web UI's routes: each page fetches its data through the catalog's
-//! views, or from the engine where it compares contents, and each form
-//! posts to `/act/<noun>/<verb>`, which runs the action as the API does.
+//! views, or from the engine where it compares contents, each form posts
+//! to `/act/<noun>/<verb>`, which runs the action as the API does, and a
+//! group's event stream tells its pages when to fetch themselves again.
 
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{StatusCode, header};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use data_encoding::BASE64;
@@ -19,6 +22,7 @@ use serde_json::{Map, Value, json};
 
 use crate::api::{App, call};
 use crate::catalog::{GROUP, Kind, find};
+use crate::files_page;
 use crate::form::{BACK, Fill, form};
 use crate::group_pages::{self, RequestCard};
 use crate::pages::{self, Side, action, diff, layout};
@@ -111,7 +115,16 @@ async fn files(
         json!({ "group": group, "under": under }),
     )
     .await?;
-    Ok(html_page(&group_pages::files(&group, under, &list)))
+    let waiting = view(
+        &app,
+        "file",
+        "pending",
+        json!({ "group": group, "under": under }),
+    )
+    .await?;
+    Ok(html_page(&files_page::files(
+        &group, under, &list, &waiting,
+    )))
 }
 
 async fn file(
@@ -139,8 +152,20 @@ async fn file(
         json!({ "group": group, "path": path }),
     )
     .await?;
+    let waiting = view(
+        &app,
+        "file",
+        "pending",
+        json!({ "group": group, "under": path }),
+    )
+    .await?;
+    let waiting = waiting
+        .as_array()
+        .and_then(|edits| edits.iter().find(|edit| edit["path"] == path))
+        .cloned()
+        .unwrap_or(Value::Null);
     Ok(html_page(&group_pages::file(
-        &group, path, &current, &history,
+        &group, path, &current, &history, &waiting,
     )))
 }
 
@@ -315,6 +340,32 @@ async fn raw(
     }
 }
 
+/// Sends an event each time what the engine of `group` shows may have
+/// changed, for its pages to fetch themselves again.
+async fn events(State(app): State<Arc<App>>, Path(group): Path<String>) -> Response {
+    let changes = match with_engine(&app, &group, async |engine| engine.changes()).await {
+        Ok(changes) => changes,
+        Err(failure) => return failure.into_response(),
+    };
+    let events = futures_util::stream::unfold(changes, |mut changes| async move {
+        changes.changed().await.ok()?;
+        let event = Event::default().data(changes.borrow_and_update().to_string());
+        Some((Ok::<_, Infallible>(event), changes))
+    });
+    Sse::new(events)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+/// The script that keeps a group's pages live.
+async fn live_script() -> Response {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        include_str!("live.js"),
+    )
+        .into_response()
+}
+
 /// Whether `back` is a page of this server, never another site.
 fn local_page(back: &str) -> bool {
     back.starts_with('/') && !back.starts_with("//") && !back.contains('\\')
@@ -399,6 +450,8 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/g/{group}/selection", get(selection))
         .route("/g/{group}/retention", get(retention))
         .route("/g/{group}/raw", get(raw))
+        .route("/g/{group}/events", get(events))
+        .route("/live.js", get(live_script))
         .route("/act/{noun}/{verb}", post(act))
 }
 

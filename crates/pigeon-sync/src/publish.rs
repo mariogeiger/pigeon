@@ -3,11 +3,11 @@
 //! freezing published drop files on disk.
 
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use pigeon_core::patch::{Change, Content, ContentHash};
-use pigeon_core::path::PathKey;
+use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_store::disk::{self, Stat, fs_path};
 use pigeon_store::index::{IndexEntry, Seen};
 
@@ -31,6 +31,16 @@ impl Inner {
         work.tags.push(tag);
         work.protect_due = true;
         Ok(content)
+    }
+
+    /// How long an edit at `path` must stay unchanged before it is
+    /// published: longer in a drop folder, where publishing freezes it.
+    pub(crate) fn settle_time(&self, path: &GroupPath) -> Duration {
+        if self.ledger.lock().freezes(path) {
+            self.options.settle_drop
+        } else {
+            self.options.settle_personal
+        }
     }
 
     /// Publishes the edits that stayed unchanged long enough, or every
@@ -94,12 +104,8 @@ impl Inner {
             if work.is_frozen(&pending.path) {
                 continue;
             }
-            let settle = if self.ledger.lock().freezes(&pending.path) {
-                self.options.settle_drop
-            } else {
-                self.options.settle_personal
-            };
-            if !at_once.contains(&key) && pending.since.elapsed() < settle {
+            if !at_once.contains(&key) && pending.since.elapsed() < self.settle_time(&pending.path)
+            {
                 continue;
             }
             let stat = file_stat(&pending.location);

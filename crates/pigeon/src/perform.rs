@@ -173,27 +173,7 @@ async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
             engine.exclude(&engine.status().await.member).await?;
             Ok(Value::Null)
         }
-        ("file", "list") => {
-            let under = args.text("under").map(|_| args.path("under")).transpose()?;
-            to_json(engine.list(under.as_ref()).await?)
-        }
-        ("file", "history") => to_json(engine.history(&args.path("path")?)),
-        ("file", "write" | "delete" | "rename") => {
-            let edit = match action.verb {
-                "write" => Edit::Write {
-                    path: args.path("path")?,
-                    bytes: args.bytes("content")?,
-                },
-                "delete" => Edit::Delete {
-                    path: args.path("path")?,
-                },
-                _ => Edit::Rename {
-                    from: args.path("from")?,
-                    to: args.path("to")?,
-                },
-            };
-            to_json(engine.edit(vec![edit], args.mode(), message).await?)
-        }
+        ("file", verb) => on_files(engine, args, verb).await,
         ("selection", "list") => to_json(engine.selection().await),
         ("selection", verb @ ("places" | "place" | "unplace")) => place(engine, args, verb).await,
         ("selection", verb) => {
@@ -237,6 +217,44 @@ async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
         ("retention", "show") => to_json(retention_in_days(&engine.retention()?)),
         ("retention", "set") => set_retention(engine, args).await,
         _ => bail!("{} is not implemented", action.command()),
+    }
+}
+
+/// Lists, shows, publishes, writes, deletes or renames files.
+async fn on_files(engine: &Engine, args: &Args, verb: &str) -> Result<Value> {
+    let message = args.text("message").unwrap_or_default();
+    match verb {
+        "list" => {
+            let under = args.text("under").map(|_| args.path("under")).transpose()?;
+            to_json(engine.list(under.as_ref()).await?)
+        }
+        "history" => to_json(engine.history(&args.path("path")?)),
+        "pending" => {
+            let under = args.text("under").map(|_| args.path("under")).transpose()?;
+            to_json(engine.pending(under.as_ref()).await)
+        }
+        "publish" => {
+            let path = args.text("path").map(|_| args.path("path")).transpose()?;
+            engine.publish(path.as_ref()).await?;
+            Ok(Value::Null)
+        }
+        "write" | "delete" | "rename" => {
+            let edit = match verb {
+                "write" => Edit::Write {
+                    path: args.path("path")?,
+                    bytes: args.bytes("content")?,
+                },
+                "delete" => Edit::Delete {
+                    path: args.path("path")?,
+                },
+                _ => Edit::Rename {
+                    from: args.path("from")?,
+                    to: args.path("to")?,
+                },
+            };
+            to_json(engine.edit(vec![edit], args.mode(), message).await?)
+        }
+        _ => bail!("{} is not implemented", args.action.command()),
     }
 }
 

@@ -36,7 +36,7 @@ pub fn action(noun: &str, verb: &str) -> &'static Action {
     find(noun, verb).expect("the web UI uses actions of the catalog")
 }
 
-/// A whole page.
+/// A whole page, which `live.js` keeps live when it is a group's.
 #[must_use]
 pub fn layout(title: &str, group: Option<&str>, body: &Markup) -> Markup {
     html! {
@@ -46,8 +46,9 @@ pub fn layout(title: &str, group: Option<&str>, body: &Markup) -> Markup {
                 meta charset="utf-8";
                 title { (title) " · pigeon" }
                 style { (PreEscaped(STYLE)) }
+                script src="/live.js" defer {}
             }
-            body {
+            body data-group=[group] {
                 nav {
                     a href="/" { "Groups" }
                     @if let Some(group) = group {
@@ -60,8 +61,10 @@ pub fn layout(title: &str, group: Option<&str>, body: &Markup) -> Markup {
                         a href={ "/g/" (group) "/retention" } { "Retention" }
                     }
                 }
-                h1 { (title) }
-                (body)
+                main {
+                    h1 { (title) }
+                    (body)
+                }
             }
         }
     }

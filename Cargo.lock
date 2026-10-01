@@ -3154,6 +3154,7 @@ dependencies = [
  "data-encoding",
  "dialoguer",
  "dirs",
+ "futures-util",
  "getrandom 0.4.3",
  "iroh",
  "maud",

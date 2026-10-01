@@ -13,7 +13,7 @@ use pigeon_core::clock::{MachineId, Stamp, ntp_time};
 use pigeon_core::ledger::{Ledger, Version};
 use pigeon_core::patch::{Change, Content, ContentHash};
 use pigeon_core::path::{GroupPath, PathKey};
-use pigeon_core::selection::{Cutoff, Rule};
+use pigeon_core::selection::{Cutoff, Rule, exact_pattern};
 use pigeon_core::statement::{STATEMENTS, member_path};
 use pigeon_store::aside::AsideItem;
 use pigeon_store::disk::{self, Stat, fs_path};
@@ -65,18 +65,6 @@ pub(crate) fn file_stat(location: &Path) -> Option<Stat> {
 fn stat_time(stat: &Stat) -> u64 {
     let nanos = u64::try_from(stat.modified.max(0)).unwrap_or(u64::MAX);
     ntp_time(UNIX_EPOCH + Duration::from_nanos(nanos))
-}
-
-/// The gitignore pattern that matches exactly `path`.
-pub(crate) fn exact_pattern(path: &GroupPath) -> String {
-    let mut pattern = String::from("/");
-    for character in path.as_str().chars() {
-        if matches!(character, '[' | ']' | '*' | '?' | '\\') {
-            pattern.push('\\');
-        }
-        pattern.push(character);
-    }
-    pattern
 }
 
 /// The version `selection` holds at `key`.
@@ -517,19 +505,3 @@ impl Inner {
 
 /// How long to wait before fetching again a blob that no peer delivered.
 const RETRY: Duration = Duration::from_secs(5);
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn an_exact_pattern_matches_only_its_path() {
-        let path = GroupPath::parse("a/[b] c.txt").unwrap();
-        let pattern = exact_pattern(&path);
-        assert_eq!(pattern, "/a/\\[b\\] c.txt");
-        let matcher = pigeon_core::selection::compile(&pattern).unwrap();
-        assert!(pigeon_core::selection::matches(&matcher, &path));
-        let other = GroupPath::parse("a/b c.txt").unwrap();
-        assert!(!pigeon_core::selection::matches(&matcher, &other));
-    }
-}

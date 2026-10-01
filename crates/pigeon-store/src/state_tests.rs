@@ -1,6 +1,6 @@
 //! Tests of the state database: patches survive reopening and fold back
 //! into the same ledger, and the index, set-aside list, and settings
-//! round-trip.
+//! round-trip, every write counted.
 
 use iroh_base::SecretKey;
 use pigeon_core::clock::Stamp;
@@ -138,7 +138,7 @@ fn index_entries_are_listed_under_a_folder_without_case() {
 }
 
 #[test]
-fn aside_items_are_numbered_and_taken() {
+fn aside_items_are_numbered_and_taken_each_write_counted() {
     let dir = tempfile::tempdir().unwrap();
     let state = State::open(&dir.path().join("s")).unwrap();
     let item = |path: &str| AsideItem {
@@ -148,7 +148,9 @@ fn aside_items_are_numbered_and_taken() {
         reason: Reason::NotWritable,
         time: 7,
     };
+    assert_eq!(state.revision(), 0);
     assert_eq!(state.set_aside(&item("a")).unwrap(), 1);
+    assert_eq!(state.revision(), 1);
     assert_eq!(state.set_aside(&item("b")).unwrap(), 2);
     assert_eq!(state.take_aside(1).unwrap(), Some(item("a")));
     assert_eq!(state.take_aside(1).unwrap(), None);
@@ -160,6 +162,7 @@ fn aside_items_are_numbered_and_taken() {
         .map(|(_, i)| i.path)
         .collect();
     assert_eq!(paths, ["b", "c"]);
+    assert_eq!(state.revision(), 5, "every write and no read counts");
 }
 
 #[test]

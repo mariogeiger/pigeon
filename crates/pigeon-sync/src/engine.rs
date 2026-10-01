@@ -2,9 +2,11 @@
 //! binds its endpoint, and runs the one loop that receives patches, follows
 //! the root's changes, publishes settled edits, joins the member to the
 //! group, renews and keeps the group secret, and keeps the blobs it needs
-//! from garbage collection.
+//! from garbage collection. After each turn it signals whether what the
+//! engine shows may have changed.
 
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -186,6 +188,8 @@ pub(crate) struct Inner {
     pub rescans: mpsc::UnboundedSender<Rescan>,
     pub errors: Mutex<VecDeque<String>>,
     pub started: Instant,
+    /// A fingerprint of what the engine shows, sent anew when it changes.
+    pub changes: watch::Sender<u64>,
     _mdns: Option<MdnsAddressLookup>,
 }
 
@@ -210,6 +214,47 @@ impl Inner {
             errors.pop_front();
         }
         errors.push_back(error.to_string());
+    }
+
+    /// A hash of everything the views read: the state's writes, the
+    /// pending edits, the fetches, the errors, the member's standing, the
+    /// folders out of place, the peers and the relay.
+    fn fingerprint(&self, work: &Work) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.state.revision().hash(&mut hasher);
+        let mut pending: Vec<(&PathKey, &Instant)> = work
+            .pending
+            .iter()
+            .map(|(key, pending)| (key, &pending.since))
+            .collect();
+        pending.sort_unstable();
+        pending.hash(&mut hasher);
+        let mut fetching: Vec<&BTreeSet<PathKey>> = work.fetching.values().collect();
+        fetching.sort_unstable();
+        fetching.hash(&mut hasher);
+        self.errors
+            .lock()
+            .expect("no panic holds the errors")
+            .hash(&mut hasher);
+        format!("{:?}{:?}", work.join, work.out_of_place).hash(&mut hasher);
+        let mut peers = self.node.peers();
+        peers.sort_unstable();
+        peers.hash(&mut hasher);
+        self.node
+            .home_relay()
+            .map(|url| url.to_string())
+            .hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Sends the fingerprint when it changed.
+    pub(crate) fn signal(&self, work: &Work) {
+        let fingerprint = self.fingerprint(work);
+        self.changes.send_if_modified(|sent| {
+            let changed = *sent != fingerprint;
+            *sent = fingerprint;
+            changed
+        });
     }
 
     /// Signs, stores, folds and sends a patch of this machine.
@@ -516,6 +561,7 @@ impl Engine {
             rescans,
             errors: Mutex::new(VecDeque::new()),
             started: Instant::now(),
+            changes: watch::Sender::new(0),
             _mdns: mdns,
         });
         {
@@ -531,6 +577,13 @@ impl Engine {
             stop: Some(stop),
             task: Some(task),
         })
+    }
+
+    /// A fingerprint of what the engine shows, which changes whenever that
+    /// may have, at the latest one tick after.
+    #[must_use]
+    pub fn changes(&self) -> watch::Receiver<u64> {
+        self.inner.changes.subscribe()
     }
 
     /// This machine's id.
@@ -644,6 +697,7 @@ async fn run(
                 inner.tick(&mut work, &mut last_rescan, &mut last_protect).await;
             }
         }
+        inner.signal(&*inner.work.lock().await);
     }
 }
 

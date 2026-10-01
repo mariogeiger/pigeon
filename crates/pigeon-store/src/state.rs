@@ -3,6 +3,7 @@
 //! redb file whose transactions keep them consistent across crashes.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use pigeon_core::clock::Stamp;
 use pigeon_core::identity::GroupId;
@@ -41,6 +42,7 @@ fn stamp_key(stamp: &Stamp) -> [u8; 40] {
 /// The state database.
 pub struct State {
     database: Database,
+    revision: AtomicU64,
 }
 
 impl State {
@@ -60,7 +62,17 @@ impl State {
         transaction.open_table(ASIDE)?;
         transaction.open_table(SETTINGS)?;
         transaction.commit()?;
-        Ok(Self { database })
+        Ok(Self {
+            database,
+            revision: AtomicU64::new(0),
+        })
+    }
+
+    /// How many writes this handle committed: a new value means the state
+    /// may read differently.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Relaxed)
     }
 
     /// Records a patch; recording one twice changes nothing.
@@ -75,6 +87,7 @@ impl State {
             .open_table(PATCHES)?
             .insert(stamp_key(&patch.stamp()).as_slice(), bytes.as_slice())?;
         transaction.commit()?;
+        self.revision.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -179,6 +192,7 @@ impl State {
             }
         }
         transaction.commit()?;
+        self.revision.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -197,6 +211,7 @@ impl State {
             id
         };
         transaction.commit()?;
+        self.revision.fetch_add(1, Ordering::Relaxed);
         Ok(id)
     }
 
@@ -231,6 +246,7 @@ impl State {
                 .transpose()?
         };
         transaction.commit()?;
+        self.revision.fetch_add(1, Ordering::Relaxed);
         Ok(item)
     }
 
@@ -255,6 +271,7 @@ impl State {
             .open_table(SETTINGS)?
             .insert(name, bytes.as_slice())?;
         transaction.commit()?;
+        self.revision.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 

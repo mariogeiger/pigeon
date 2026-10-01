@@ -8,6 +8,7 @@ pub mod catalog;
 pub mod cli;
 pub mod client;
 pub mod daemon;
+mod files_page;
 mod form;
 mod group_pages;
 pub mod home;
