@@ -3,7 +3,8 @@
 // open form or answering a question, keeping the parts marked data-keep,
 // and tells the page through a groupchange event; follow boxes post the selection,
 // asking first whether an unfollowed copy stays; countdowns tick; forms
-// marked data-confirm ask before they publish.
+// marked data-confirm ask before they publish; once the daemon restarts
+// onto another program, a banner offers to reload the page.
 "use strict";
 (() => {
   const group = document.body.dataset.group;
@@ -125,8 +126,16 @@
   setInterval(tick, 1000);
   prepare(document);
 
+  const updated = document.getElementById("updated");
+  updated.querySelector("button").addEventListener("click", () => location.reload());
+
   if (group !== undefined) {
     const events = new EventSource(`/g/${encodeURIComponent(group)}/events`);
+    let program;
+    events.addEventListener("program", (event) => {
+      program ??= event.data;
+      if (event.data !== program) updated.hidden = false;
+    });
     events.onopen = refresh;
     events.onmessage = () => {
       document.dispatchEvent(new Event("groupchange"));

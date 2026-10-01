@@ -26,7 +26,8 @@ command it prints and join again. `pigeon ui` prints the link to the web
 interface, where you choose the folders to follow. Open it once per
 browser; from then on the interface is at <http://127.0.0.1:6767>.
 
-To found a group, run its server, or manage members, see
+`pigeon update` later builds the latest pigeon and restarts the daemon
+onto it. To found a group, run its server, or manage members, see
 [docs/setup.md](docs/setup.md).
 
 ## License

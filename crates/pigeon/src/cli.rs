@@ -1,9 +1,11 @@
 //! The command line: `pigeon <noun> <verb>` commands generated from the
 //! catalog, which prompt for a missing argument only when a terminal is
 //! attached and otherwise call the daemon's API; plus the commands that run
-//! the daemon, serve a relay, link to the web UI, and complete the shell.
+//! the daemon, update pigeon, serve a relay, link to the web UI, and
+//! complete the shell.
 
 use std::io::{IsTerminal, Read};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint, builder::PossibleValuesParser};
@@ -13,7 +15,7 @@ use serde_json::{Map, Value};
 
 use crate::catalog::{ACTIONS, Action, GROUP, Kind, NOUNS, Param, Scope, find};
 use crate::home::Home;
-use crate::{client, relay, render, serve};
+use crate::{client, relay, render, serve, update};
 
 fn param_arg(param: &Param) -> Arg {
     let arg = Arg::new(param.name).long(param.name).help(param.about);
@@ -60,14 +62,28 @@ pub fn command() -> Command {
                 .subcommands(verbs.map(action_command)),
         );
     }
-    root.subcommand(
-        Command::new("daemon")
-            .about("Run pigeon: sync every group, answer the API, serve the web UI")
+    root.mut_subcommand("daemon", |daemon| {
+        daemon
+            .subcommand_required(false)
+            .arg_required_else_help(false)
+            .args_conflicts_with_subcommands(true)
             .arg(
                 Arg::new("port")
                     .long("port")
                     .help(format!("The localhost port, {} by default; 0 picks any free one", serve::PORT))
                     .value_parser(clap::value_parser!(u16)),
+            )
+    })
+    .subcommand(
+        Command::new("update")
+            .about("Build the head of pigeon's main branch with cargo, and restart the daemon onto it if it changed")
+            .arg(
+                Arg::new("path")
+                    .long("path")
+                    .help("A clone of pigeon's repository to build instead")
+                    .value_hint(ValueHint::DirPath)
+                    .value_name("FOLDER")
+                    .value_parser(clap::value_parser!(PathBuf)),
             ),
     )
     .subcommand(
@@ -186,13 +202,20 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
         bail!("run `pigeon --help`");
     };
     match noun {
-        "daemon" => {
+        "daemon" if noun_matches.subcommand().is_none() => {
             let port = noun_matches
                 .get_one::<u16>("port")
                 .copied()
                 .unwrap_or(serve::PORT);
-            tokio::runtime::Runtime::new()?.block_on(serve::run(home, port))
+            let restart = tokio::runtime::Runtime::new()?.block_on(serve::run(home, port))?;
+            restart.map_or(Ok(()), |program| Err(program.restart()))
         }
+        "update" => update::run(
+            &home,
+            noun_matches
+                .get_one::<PathBuf>("path")
+                .map(PathBuf::as_path),
+        ),
         "relay" => {
             let hostname = noun_matches
                 .get_one::<String>("hostname")

@@ -1,7 +1,8 @@
 //! The groups running on this machine: one engine per group, started from
 //! the data directories in the pigeon folder, and created when the user
 //! founds or joins a group, which then waits for the group's verdict on
-//! the member's name.
+//! the member's name; and why the daemon stops, which a restart onto a
+//! newly installed program is one reason for.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -13,20 +14,31 @@ use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_store::config::GroupConfig;
 use pigeon_store::group_key::GroupKey;
 use pigeon_sync::{Engine, JoinState, Options};
-use tokio::sync::{RwLock, RwLockReadGuard};
+use tokio::sync::{RwLock, RwLockReadGuard, watch};
 
 use crate::home::Home;
+use crate::program::Program;
 use crate::shared_root::{create_root, shared_root};
 
 /// How long, beyond the time a new machine listens, joining waits for the
 /// group's verdict on the name.
 const VERDICT: Duration = Duration::from_secs(30);
 
+/// Why the daemon stops.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stop {
+    Quit,
+    /// To run the program now installed where the running one came from.
+    Restart,
+}
+
 /// Every group on this machine.
 pub struct Daemon {
     home: Home,
     options: Options,
     groups: RwLock<BTreeMap<String, Engine>>,
+    program: Program,
+    stop: watch::Sender<Option<Stop>>,
 }
 
 impl Daemon {
@@ -35,8 +47,9 @@ impl Daemon {
     ///
     /// # Errors
     ///
-    /// Fails if the groups folder cannot be read.
+    /// Fails if the groups folder or the running program cannot be read.
     pub async fn start(home: Home, options: Options) -> Result<Self> {
+        let program = Program::running()?;
         let mut groups = BTreeMap::new();
         for name in home.group_names()? {
             match Engine::start(&home.group(&name), options.clone()).await {
@@ -50,7 +63,47 @@ impl Daemon {
             home,
             options,
             groups: RwLock::new(groups),
+            program,
+            stop: watch::Sender::new(None),
         })
+    }
+
+    /// The program this daemon runs.
+    #[must_use]
+    pub fn program(&self) -> &Program {
+        &self.program
+    }
+
+    /// Asks the daemon to stop for `stop`, unless it already stops.
+    pub fn stop(&self, stop: Stop) {
+        self.stop.send_if_modified(|held| {
+            let first = held.is_none();
+            if first {
+                *held = Some(stop);
+            }
+            first
+        });
+    }
+
+    /// Why the daemon stops, once asked to.
+    #[must_use]
+    pub fn stopping(&self) -> watch::Receiver<Option<Stop>> {
+        self.stop.subscribe()
+    }
+
+    /// Asks the daemon to restart onto the program now installed where the
+    /// running one came from, unless it is the same; returns whether it
+    /// restarts.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the program file cannot be read.
+    pub fn restart(&self) -> Result<bool> {
+        let replaced = self.program.replaced()?;
+        if replaced {
+            self.stop(Stop::Restart);
+        }
+        Ok(replaced && *self.stop.borrow() == Some(Stop::Restart))
     }
 
     #[must_use]

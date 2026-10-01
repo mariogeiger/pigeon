@@ -214,6 +214,10 @@ pub const NOUNS: &[(&str, &str)] = &[
     ("request", "Changes asked of a file's owner"),
     ("aside", "What this machine may not publish as it is"),
     ("retention", "Which past versions this machine keeps"),
+    (
+        "daemon",
+        "Run pigeon, which syncs every group, answers the API and serves the web UI, or restart it",
+    ),
 ];
 
 /// Every action, grouped by noun.
@@ -568,6 +572,12 @@ pub const ACTIONS: &[Action] = &[
             ),
         ],
     ),
+    on_machine(action(
+        "daemon",
+        "restart",
+        "Restart the daemon onto the program now installed where it came from, unless that is the program it runs",
+        &[],
+    )),
 ];
 
 /// The action `noun verb`.

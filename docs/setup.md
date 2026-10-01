@@ -15,7 +15,13 @@ Install [Rust](https://rustup.rs), then:
 cargo install --git https://github.com/mariogeiger/pigeon pigeon
 ```
 
-Run the same command with `--force` to update.
+To update, run `pigeon update`. It builds the head of pigeon's main branch
+with cargo, in your terminal, in a build folder kept between updates, so
+nothing recompiles while main has not moved. `--path <clone>` builds a
+local clone of the repository instead. The daemon then restarts onto the
+new program, unless the build left it unchanged, and web pages left open
+offer to reload. Machines whose versions of pigeon cannot talk to each
+other show as incompatible in `pigeon group status`: update them all.
 
 ## 2. Keep the daemon running
 

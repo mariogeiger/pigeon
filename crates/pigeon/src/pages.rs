@@ -70,6 +70,11 @@ pub fn layout(title: &str, group: Option<&str>, body: &Markup) -> Markup {
                         a href={ "/g/" (group) "/retention" } { "Retention" }
                     }
                 }
+                p id="updated" class="notice" hidden {
+                    "pigeon has been updated. "
+                    button type="button" { "Reload the page" }
+                    " to use the new version."
+                }
                 main {
                     h1 { (title) }
                     (body)
@@ -196,8 +201,9 @@ pub fn fields(value: &Value) -> Markup {
 }
 
 /// How a group stands here, its key, the form that names the group's
-/// relay, and, unless the member belongs, why and the form to claim a name
-/// or log in with a new password.
+/// relay, whether some machine runs a version of pigeon this one cannot
+/// talk to, and, unless the member belongs, why and the form to claim a
+/// name or log in with a new password.
 #[must_use]
 pub fn overview(group: &str, status: &Value, key: &str) -> Markup {
     let back = format!("/g/{group}");
@@ -212,6 +218,13 @@ pub fn overview(group: &str, status: &Value, key: &str) -> Markup {
                 (status["join"]["reason"].as_str().unwrap_or("This machine has not joined yet."))
             }
             (form(action("member", "claim"), &back, fill))
+        }
+        @if status["incompatible"].as_array().is_some_and(|machines| !machines.is_empty()) {
+            p class="mark" {
+                "The incompatible machines run a version of pigeon whose protocol this one does not speak, so they cannot sync with it. Run "
+                code { "pigeon update" }
+                " on each machine of the group."
+            }
         }
         section {
             h2 { "Group key" }

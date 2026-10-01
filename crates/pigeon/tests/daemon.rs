@@ -1,6 +1,7 @@
 //! Daemons on this host, each with its own pigeon folder, driven through
 //! the API and the web UI as the command line and a browser drive them,
-//! including the event stream that keeps a group's pages live.
+//! including the event stream that keeps a group's pages live and ends
+//! when the daemon stops.
 
 use std::future::Future;
 use std::io::{BufRead, BufReader, Write};
@@ -15,7 +16,7 @@ use iroh::address_lookup::MemoryLookup;
 use pigeon::api::{App, serve};
 use pigeon::catalog::{ACTIONS, Kind};
 use pigeon::client::call_at;
-use pigeon::daemon::Daemon;
+use pigeon::daemon::{Daemon, Stop};
 use pigeon::home::Home;
 use pigeon_sync::{Network, Options};
 use serde_json::{Map, Value, json};
@@ -25,6 +26,8 @@ struct Peer {
     address: SocketAddr,
     token: String,
     dir: TempDir,
+    app: Arc<App>,
+    server: tokio::task::JoinHandle<anyhow::Result<()>>,
 }
 
 /// What a raw HTTP request got back.
@@ -56,15 +59,21 @@ impl Peer {
         let daemon = Daemon::start(home, options(lookup)).await.unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
+        let mut stopping = daemon.stopping();
         let app = Arc::new(App {
             daemon,
             token: token.clone(),
         });
-        tokio::spawn(serve(app, listener, std::future::pending()));
+        let stop = async move {
+            let _ = stopping.wait_for(Option::is_some).await;
+        };
+        let server = tokio::spawn(serve(app.clone(), listener, stop));
         Self {
             address,
             token,
             dir,
+            app,
+            server,
         }
     }
 
@@ -461,8 +470,8 @@ fn next_line(lines: &Receiver<String>) -> String {
     lines.recv_timeout(Duration::from_secs(20)).unwrap()
 }
 
-/// Opens the event stream of `group`, checks that it is one, and returns
-/// its lines, lowercased.
+/// Opens the event stream of `group`, checks that it is one and that it
+/// first names the program serving it, and returns its lines, lowercased.
 async fn listen(peer: &Peer, group: &str) -> Receiver<String> {
     let (sender, lines) = std::sync::mpsc::channel();
     let (address, cookie) = (peer.address, peer.cookie());
@@ -495,6 +504,14 @@ async fn listen(peer: &Peer, group: &str) -> Receiver<String> {
             }
         }
         assert_eq!(kind, "text/event-stream");
+        while next_line(&lines) != "event: program" {}
+        let program = next_line(&lines);
+        assert!(
+            program
+                .strip_prefix("data: ")
+                .is_some_and(|hash| hash.len() == 64),
+            "{program}"
+        );
         lines
     })
     .await
@@ -570,6 +587,35 @@ async fn group_pages_follow_files_and_hear_each_change() {
     );
     let error = peer.call("file", "publish", json!({})).await.unwrap_err();
     assert!(error.contains("no edit waits"), "{error}");
+}
+
+#[tokio::test]
+async fn the_daemon_stops_with_event_streams_open_and_restarts_only_onto_another_program() {
+    let lookup = MemoryLookup::new();
+    let peer = Peer::start(&lookup).await;
+    peer.call(
+        "group",
+        "create",
+        json!({"name": "cheapmo", "member": "alice", "password": "pa", "root": peer.root("cheapmo")}),
+    )
+    .await
+    .unwrap();
+    let page = peer.page("/g/cheapmo").await;
+    assert!(page.contains(r#"<p id="updated" class="notice" hidden>"#));
+    let lines = listen(&peer, "cheapmo").await;
+    assert_eq!(
+        peer.call("daemon", "restart", json!({})).await,
+        Ok(json!({"restarts": false}))
+    );
+    peer.app.daemon.stop(Stop::Quit);
+    tokio::time::timeout(Duration::from_secs(10), peer.server)
+        .await
+        .expect("the server stops with the stream open")
+        .unwrap()
+        .unwrap();
+    tokio::task::spawn_blocking(move || while lines.recv().is_ok() {})
+        .await
+        .unwrap();
 }
 
 /// What the selection editor of the group cheapmo shows of `draft`.

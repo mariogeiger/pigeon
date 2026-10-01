@@ -3,14 +3,16 @@
 //! learns nothing unless the member list recognizes it, recognized machines
 //! receive the latest secret, and blobs move only between admitted machines,
 //! each from several machines at once, which serve what they hold while
-//! still downloading, and reach each other through the group's relay.
+//! still downloading, and reach each other through the group's relay; a
+//! machine speaking another version of the protocol is reported.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bao_tree::ChunkNum;
 use iroh::address_lookup::MemoryLookup;
-use iroh::endpoint::{RelayMode, presets};
+use iroh::endpoint::{Connection, RelayMode, presets};
+use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, RelayMap, RelayUrl};
 use iroh_base::SecretKey;
 use iroh_blobs::Hash;
@@ -460,6 +462,43 @@ async fn machines_known_only_by_the_groups_relay_reach_each_other() {
     })
     .await
     .expect("the machine moves to the new relay");
+    for machine in [a, b] {
+        machine.node.shutdown().await.unwrap();
+    }
+}
+
+/// A protocol that answers nothing, served under another name.
+#[derive(Clone, Debug)]
+struct Silent;
+
+impl ProtocolHandler for Silent {
+    fn accept(
+        &self,
+        _connection: Connection,
+    ) -> impl Future<Output = Result<(), AcceptError>> + Send {
+        std::future::ready(Ok(()))
+    }
+}
+
+#[tokio::test]
+async fn a_machine_speaking_another_version_of_the_protocol_is_reported() {
+    let lookup = MemoryLookup::new();
+    let a = Machine::start(first(5), &lookup).await;
+    let b = Machine::start(first(5), &lookup).await;
+    let older = bind_local(SecretKey::generate(), &lookup).await.unwrap();
+    let router = Router::builder(older.clone())
+        .accept(b"pigeon/sync/1", Silent)
+        .spawn();
+    a.node.dial(older.id());
+    a.meet(&b).await;
+    timeout(Duration::from_secs(10), async {
+        while a.node.incompatible() != [older.id()] {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the refusal is reported, and only for that machine");
+    router.shutdown().await.unwrap();
     for machine in [a, b] {
         machine.node.shutdown().await.unwrap();
     }

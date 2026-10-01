@@ -114,6 +114,7 @@ pub async fn perform(daemon: &Daemon, args: &Args) -> Result<Value> {
             }
             Ok(Value::Null)
         }
+        ("daemon", "restart") => Ok(json!({ "restarts": daemon.restart()? })),
         _ if action.scope == Scope::Group => {
             let groups = daemon.groups().await;
             let (_, engine) = choose(&groups, args.text(GROUP.name))?;

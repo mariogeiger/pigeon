@@ -3,7 +3,8 @@
 //! secret, keeps a sync session with every machine it reaches, passes the
 //! latest group secret to recognized machines, and serves and fetches blobs
 //! among admitted machines, each from several machines at once, through the
-//! relays it is told to use when no direct connection works.
+//! relays it is told to use when no direct connection works, and tells
+//! which machines speak no protocol of its own.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
@@ -11,7 +12,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-use iroh::endpoint::Connection;
+use iroh::endpoint::{
+    ConnectError, ConnectingError, Connection, ConnectionError, TransportErrorCode,
+};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, RelayMap, RelayUrl};
 use iroh_blobs::api::Store;
@@ -62,6 +65,7 @@ struct Shared {
     connected: Counts,
     admitted: Mutex<HashSet<MachineId>>,
     wanted: Mutex<BTreeSet<MachineId>>,
+    incompatible: Mutex<BTreeSet<MachineId>>,
     relays: tokio::sync::Mutex<Vec<RelayUrl>>,
 }
 
@@ -220,12 +224,41 @@ impl Shared {
         count(&self.attempts, machine, true);
         let shared = self.clone();
         tokio::spawn(async move {
-            if let Ok(connection) = shared.endpoint.connect(machine, SYNC_ALPN).await {
+            let dialed = shared.endpoint.connect(machine, SYNC_ALPN).await;
+            let incompatible = dialed.as_ref().is_err_and(speaks_no_protocol_of_ours);
+            if incompatible {
+                lock(&shared.incompatible).insert(machine);
+            } else {
+                lock(&shared.incompatible).remove(&machine);
+            }
+            if let Ok(connection) = dialed {
                 let _ = shared.clone().session(connection, true).await;
             }
             count(&shared.attempts, machine, false);
         });
     }
+}
+
+/// The TLS alert by which a machine refuses every protocol offered, as
+/// RFC 7301 numbers it.
+const NO_APPLICATION_PROTOCOL: u8 = 120;
+
+/// Whether the machine dialed refused the connection for speaking none of
+/// the protocols offered, as one running another version of pigeon does.
+fn speaks_no_protocol_of_ours(error: &ConnectError) -> bool {
+    let (ConnectError::Connection { source: closed, .. }
+    | ConnectError::Connecting {
+        source: ConnectingError::ConnectionError { source: closed, .. },
+        ..
+    }) = error
+    else {
+        return false;
+    };
+    matches!(
+        closed,
+        ConnectionError::ConnectionClosed(close)
+            if close.error_code == TransportErrorCode::crypto(NO_APPLICATION_PROTOCOL)
+    )
 }
 
 #[derive(Clone)]
@@ -318,6 +351,7 @@ impl Node {
             connected: Counts::default(),
             admitted: Mutex::default(),
             wanted: Mutex::default(),
+            incompatible: Mutex::default(),
             relays: tokio::sync::Mutex::default(),
         });
         let pool = ConnectionPool::new(
@@ -459,6 +493,13 @@ impl Node {
     #[must_use]
     pub fn peers(&self) -> Vec<MachineId> {
         lock(&self.shared.connected).keys().copied().collect()
+    }
+
+    /// The machines that refused the last dial for speaking no protocol of
+    /// this machine's: they run another version of pigeon.
+    #[must_use]
+    pub fn incompatible(&self) -> Vec<MachineId> {
+        lock(&self.shared.incompatible).iter().copied().collect()
     }
 
     /// Fetches a blob from `providers` at once, resuming what is held.

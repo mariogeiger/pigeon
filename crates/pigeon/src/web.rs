@@ -2,7 +2,7 @@
 //! views, or from the engine where it compares contents, each form posts
 //! to `/act/<noun>/<verb>`, which runs the action as the API does, the
 //! selection editor previews its draft, and a group's event stream tells
-//! its pages when to fetch themselves again.
+//! its pages when to fetch themselves again and which program serves them.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -15,6 +15,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Json, Redirect, Response};
 use axum::routing::{get, post};
 use data_encoding::BASE64;
+use futures_util::StreamExt;
 use maud::{Markup, html};
 use pigeon_core::patch::Content;
 use pigeon_core::path::GroupPath;
@@ -342,18 +343,30 @@ async fn raw(
     }
 }
 
-/// Sends an event each time what the engine of `group` shows may have
-/// changed, for its pages to fetch themselves again.
+/// Sends the hash of the program the daemon runs, for pages to notice a
+/// restart onto another, then an event each time what the engine of
+/// `group` shows may have changed, for its pages to fetch themselves
+/// again; ends once the daemon stops.
 async fn events(State(app): State<Arc<App>>, Path(group): Path<String>) -> Response {
     let changes = match with_engine(&app, &group, async |engine| engine.changes()).await {
         Ok(changes) => changes,
         Err(failure) => return failure.into_response(),
     };
-    let events = futures_util::stream::unfold(changes, |mut changes| async move {
-        changes.changed().await.ok()?;
+    let program = Event::default()
+        .event("program")
+        .data(app.daemon.program().hash.to_hex().as_str());
+    let state = (changes, app.daemon.stopping());
+    let changes = futures_util::stream::unfold(state, |(mut changes, mut stopping)| async move {
+        tokio::select! {
+            result = changes.changed() => result.ok()?,
+            _ = stopping.wait_for(Option::is_some) => return None,
+        }
         let event = Event::default().data(changes.borrow_and_update().to_string());
-        Some((Ok::<_, Infallible>(event), changes))
+        Some((event, (changes, stopping)))
     });
+    let events = futures_util::stream::once(std::future::ready(program))
+        .chain(changes)
+        .map(Ok::<_, Infallible>);
     Sse::new(events)
         .keep_alive(KeepAlive::default())
         .into_response()
