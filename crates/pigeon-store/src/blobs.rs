@@ -1,6 +1,7 @@
 //! The blob store: file contents by BLAKE3 hash, in iroh-blobs' file store,
-//! whose garbage collector keeps exactly the hashes pigeon protects, on a
-//! disk whose size bounds the history.
+//! whose garbage collector keeps exactly the hashes pigeon protects, and
+//! everything until pigeon first says which, on a disk whose size bounds
+//! the history.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -28,16 +29,24 @@ pub fn blob_hash(hash: &ContentHash) -> Hash {
     Hash::from_bytes(hash.0)
 }
 
+/// The hashes garbage collection keeps, once pigeon computed them.
+#[derive(Default)]
+struct Protected {
+    hashes: HashSet<Hash>,
+    computed: bool,
+}
+
 /// One group's blob store.
 #[derive(Clone)]
 pub struct Blobs {
     store: FsStore,
-    protected: Arc<Mutex<HashSet<Hash>>>,
+    protected: Arc<Mutex<Protected>>,
     path: PathBuf,
 }
 
 impl Blobs {
-    /// Opens the store in `path`, collecting garbage every `gc_interval`.
+    /// Opens the store in `path`, collecting garbage every `gc_interval`
+    /// once [`Blobs::protect`] said what to keep.
     ///
     /// # Errors
     ///
@@ -48,14 +57,20 @@ impl Blobs {
     /// Collection panics if a thread panicked while holding the protected
     /// set.
     pub async fn open(path: &Path, gc_interval: Duration) -> Result<Self> {
-        let protected = Arc::new(Mutex::new(HashSet::new()));
+        let protected = Arc::new(Mutex::new(Protected::default()));
         let shared = protected.clone();
         let options = Options {
             gc: Some(GcConfig {
                 interval: gc_interval,
                 add_protected: Some(Arc::new(move |live: &mut HashSet<Hash>| {
-                    live.extend(shared.lock().expect("no panic holds the lock").iter());
-                    Box::pin(async { ProtectOutcome::Continue })
+                    let protected = shared.lock().expect("no panic holds the lock");
+                    live.extend(protected.hashes.iter());
+                    let outcome = if protected.computed {
+                        ProtectOutcome::Continue
+                    } else {
+                        ProtectOutcome::Abort
+                    };
+                    Box::pin(async move { outcome })
                 })),
             }),
             ..Options::new(path)
@@ -85,13 +100,17 @@ impl Blobs {
         &self.store
     }
 
-    /// Replaces the set of hashes garbage collection keeps.
+    /// Replaces the set of hashes garbage collection keeps, letting it
+    /// collect the others.
     ///
     /// # Panics
     ///
     /// Panics if a thread panicked while holding the set.
     pub fn protect(&self, hashes: HashSet<Hash>) {
-        *self.protected.lock().expect("no panic holds the lock") = hashes;
+        *self.protected.lock().expect("no panic holds the lock") = Protected {
+            hashes,
+            computed: true,
+        };
     }
 
     /// Adds `hash` to the set garbage collection keeps, until the next
@@ -104,6 +123,7 @@ impl Blobs {
         self.protected
             .lock()
             .expect("no panic holds the lock")
+            .hashes
             .insert(hash);
     }
 
@@ -242,6 +262,31 @@ mod tests {
         blobs.export(&hash, &target, false, true).await.unwrap();
         assert!(!std::fs::metadata(&target).unwrap().permissions().readonly());
         assert!(!disk::temporary_path(&target).exists());
+        blobs.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn garbage_collection_keeps_everything_until_told_what_to_keep() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = Blobs::open(&dir.path().join("blobs"), Duration::from_millis(20))
+            .await
+            .unwrap();
+        let tag = blobs
+            .add_bytes(b"published offline".to_vec())
+            .await
+            .unwrap();
+        let hash = ContentHash(*tag.hash().as_bytes());
+        drop(tag);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(blobs.has(&hash).await.unwrap());
+        blobs.protect(HashSet::new());
+        for _ in 0..100 {
+            if !blobs.has(&hash).await.unwrap() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!blobs.has(&hash).await.unwrap());
         blobs.shutdown().await.unwrap();
     }
 

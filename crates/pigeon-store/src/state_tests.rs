@@ -1,6 +1,6 @@
 //! Tests of the state database: patches survive reopening and fold back
-//! into the same ledger, and the index, set-aside list, and placed folders
-//! round-trip, every write counted.
+//! into the same ledger, and the index, set-aside list with its files, and
+//! placed folders round-trip, every write counted.
 
 use iroh_base::SecretKey;
 use pigeon_core::clock::Stamp;
@@ -9,10 +9,9 @@ use pigeon_core::name::MemberName;
 use pigeon_core::patch::{Change, Content, ContentHash, Patch};
 use pigeon_core::path::GroupPath;
 use pigeon_core::places::Places;
-use pigeon_core::statement::member_path;
+use pigeon_core::statement::{Reason, member_path};
 
 use super::*;
-use crate::aside::Reason;
 use crate::disk::Stat;
 use crate::index::Seen;
 
@@ -162,6 +161,30 @@ fn aside_items_are_numbered_and_taken_each_write_counted() {
         .collect();
     assert_eq!(paths, ["b", "c"]);
     assert_eq!(state.revision(), 5, "every write and no read counts");
+}
+
+#[test]
+fn an_aside_files_record_goes_with_its_item() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("s")).unwrap();
+    let item = AsideItem {
+        path: "a".into(),
+        content: Some(content(1)),
+        replaces: None,
+        reason: Reason::Superseded,
+        time: 0,
+    };
+    let first = state.set_aside(&item).unwrap();
+    let second = state.set_aside(&item).unwrap();
+    let file = GroupPath::parse(".pigeon/aside/1.json").unwrap();
+    state.set_aside_file(first, &file).unwrap();
+    drop(state);
+    let state = State::open(&dir.path().join("s")).unwrap();
+    assert_eq!(state.aside_files().unwrap(), [(first, file)].into());
+    state.take_aside(first).unwrap();
+    assert!(state.aside_files().unwrap().is_empty());
+    assert_eq!(state.aside().unwrap().len(), 1);
+    assert_eq!(state.aside().unwrap()[0].0, second);
 }
 
 #[test]

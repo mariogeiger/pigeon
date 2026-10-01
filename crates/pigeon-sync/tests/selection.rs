@@ -3,7 +3,8 @@
 //! replacement keeps the rules as given, refuses a stale version when given
 //! one, and frees only the copies nobody modified. A configuration edited
 //! by hand applies when the engine starts, and nothing writes over it
-//! before.
+//! before. A file created outside the selection stays through changes of
+//! the selection and restarts, which free only what a change unselected.
 
 mod common;
 
@@ -240,4 +241,25 @@ async fn a_configuration_edited_by_hand_applies_at_restart_and_survives_until_th
     assert!(bob.read("+alice/a.txt").is_none());
     assert_eq!(bob.engine.retention().await.quota_percent, 3);
     assert_eq!(std::fs::read_to_string(&config).unwrap(), edited);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_created_outside_the_selection_stays_through_selection_changes_and_restarts() {
+    let mut machines = alice_and_bob().await;
+    let bob = machines.remove(1);
+    publish(&bob, "shared/idea.txt", "idea").await;
+    assert_eq!(bob.engine.history(&path("shared/idea.txt")).len(), 1);
+    bob.engine
+        .set_rule(rule("/+alice/a.txt", Cutoff::PlusInfinity))
+        .await
+        .unwrap();
+    eventually("bob holds alice's text", || async {
+        bob.read("+alice/a.txt").as_deref() == Some("aaaa")
+    })
+    .await;
+    assert_eq!(bob.read("shared/idea.txt").as_deref(), Some("idea"));
+    let bob = bob.restart().await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(bob.read("shared/idea.txt").as_deref(), Some("idea"));
+    assert_eq!(bob.read("+alice/a.txt").as_deref(), Some("aaaa"));
 }

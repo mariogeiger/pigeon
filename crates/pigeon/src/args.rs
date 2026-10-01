@@ -27,12 +27,6 @@ fn normalize(param: &Param, value: Value) -> Result<Value, String> {
             "false" | "off" | "no" => Ok(Value::Bool(false)),
             _ => Err(format!("--{name} is on or off, not {text:?}")),
         },
-        (Kind::Number, Value::Number(number)) if number.is_u64() => Ok(Value::Number(number)),
-        (Kind::Number, Value::String(text)) => text
-            .trim()
-            .parse::<u64>()
-            .map(Value::from)
-            .map_err(|_| format!("--{name} is a number, not {text:?}")),
         (Kind::Choice(choices), Value::String(text)) => {
             if choices.contains(&text.as_str()) {
                 Ok(Value::String(text))
@@ -40,9 +34,7 @@ fn normalize(param: &Param, value: Value) -> Result<Value, String> {
                 Err(format!("--{name} is one of {}", choices.join(", ")))
             }
         }
-        (Kind::Flag | Kind::Number | Kind::Choice(_), _) => {
-            Err(format!("--{name} has the wrong type"))
-        }
+        (Kind::Flag | Kind::Choice(_), _) => Err(format!("--{name} has the wrong type")),
         (_, Value::String(text)) => Ok(Value::String(text)),
         (_, _) => Err(format!("--{name} is text")),
     }
@@ -121,22 +113,6 @@ impl Args {
             .with_context(|| format!("--{name} is not base64"))
     }
 
-    /// The number in `name`.
-    ///
-    /// # Errors
-    ///
-    /// Fails if it is missing.
-    pub fn number(&self, name: &str) -> Result<u64> {
-        self.optional_number(name)
-            .ok_or_else(|| anyhow!("{} needs --{name}", self.action.command()))
-    }
-
-    /// The number in `name`, if given.
-    #[must_use]
-    pub fn optional_number(&self, name: &str) -> Option<u64> {
-        self.values.get(name).and_then(Value::as_u64)
-    }
-
     /// Whether the flag `name` is on.
     #[must_use]
     pub fn flag(&self, name: &str) -> bool {
@@ -185,8 +161,16 @@ mod tests {
         )
         .unwrap();
         assert!(unfollow.flag("free"));
-        let discard = args("aside", "discard", json!({"id": "7", "group": "g"})).unwrap();
-        assert_eq!(discard.number("id").unwrap(), 7);
+        let discard = args(
+            "aside",
+            "discard",
+            json!({"file": ".pigeon/aside/a.json", "group": "g"}),
+        )
+        .unwrap();
+        assert_eq!(
+            discard.path("file").unwrap().as_str(),
+            ".pigeon/aside/a.json"
+        );
         assert_eq!(discard.text("group"), Some("g"));
     }
 

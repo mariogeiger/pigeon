@@ -251,11 +251,11 @@ async fn request_cards(engine: &Engine) -> Vec<RequestCard> {
     cards
 }
 
-/// The items this machine set aside, each with its difference from the
-/// current version of its path.
+/// The items every machine set aside, each with its difference from the
+/// current version of its path, as far as this machine holds the content.
 async fn aside_cards(engine: &Engine) -> Vec<AsideCard> {
     let mut cards = Vec::new();
-    for item in engine.aside().unwrap_or_default() {
+    for item in engine.aside().await {
         let diff = match GroupPath::parse(&item.item.path) {
             Ok(path) => {
                 let current = version_content(engine, &path, None);

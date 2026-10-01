@@ -151,10 +151,15 @@ newcomer.
 - A `.pigeonignore` file, in the gitignore syntax, keeps files out of
   publication. pigeon never publishes them, not even their names.
 - A file pigeon may not publish, such as an edit in someone else's folder,
-  is set aside. `pigeon aside list` shows these files, and `pigeon aside
-  restore`, `request` or `discard` deals with them. The web interface's
-  Changes page lists them under "Here, not sent", between the requests
-  addressed to you and those waiting for others.
+  is set aside, and the whole group sees it: `pigeon aside list` shows what
+  every machine set aside. Anyone, from any machine, resolves an item with
+  `pigeon aside restore`, `request` or `discard --file <its set-aside
+  file>`, which asks the machines of the item's member to carry it out, so
+  that the group can sort out the items of someone who never opens pigeon.
+  A restored file belongs to the item's member unless its path names its
+  owner. The web interface's Changes page lists your machines' items under
+  "Set aside, not sent" and those of others under "Set aside by others",
+  between the requests addressed to you and those waiting for others.
 
 ## 6. Choose what each machine holds
 

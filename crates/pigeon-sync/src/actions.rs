@@ -1,14 +1,16 @@
 //! What a person can ask of the engine besides editing the tree and the
 //! selection: change the retention, publish waiting edits at once, file and
-//! answer requests, and resolve set-aside items.
+//! answer requests, and resolve the set-aside items of any machine through
+//! requests to their members.
 
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
+use pigeon_core::ledger::Version;
 use pigeon_core::patch::Change;
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::retention::Retention;
-use pigeon_core::statement::{Decision, Mode};
+use pigeon_core::statement::{AsideItem, Decision, Mode, STATEMENTS, aside_folder};
 use pigeon_store::config::Config;
 use pigeon_store::disk::fs_path;
 
@@ -16,17 +18,6 @@ use crate::disk_sync::{Probe, file_stat};
 use crate::engine::{Engine, Inner, JoinState, Work};
 
 impl Inner {
-    pub(crate) fn ensure_writable(&self, work: &Work, path: &GroupPath) -> Result<()> {
-        let ledger = self.ledger.lock();
-        if !self.writable(&ledger, work, path) {
-            bail!(
-                "{path} is not writable by {}: propose a request",
-                self.member
-            );
-        }
-        Ok(())
-    }
-
     /// Compares `paths` with the ledger and publishes their edits at once.
     pub(crate) async fn publish_now(
         self: &Arc<Self>,
@@ -93,8 +84,11 @@ impl Engine {
         mode: Mode,
         message: &str,
     ) -> Result<Vec<GroupPath>> {
-        let mut work = self.inner.work.lock().await;
-        self.inner.request(&mut work, changes, mode, message).await
+        let inner = &self.inner;
+        let mut work = inner.work.lock().await;
+        inner
+            .request(&mut work, changes, mode, message, &inner.member)
+            .await
     }
 
     /// Answers a request addressed to this member.
@@ -107,20 +101,6 @@ impl Engine {
         let mut work = inner.work.lock().await;
         inner.decide(&mut work, request, decision).await?;
         inner.apply_requests(&mut work).await;
-        Ok(())
-    }
-
-    /// Forgets a set-aside item.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the item is unknown.
-    pub async fn discard_aside(&self, id: u64) -> Result<()> {
-        let mut work = self.inner.work.lock().await;
-        if self.inner.state.take_aside(id)?.is_none() {
-            bail!("no set-aside item {id}");
-        }
-        work.protect_due = true;
         Ok(())
     }
 
@@ -139,71 +119,90 @@ impl Engine {
         Ok(())
     }
 
-    /// Writes a set-aside item's content to the free path `to` and
-    /// publishes it there.
+    /// Resolves the set-aside item at `file` by deleting the file: asks its
+    /// member, forcing it.
     ///
     /// # Errors
     ///
-    /// Fails if the item is unknown or a deletion, `to` is taken or not
-    /// writable, or the disk refuses.
-    pub async fn restore_aside(&self, id: u64, to: &GroupPath) -> Result<()> {
+    /// Fails if no set-aside item lies at `file` or the request cannot be
+    /// filed.
+    pub async fn discard_aside(&self, file: &GroupPath) -> Result<Vec<GroupPath>> {
         let inner = &self.inner;
         let mut work = inner.work.lock().await;
-        let Some((_, item)) = inner
-            .state
-            .aside()?
-            .into_iter()
-            .find(|(known, _)| *known == id)
-        else {
-            bail!("no set-aside item {id}");
-        };
+        let (item, version) = inner.aside_file(file).await?;
+        let message = format!("discards what was set aside at {}", item.path);
+        inner
+            .request(
+                &mut work,
+                vec![deletion(&version)],
+                Mode::Force,
+                &message,
+                &version.owner,
+            )
+            .await
+    }
+
+    /// Restores the set-aside item at `file` to the free path `to`, which
+    /// belongs to its member unless it names its owner, and resolves the
+    /// item: asks the owners, forcing it.
+    ///
+    /// # Errors
+    ///
+    /// Fails if no set-aside item lies at `file`, it is a deletion, `to`
+    /// is taken here or lies in the statements folder, or the request
+    /// cannot be filed.
+    pub async fn restore_aside(&self, file: &GroupPath, to: &GroupPath) -> Result<Vec<GroupPath>> {
+        let inner = &self.inner;
+        let mut work = inner.work.lock().await;
+        let (item, version) = inner.aside_file(file).await?;
         let Some(content) = item.content else {
-            bail!("set-aside item {id} is a deletion");
+            bail!("{file} sets a deletion aside");
         };
-        inner.ensure_writable(&work, to)?;
-        let location = fs_path(&inner.root, to);
-        if file_stat(&location).is_some()
+        if to.is_inside(STATEMENTS) {
+            bail!("{to} lies in the statements folder");
+        }
+        if file_stat(&fs_path(&inner.root, to)).is_some()
             || inner
                 .ledger
                 .lock()
                 .head(&to.key())
-                .is_some_and(pigeon_core::ledger::Version::is_live)
+                .is_some_and(Version::is_live)
         {
             bail!("{to} exists");
         }
+        let restored = Change {
+            path: to.clone(),
+            content: Some(content),
+            replaces: None,
+        };
+        let message = format!("restores what was set aside at {} to {to}", item.path);
         inner
-            .blobs
-            .export(&content.hash, &location, content.executable, true)
-            .await?;
-        inner
-            .publish_now(&mut work, std::slice::from_ref(to))
-            .await?;
-        inner.state.take_aside(id)?;
-        Ok(())
+            .request(
+                &mut work,
+                vec![restored, deletion(&version)],
+                Mode::Force,
+                &message,
+                &version.owner,
+            )
+            .await
     }
 
-    /// Files a set-aside item as a request to the owner of its path.
+    /// Files the set-aside item at `file` as a request to the owner of its
+    /// path, and resolves the item: asks its member, forcing it.
     ///
     /// # Errors
     ///
-    /// Fails if the item is unknown, its path is not portable, or the
-    /// request cannot be filed.
+    /// Fails if no set-aside item lies at `file`, its path is not portable,
+    /// or the requests cannot be filed.
     pub async fn request_aside(
         &self,
-        id: u64,
+        file: &GroupPath,
         mode: Mode,
         message: &str,
     ) -> Result<Vec<GroupPath>> {
         let inner = &self.inner;
         let mut work = inner.work.lock().await;
-        let Some((_, item)) = inner
-            .state
-            .aside()?
-            .into_iter()
-            .find(|(known, _)| *known == id)
-        else {
-            bail!("no set-aside item {id}");
-        };
+        let (item, version) = inner.aside_file(file).await?;
         let path = GroupPath::parse(&item.path)?;
         let replaces = inner.ledger.lock().head(&path.key()).map(|head| head.stamp);
         let change = Change {
@@ -211,10 +210,44 @@ impl Engine {
             content: item.content,
             replaces,
         };
-        let paths = inner
-            .request(&mut work, vec![change], mode, message)
+        let member = &version.owner;
+        let mut requests = inner
+            .request(&mut work, vec![change], mode, message, member)
             .await?;
-        inner.state.take_aside(id)?;
-        Ok(paths)
+        requests.extend(
+            inner
+                .request(
+                    &mut work,
+                    vec![deletion(&version)],
+                    Mode::Force,
+                    message,
+                    member,
+                )
+                .await?,
+        );
+        Ok(requests)
+    }
+}
+
+impl Inner {
+    /// The set-aside item at `file`, and the version of the file.
+    pub(crate) async fn aside_file(&self, file: &GroupPath) -> Result<(AsideItem, Version)> {
+        let head = self.ledger.lock().head(&file.key()).cloned();
+        match head {
+            Some(version) if file.is_inside(&aside_folder()) => match version.content {
+                Some(content) => Ok((self.read_statement(&content).await?, version)),
+                None => bail!("the set-aside item at {file} was resolved"),
+            },
+            _ => bail!("no set-aside item at {file}"),
+        }
+    }
+}
+
+/// The change that deletes `version`'s file.
+fn deletion(version: &Version) -> Change {
+    Change {
+        path: version.path.clone(),
+        content: None,
+        replaces: Some(version.stamp),
     }
 }

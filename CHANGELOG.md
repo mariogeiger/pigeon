@@ -4,6 +4,34 @@ All notable user-visible changes to pigeon are documented here. While the
 version is 0.x, a change that breaks compatibility increments the second
 number, and any other change the third.
 
+## 0.5.0 — 2026-10-01
+
+### Changed
+
+- Set-aside items are shown to the whole group, and anyone may resolve any
+  of them from any machine: each machine publishes each item it sets aside
+  as a file in `.pigeon/aside/`, and `pigeon aside list` lists every
+  machine's items with their member. `pigeon aside discard`, `restore` and
+  `request` take the item's `--file` instead of its number, and ask the
+  item's member, whose machines carry them out unattended; a restored file
+  belongs to the item's member unless its path names its owner. The
+  Changes page counts the items of your machines and lists those of others
+  under "Set aside by others".
+
+### Fixed
+
+- A file created outside the selection, such as a new drop file, is no
+  longer deleted from the disk when the engine starts or the selection
+  changes: only what a change of the selection unselects is freed. A drop
+  that lost its name to another member's while apart thus stays set aside
+  with its content.
+- A file whose name not every system can hold, once restored under a
+  portable name, leaves the disk and is no longer set aside again at the
+  next start.
+- Garbage collection waits until the engine first computed which blobs to
+  keep: right after a start it could delete the content of a file
+  published while offline, which no other machine could then fetch.
+
 ## 0.4.0 — 2026-10-01
 
 ### Changed

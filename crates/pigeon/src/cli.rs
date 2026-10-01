@@ -25,7 +25,6 @@ fn param_arg(param: &Param) -> Arg {
         Kind::Choice(choices) => arg.value_parser(PossibleValuesParser::new(choices)),
         Kind::Bytes | Kind::Document => arg.value_hint(ValueHint::FilePath).value_name("FILE"),
         Kind::Folder => arg.value_hint(ValueHint::DirPath).value_name("FOLDER"),
-        Kind::Number => arg.value_name("NUMBER"),
         Kind::Text | Kind::Path | Kind::Pattern | Kind::Time => arg,
     }
 }

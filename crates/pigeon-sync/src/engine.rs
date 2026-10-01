@@ -476,8 +476,8 @@ impl Inner {
         self.node.want(machines);
     }
 
-    /// One pass of the timer: join when due, publish settled edits,
-    /// rescan and protect when due.
+    /// One pass of the timer: join when due, publish settled edits and
+    /// set-aside items, rescan and protect when due.
     async fn tick(
         self: &Arc<Self>,
         work: &mut Work,
@@ -491,6 +491,9 @@ impl Inner {
             self.report(format!("joining: {error}"));
         }
         self.publish_settled(work, &[]).await;
+        if let Err(error) = self.share_aside(work).await {
+            self.report(format!("showing the set-aside items: {error:#}"));
+        }
         if last_rescan.elapsed() >= self.options.rescan {
             *last_rescan = Instant::now();
             self.refresh(work, &Rescan::All).await;
@@ -682,7 +685,10 @@ async fn run(
         inner.follow_relay().await;
         let mut work = inner.work.lock().await;
         inner.lay_out(&mut work);
-        if let Err(error) = inner.free_unselected(&work) {
+        if let Err(error) = inner
+            .applied_selection(&work)
+            .and_then(|before| inner.free_unselected(&work, &before))
+        {
             inner.report(format!(
                 "freeing what the selection no longer holds: {error}"
             ));

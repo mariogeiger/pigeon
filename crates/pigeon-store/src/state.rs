@@ -1,8 +1,10 @@
 //! The state database of one group on one machine: every patch received,
-//! the disk index, the set-aside list, and the folders the disk holds at
-//! other destinations, in one redb file whose transactions keep them
-//! consistent across crashes.
+//! the disk index, the set-aside list and the files that show its items to
+//! the group, the folders the disk holds at other destinations, and the
+//! selection the disk was last brought to, in one redb file whose
+//! transactions keep them consistent across crashes.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -12,16 +14,20 @@ use pigeon_core::ledger::Ledger;
 use pigeon_core::patch::SignedPatch;
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::places::{Place, Places};
+use pigeon_core::selection::Rule;
+use pigeon_core::statement::AsideItem;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
-use crate::aside::AsideItem;
 use crate::error::{Result, StoreError};
 use crate::index::IndexEntry;
 
 const PATCHES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("patches");
 const INDEX: TableDefinition<&str, &[u8]> = TableDefinition::new("index");
 const ASIDE: TableDefinition<u64, &[u8]> = TableDefinition::new("aside");
+const ASIDE_FILES: TableDefinition<u64, &str> = TableDefinition::new("aside files");
 const PLACED: TableDefinition<&str, &str> = TableDefinition::new("placed");
+const APPLIED: TableDefinition<&str, &[u8]> = TableDefinition::new("applied");
+const SELECTION: &str = "selection";
 
 /// A patch's key, which sorts patches in stamp order.
 fn stamp_key(stamp: &Stamp) -> [u8; 40] {
@@ -52,7 +58,9 @@ impl State {
         transaction.open_table(PATCHES)?;
         transaction.open_table(INDEX)?;
         transaction.open_table(ASIDE)?;
+        transaction.open_table(ASIDE_FILES)?;
         transaction.open_table(PLACED)?;
+        transaction.open_table(APPLIED)?;
         transaction.commit()?;
         Ok(Self {
             database,
@@ -228,7 +236,44 @@ impl State {
         Ok(items)
     }
 
-    /// Removes an item from the set-aside list and returns it.
+    /// Records that the file at `file` shows the group item `id`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the database cannot be written.
+    pub fn set_aside_file(&self, id: u64, file: &GroupPath) -> Result<()> {
+        let transaction = self.database.begin_write()?;
+        transaction
+            .open_table(ASIDE_FILES)?
+            .insert(id, file.as_str())?;
+        transaction.commit()?;
+        self.revision.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// The files that show the group the set-aside items, by item.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the database cannot be read or names an invalid file.
+    pub fn aside_files(&self) -> Result<BTreeMap<u64, GroupPath>> {
+        let transaction = self.database.begin_read()?;
+        let table = transaction.open_table(ASIDE_FILES)?;
+        let mut files = BTreeMap::new();
+        for entry in table.iter()? {
+            let (id, file) = entry?;
+            let file = GroupPath::parse(file.value()).map_err(|error| {
+                StoreError::Invalid(format!(
+                    "the state database holds a set-aside file that is no path: {error}"
+                ))
+            })?;
+            files.insert(id.value(), file);
+        }
+        Ok(files)
+    }
+
+    /// Removes an item from the set-aside list, with the record of its
+    /// file, and returns it.
     ///
     /// # Errors
     ///
@@ -236,6 +281,7 @@ impl State {
     pub fn take_aside(&self, id: u64) -> Result<Option<AsideItem>> {
         let transaction = self.database.begin_write()?;
         let item = {
+            transaction.open_table(ASIDE_FILES)?.remove(id)?;
             let mut table = transaction.open_table(ASIDE)?;
             let removed = table.remove(id)?;
             removed
@@ -245,6 +291,36 @@ impl State {
         transaction.commit()?;
         self.revision.fetch_add(1, Ordering::Relaxed);
         Ok(item)
+    }
+
+    /// The rules of the selection the disk was last brought to, if any was.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the database cannot be read.
+    pub fn applied_selection(&self) -> Result<Option<Vec<Rule>>> {
+        let transaction = self.database.begin_read()?;
+        let table = transaction.open_table(APPLIED)?;
+        let value = table.get(SELECTION)?;
+        Ok(value
+            .map(|value| postcard::from_bytes(value.value()))
+            .transpose()?)
+    }
+
+    /// Records the rules of the selection the disk was brought to.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the database cannot be written.
+    pub fn set_applied_selection(&self, rules: &[Rule]) -> Result<()> {
+        let bytes = postcard::to_stdvec(rules)?;
+        let transaction = self.database.begin_write()?;
+        transaction
+            .open_table(APPLIED)?
+            .insert(SELECTION, bytes.as_slice())?;
+        transaction.commit()?;
+        self.revision.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 
     /// The folders the disk holds at other destinations, as last moved.

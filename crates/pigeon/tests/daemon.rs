@@ -412,7 +412,6 @@ fn dummy(kind: Kind, peer: &Peer) -> Value {
         Kind::Folder => json!(peer.root("dummy")),
         Kind::Bytes => json!(base64("dummy")),
         Kind::Document => json!("member = \"alice\"\n"),
-        Kind::Number => json!(0),
         Kind::Time => json!("2026-01-01T00:00:00Z"),
         Kind::Choice(choices) => json!(choices[0]),
         Kind::Flag => json!(false),

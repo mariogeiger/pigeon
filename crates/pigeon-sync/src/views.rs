@@ -1,9 +1,9 @@
 //! What the engine shows: its status, with which member owns each machine
 //! that runs another version of pigeon and which version, the group's
 //! files as this machine holds them, a file's history, the members with
-//! their machines, the requests, the set-aside list, the selection, the
-//! times a pin can choose and the retention, each as plain data for the
-//! command line and the API.
+//! their machines, the requests, the items every machine set aside, the
+//! selection, the times a pin can choose and the retention, each as plain
+//! data for the command line and the API.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -15,9 +15,8 @@ use pigeon_core::patch::Content;
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::retention::Retention;
 use pigeon_core::selection::{Cutoff, Rule, compile, matches};
-use pigeon_core::statement::{Decision, RequestStatement, STATEMENTS};
+use pigeon_core::statement::{AsideItem, Decision, RequestStatement, STATEMENTS, aside_folder};
 use pigeon_net::hello::{Heard, Standing};
-use pigeon_store::aside::AsideItem;
 use pigeon_store::index::IndexEntry;
 use serde::Serialize;
 
@@ -158,9 +157,16 @@ pub struct RequestView {
     pub outdated: bool,
 }
 
+/// An item a machine set aside, which the group sees through its
+/// set-aside file until someone resolves it.
 #[derive(Clone, Debug, Serialize)]
 pub struct AsideView {
-    pub id: u64,
+    pub file: GroupPath,
+    /// The member of the machine that set it aside.
+    pub member: MemberName,
+    pub machine: MachineId,
+    /// Whether this machine set it aside, and so holds its content.
+    pub here: bool,
     #[serde(flatten)]
     pub item: AsideItem,
 }
@@ -412,19 +418,36 @@ impl Engine {
         views
     }
 
-    /// The set-aside list.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the state cannot be read.
-    pub fn aside(&self) -> Result<Vec<AsideView>> {
-        Ok(self
-            .inner
-            .state
-            .aside()?
-            .into_iter()
-            .map(|(id, item)| AsideView { id, item })
-            .collect())
+    /// Every item a machine set aside and nobody resolved yet, oldest
+    /// first.
+    pub async fn aside(&self) -> Vec<AsideView> {
+        let inner = &self.inner;
+        let folder = aside_folder();
+        let files: Vec<Version> = inner
+            .ledger
+            .lock()
+            .live()
+            .filter(|version| version.path.is_inside(&folder))
+            .cloned()
+            .collect();
+        let mut views = Vec::new();
+        for file in files {
+            let Some(content) = file.content else {
+                continue;
+            };
+            let Ok(item) = inner.read_statement::<AsideItem>(&content).await else {
+                continue;
+            };
+            views.push(AsideView {
+                file: file.path,
+                member: file.owner,
+                machine: file.stamp.machine,
+                here: file.stamp.machine == inner.me(),
+                item,
+            });
+        }
+        views.sort_by_key(|view| view.item.time);
+        views
     }
 
     /// This machine's retention.

@@ -50,14 +50,16 @@ impl Inner {
         Ok(())
     }
 
-    /// Asks the owners of the changed files to apply `changes`: one request
-    /// per owner, whose file is named after its patch's stamp.
+    /// Asks the owners of the changed files to apply `changes`, a new
+    /// file belonging to `adder` unless its path names its owner: one
+    /// request per owner, whose file is named after its patch's stamp.
     pub(crate) async fn request(
         &self,
         work: &mut Work,
         changes: Vec<Change>,
         mode: Mode,
         message: &str,
+        adder: &MemberName,
     ) -> Result<Vec<GroupPath>> {
         if work.join != JoinState::Joined {
             bail!("the member has not joined the group yet");
@@ -66,7 +68,7 @@ impl Inner {
         {
             let ledger = self.ledger.lock();
             for change in changes {
-                let owner = ledger.owner_of(&change.path, &self.member);
+                let owner = ledger.owner_of(&change.path, adder);
                 by_owner.entry(owner).or_default().push(change);
             }
         }

@@ -3,7 +3,7 @@
 //! says it should show: the whole disk-to-ledger policy as a pure function.
 
 use pigeon_core::clock::Stamp;
-use pigeon_store::aside::Reason;
+use pigeon_core::statement::Reason;
 
 /// How the disk compares with what pigeon last saw at the path.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

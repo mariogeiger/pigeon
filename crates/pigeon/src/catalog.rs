@@ -15,7 +15,6 @@ pub enum Kind {
     /// A file's content: a local file on the command line, an upload in
     /// the web UI, base64 in the API.
     Bytes,
-    Number,
     /// An RFC 3339 time, such as `2026-10-01T12:00:00Z`.
     Time,
     /// One of a fixed set of words; the first is the default.
@@ -132,10 +131,10 @@ const FOLDER: Param = required(
     "The folder of the group, such as videos",
     Kind::Path,
 );
-const ID: Param = required(
-    "id",
-    "The item's number in `pigeon aside list`",
-    Kind::Number,
+const ASIDE_FILE: Param = required(
+    "file",
+    "The item's set-aside file in `pigeon aside list`",
+    Kind::Path,
 );
 const REQUEST: Param = required(
     "request",
@@ -209,7 +208,10 @@ pub const NOUNS: &[(&str, &str)] = &[
         "The group's config.toml on this machine: its member, root, selection, retention and places",
     ),
     ("request", "Changes asked of a file's owner"),
-    ("aside", "What this machine may not publish as it is"),
+    (
+        "aside",
+        "What the group's machines may not publish as it is",
+    ),
     (
         "daemon",
         "Run pigeon, which syncs every group, answers the API and serves the web UI, or stop, restart or reload it",
@@ -516,22 +518,27 @@ pub const ACTIONS: &[Action] = &[
     view(
         "aside",
         "list",
-        "List what this machine set aside",
+        "List what the group's machines set aside and nobody resolved yet",
         &[],
-        &["id", "path", "reason", "content.size"],
+        &["file", "member", "path", "reason", "content.size"],
     ),
-    action("aside", "discard", "Forget a set-aside item", &[ID]),
+    action(
+        "aside",
+        "discard",
+        "Discard a set-aside item for the whole group",
+        &[ASIDE_FILE],
+    ),
     action(
         "aside",
         "restore",
-        "Publish a set-aside item as a new file",
-        &[ID, required("to", "Where to put it", Kind::Path)],
+        "Publish a set-aside item as a new file, its member's unless its path names its owner",
+        &[ASIDE_FILE, required("to", "Where to put it", Kind::Path)],
     ),
     action(
         "aside",
         "request",
         "Request a set-aside item from the owner of its path",
-        &[ID, MODE, MESSAGE],
+        &[ASIDE_FILE, MODE, MESSAGE],
     ),
     on_machine(Action {
         columns: &["group", "download", "free", "freeze"],

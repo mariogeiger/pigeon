@@ -1,6 +1,7 @@
 //! Changing the selection: one rule at a time, or every rule at once after
 //! a preview of what the new rules would download, free and freeze on this
-//! machine. Held copies the selection stops holding go, unless modified.
+//! machine. Held copies the change stops holding go, unless modified; those
+//! no rule held, such as files created here, stay.
 
 use std::collections::HashSet;
 
@@ -125,11 +126,17 @@ impl Inner {
             .collect()
     }
 
-    /// Removes the held copies nobody modified whose cutoff is now
-    /// $-\infty$.
-    pub(crate) fn free_unselected(&self, work: &Work) -> Result<()> {
+    /// Removes the held copies nobody modified that the change from
+    /// `before` to the current selection stops holding: those whose cutoff
+    /// becomes $-\infty$. Then records the current selection as the one the
+    /// disk was brought to.
+    pub(crate) fn free_unselected(&self, work: &Work, before: &Selection) -> Result<()> {
+        let after = &work.config.selection;
         let mut entries = self.state.index(None)?;
-        entries.retain(|entry| work.config.selection.cutoff(&entry.path) == Cutoff::MinusInfinity);
+        entries.retain(|entry| {
+            after.cutoff(&entry.path) == Cutoff::MinusInfinity
+                && before.cutoff(&entry.path) != Cutoff::MinusInfinity
+        });
         let modified = self.modified(work, entries.iter());
         for entry in entries {
             let key = entry.path.key();
@@ -142,7 +149,18 @@ impl Inner {
             }
             self.state.update_index([(&key, None)])?;
         }
+        let rules: Vec<Rule> = after.rules().cloned().collect();
+        self.state.set_applied_selection(&rules)?;
         Ok(())
+    }
+
+    /// The selection the disk was last brought to, or the current one if
+    /// none was recorded.
+    pub(crate) fn applied_selection(&self, work: &Work) -> Result<Selection> {
+        Ok(match self.state.applied_selection()? {
+            Some(rules) => Selection::exactly(rules)?,
+            None => work.config.selection.clone(),
+        })
     }
 }
 
@@ -164,10 +182,11 @@ impl Engine {
     pub async fn set_rule(&self, rule: Rule) -> Result<()> {
         let inner = &self.inner;
         let mut work = inner.work.lock().await;
+        let before = work.config.selection.clone();
         let mut config = Config::clone(&work.config);
         config.selection.set(rule)?;
         work.config.save(config)?;
-        inner.free_unselected(&work)?;
+        inner.free_unselected(&work, &before)?;
         inner.refresh(&mut work, &Rescan::All).await;
         Ok(())
     }
@@ -187,10 +206,11 @@ impl Engine {
         if let Some(version) = version.filter(|version| *version != current) {
             bail!("the selection changed since version {version}: it is now at {current}");
         }
+        let before = work.config.selection.clone();
         let mut config = Config::clone(&work.config);
         config.selection = Selection::exactly(rules)?;
         work.config.save(config)?;
-        inner.free_unselected(&work)?;
+        inner.free_unselected(&work, &before)?;
         inner.refresh(&mut work, &Rescan::All).await;
         Ok(())
     }
@@ -230,8 +250,9 @@ impl Engine {
             let current = work.config.selection.cutoff(path);
             let now = target(&ledger, key, current, indexed.contains(key))
                 .and_then(|version| version.content);
-            let after = target(&ledger, key, cutoff, modified.contains(key))
-                .and_then(|version| version.content);
+            let kept = modified.contains(key)
+                || (indexed.contains(key) && current == Cutoff::MinusInfinity);
+            let after = target(&ledger, key, cutoff, kept).and_then(|version| version.content);
             let freezes = matches!(cutoff, Cutoff::At(_)) && !matches!(current, Cutoff::At(_));
             let same = now.map(|content| content.hash) == after.map(|content| content.hash);
             let now = now.map(|content| content.size);

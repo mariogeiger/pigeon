@@ -199,20 +199,20 @@ async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
             engine.decide(&args.path("request")?, decision).await?;
             Ok(Value::Null)
         }
-        ("aside", "list") => to_json(engine.aside()?),
+        ("aside", "list") => to_json(engine.aside().await),
         ("aside", "discard") => {
-            engine.discard_aside(args.number("id")?).await?;
-            Ok(Value::Null)
+            let requests = engine.discard_aside(&args.path("file")?).await?;
+            Ok(json!({ "requests": requests }))
         }
         ("aside", "restore") => {
-            engine
-                .restore_aside(args.number("id")?, &args.path("to")?)
+            let requests = engine
+                .restore_aside(&args.path("file")?, &args.path("to")?)
                 .await?;
-            Ok(Value::Null)
+            Ok(json!({ "requests": requests }))
         }
         ("aside", "request") => {
             let requests = engine
-                .request_aside(args.number("id")?, args.mode(), message)
+                .request_aside(&args.path("file")?, args.mode(), message)
                 .await?;
             Ok(json!({ "requests": requests }))
         }

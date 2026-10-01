@@ -2,9 +2,10 @@
 //! file's owner, one line each, by who must act. A request is a signed
 //! patch waiting for its owner, a set-aside item the same patch unsigned:
 //! the requests addressed to this member, to accept or refuse; what this
-//! machine set aside, to request, restore under another name or discard;
-//! the requests waiting for others; and, on demand, those done. Each
-//! line's difference opens on click.
+//! member's machines set aside, to request, restore under another name or
+//! discard; what others' machines set aside, which anyone may resolve the
+//! same ways; the requests waiting for others; and, on demand, those done.
+//! Each line's difference opens on click.
 
 use maud::{Markup, html};
 use pigeon_core::clock::rfc3339;
@@ -42,16 +43,19 @@ pub fn section(request: &Value, me: &str) -> Section {
 }
 
 /// How many changes wait for `me` to act: the requests addressed to them
-/// and the items this machine set aside.
+/// and the items their machines set aside.
 #[must_use]
 pub fn waiting(requests: &Value, aside: &Value, me: &str) -> usize {
-    let to_you = requests
-        .as_array()
-        .into_iter()
-        .flatten()
+    let listed = |list: &Value| list.as_array().cloned().unwrap_or_default();
+    let to_you = listed(requests)
+        .iter()
         .filter(|request| section(request, me) == Section::ToYou)
         .count();
-    to_you + aside.as_array().map_or(0, Vec::len)
+    to_you
+        + listed(aside)
+            .iter()
+            .filter(|item| item["member"] == me)
+            .count()
 }
 
 /// One request with the difference each of its changes makes.
@@ -77,12 +81,18 @@ fn path_link(group: &str, path: &str) -> Markup {
     }
 }
 
-/// Why pigeon set an item aside, as a reason of `aside list` says.
-fn reason(reason: &Value) -> String {
+/// Why pigeon set an item of `member` aside, as a reason of `aside list`
+/// says, for the member `me`.
+fn reason(reason: &Value, member: &str, me: &str) -> String {
+    let (who, whose) = if member == me {
+        ("you".to_owned(), "your".to_owned())
+    } else {
+        (member.to_owned(), format!("{member}'s"))
+    };
     match reason {
-        Value::String(name) if name == "NotWritable" => "you may not write it".to_owned(),
+        Value::String(name) if name == "NotWritable" => format!("{who} may not write it"),
         Value::String(name) if name == "Superseded" => {
-            "another of your machines changed it meanwhile".to_owned()
+            format!("another of {whose} machines changed it meanwhile")
         }
         Value::Object(fields) => fields
             .iter()
@@ -142,25 +152,27 @@ fn request_line(group: &str, back: &str, card: &RequestCard, section: Section) -
     }
 }
 
-/// One set-aside item's line: its path, why and when, the forms that
-/// resolve it, and its difference, folded.
-fn aside_line(group: &str, back: &str, card: &AsideCard) -> Markup {
+/// One set-aside item's line, for the member `me`: its path, whose, why
+/// and when, the forms that resolve it, and its difference, folded.
+fn aside_line(group: &str, back: &str, card: &AsideCard, me: &str) -> Markup {
     let item = &card.item;
-    let id = cell("", &item["id"]);
+    let file = item["file"].as_str().unwrap_or_default();
     let path = item["path"].as_str().unwrap_or_default();
+    let member = item["member"].as_str().unwrap_or_default();
     let time = item["time"].as_u64().map(rfc3339).unwrap_or_default();
     html! {
         li {
             div class="line" {
                 span class="what" {
                     (path_link(group, path))
-                    " · " (reason(&item["reason"]))
+                    @if member != me { " · " (member) }
+                    " · " (reason(&item["reason"], member, me))
                     " · " (short_time(&time))
                 }
-                (form(action("aside", "request"), back, fill(group, &[("id", &id)], &[])))
-                (form(action("aside", "restore"), back, fill(group, &[("id", &id)], &[("to", path)])))
-                div data-confirm={ "Forget this edit of " (path) "? It is on this machine only." } {
-                    (form(action("aside", "discard"), back, fill(group, &[("id", &id)], &[])))
+                (form(action("aside", "request"), back, fill(group, &[("file", file)], &[])))
+                (form(action("aside", "restore"), back, fill(group, &[("file", file)], &[("to", path)])))
+                div data-confirm={ "Discard this edit of " (path) " for the whole group?" } {
+                    (form(action("aside", "discard"), back, fill(group, &[("file", file)], &[])))
                 }
             }
             details class="diff" {
@@ -195,6 +207,8 @@ pub fn changes(
             .collect()
     };
     let (to_you, waiting, finished) = (of(Section::ToYou), of(Section::Waiting), of(Section::Done));
+    let (yours, others): (Vec<&AsideCard>, Vec<&AsideCard>) =
+        aside.iter().partition(|card| card.item["member"] == me);
     let body = html! {
         @if to_you.is_empty() && aside.is_empty() && waiting.is_empty() {
             p { "Nothing waits for anyone." }
@@ -208,12 +222,21 @@ pub fn changes(
                 }
             }
         }
-        @if !aside.is_empty() {
+        @if !yours.is_empty() {
             section {
-                h2 { "Here, not sent" }
-                p class="quiet" { "Edits this machine holds but may not publish as they are: request them from the owner, restore them under another name, or discard them." }
+                h2 { "Set aside, not sent" }
+                p class="quiet" { "Edits your machines hold but may not publish as they are: request them from the owner, restore them under another name, or discard them." }
                 ul class="changes" {
-                    @for card in aside { (aside_line(group, &back, card)) }
+                    @for card in &yours { (aside_line(group, &back, card, me)) }
+                }
+            }
+        }
+        @if !others.is_empty() {
+            section {
+                h2 { "Set aside by others" }
+                p class="quiet" { "Edits others' machines hold but may not publish as they are: anyone may resolve them for them, the same ways." }
+                ul class="changes" {
+                    @for card in &others { (aside_line(group, &back, card, me)) }
                 }
             }
         }
@@ -268,7 +291,8 @@ mod tests {
         let applied = request("alice", "force", &Value::Null, true);
         assert_eq!(section(&applied, "alice"), Section::Done);
         let requests = json!([mine, forced, refused]);
-        assert_eq!(waiting(&requests, &json!([{ "id": 1 }]), "alice"), 2);
+        let aside = json!([{ "member": "alice" }, { "member": "bob" }]);
+        assert_eq!(waiting(&requests, &aside, "alice"), 2);
     }
 
     #[test]
@@ -290,7 +314,7 @@ mod tests {
         assert!(page.contains("To you"), "{page}");
         assert!(page.contains(r#"action="/act/request/accept""#), "{page}");
         assert!(page.contains("Show the 1 requests done"), "{page}");
-        assert!(!page.contains("Here, not sent"), "{page}");
+        assert!(!page.contains("Set aside"), "{page}");
         let page = changes(&bar, "bob", &requests, &[], true).into_string();
         assert!(!page.contains(r#"action="/act/request/accept""#), "{page}");
         assert!(
@@ -298,14 +322,24 @@ mod tests {
             "{page}"
         );
         let aside = [AsideCard {
-            item: json!({ "id": 3, "path": "+bob/x.txt", "reason": "NotWritable", "time": 0 }),
+            item: json!({
+                "file": ".pigeon/aside/1.json", "member": "alice", "path": "+bob/x.txt",
+                "reason": "NotWritable", "time": 0,
+            }),
             diff: html! {},
         }];
         let page = changes(&bar, "alice", &[], &aside, false).into_string();
         assert!(
-            page.contains("Here, not sent") && page.contains("you may not write it"),
+            page.contains("Set aside, not sent") && page.contains("you may not write it"),
             "{page}"
         );
         assert!(page.contains(r#"action="/act/aside/discard""#), "{page}");
+        assert!(page.contains(".pigeon/aside/1.json"), "{page}");
+        let page = changes(&bar, "carol", &[], &aside, false).into_string();
+        assert!(
+            page.contains("Set aside by others") && page.contains("alice may not write it"),
+            "{page}"
+        );
+        assert!(page.contains(r#"action="/act/aside/restore""#), "{page}");
     }
 }

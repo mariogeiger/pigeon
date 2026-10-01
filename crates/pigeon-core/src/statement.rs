@@ -1,13 +1,13 @@
 //! Statements: the signed files in the hidden drop folder `.pigeon` that
-//! record members, rebindings, requests, decisions, and the group's relay,
-//! with their paths and bodies.
+//! record members, rebindings, requests, decisions, the group's relay, and
+//! what machines set aside, with their paths and bodies.
 
 use iroh_base::PublicKey;
 use serde::{Deserialize, Serialize};
 
 use crate::clock::Stamp;
 use crate::name::MemberName;
-use crate::patch::Change;
+use crate::patch::{Change, Content};
 use crate::path::GroupPath;
 
 /// The folder that holds every statement.
@@ -119,6 +119,24 @@ pub fn is_relay_path(path: &GroupPath) -> bool {
         .starts_with(&format!("{STATEMENTS}/{RELAYS}/"))
 }
 
+/// The file through which the machine that stamped `stamp` shows the group
+/// an item it set aside, owned by that machine's member; deleting it
+/// resolves the item.
+///
+/// # Panics
+/// Never: every part of the path is portable by construction.
+#[must_use]
+pub fn aside_path(stamp: &Stamp) -> GroupPath {
+    GroupPath::parse(&format!("{}/{}.json", aside_folder(), stamp.label()))
+        .expect("labels are portable")
+}
+
+/// The folder holding set-aside items.
+#[must_use]
+pub fn aside_folder() -> String {
+    format!("{STATEMENTS}/aside")
+}
+
 /// What a member file says: the key its name is bound to.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct MemberStatement {
@@ -170,6 +188,36 @@ pub enum Decision {
 pub struct DecisionStatement {
     pub request: GroupPath,
     pub decision: Decision,
+}
+
+/// Why pigeon set content aside.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum Reason {
+    /// An edit to a file this member cannot write.
+    NotWritable,
+    /// A name no portable path can hold, or one that collides by case.
+    Unportable(String),
+    /// A patch the ledger rejected, such as a lost claim.
+    Rejected(String),
+    /// The losing side of concurrent changes by one member's machines.
+    Superseded,
+}
+
+/// What a set-aside file says: content a machine's disk held that pigeon
+/// may not publish as it is, a patch that nobody signed, whose blob that
+/// machine keeps.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct AsideItem {
+    /// Where the content was found, relative to the root; not always a
+    /// valid group path.
+    pub path: String,
+    /// The content, or `None` for a deletion.
+    pub content: Option<Content>,
+    /// The version the content was based on, if any.
+    pub replaces: Option<Stamp>,
+    pub reason: Reason,
+    /// When pigeon set it aside, in NTP64 time.
+    pub time: u64,
 }
 
 #[cfg(test)]
@@ -225,5 +273,6 @@ mod tests {
         };
         assert!(is_relay_path(&relay_path(&stamp)));
         assert!(!is_relay_path(&request_path(&stamp)));
+        assert!(aside_path(&stamp).is_inside(&aside_folder()));
     }
 }

@@ -1,10 +1,11 @@
 //! Engines of one group on this host: files reach the machines that hold
-//! them, edits nobody may publish are set aside and undone, drop files
-//! freeze and change through requests, concurrent edits of one member keep
-//! the later, a taken name joins nothing, and edits through actions publish
-//! or request each file under its own rule, the quota drops history, and
-//! keeping history keeps the past versions of others' files too, and every
-//! machine follows the relay the group names.
+//! them, edits nobody may publish are set aside, undone and shown to the
+//! group, which resolves them by request, drop files freeze and change
+//! through requests, concurrent edits of one member keep the later, a taken
+//! name joins nothing, and edits through actions publish or request each
+//! file under its own rule, the quota drops history, and keeping history
+//! keeps the past versions of others' files too, and every machine follows
+//! the relay the group names.
 
 mod common;
 
@@ -12,9 +13,8 @@ use common::{eventually, group, is_read_only, joined};
 use pigeon_core::path::GroupPath;
 use pigeon_core::retention::Retention;
 use pigeon_core::selection::{Cutoff, Rule};
-use pigeon_core::statement::{Decision, Mode};
+use pigeon_core::statement::{Decision, Mode, Reason};
 use pigeon_net::relay::{relay_url, serve_relay};
-use pigeon_store::aside::Reason;
 use pigeon_sync::{Edit, JoinState};
 
 fn rule(pattern: &str, cutoff: Cutoff) -> Rule {
@@ -106,27 +106,35 @@ async fn an_edit_that_may_not_be_published_is_set_aside_then_forced() {
     bob.edit("+alice/plan.txt", "bob's plan");
     eventually("bob's edit is set aside and undone", || async {
         bob.read("+alice/plan.txt").as_deref() == Some("alice's plan")
-            && !bob.engine.aside().unwrap().is_empty()
+            && !bob.engine.aside().await.is_empty()
     })
     .await;
-    let aside = bob.engine.aside().unwrap();
+    let aside = bob.engine.aside().await;
     assert_eq!(aside.len(), 1);
     assert_eq!(aside[0].item.reason, Reason::NotWritable);
     assert_eq!(aside[0].item.path, "+alice/plan.txt");
+    assert!(aside[0].here);
+    eventually("alice sees bob's item", || async {
+        alice.engine.aside().await.iter().any(|item| !item.here)
+    })
+    .await;
     bob.engine
-        .request_aside(aside[0].id, Mode::Force, "my version")
+        .request_aside(&aside[0].file, Mode::Force, "my version")
         .await
         .unwrap();
-    assert!(bob.engine.aside().unwrap().is_empty());
     for machine in [alice, bob] {
-        eventually("the forced request lands everywhere", || async {
-            machine.read("+alice/plan.txt").as_deref() == Some("bob's plan")
-        })
+        eventually(
+            "the forced request lands everywhere and resolves the item",
+            || async {
+                machine.read("+alice/plan.txt").as_deref() == Some("bob's plan")
+                    && machine.engine.aside().await.is_empty()
+            },
+        )
         .await;
     }
     let requests = alice.engine.requests().await;
-    assert_eq!(requests.len(), 1);
-    assert!(requests[0].applied);
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|request| request.applied));
     for machine in machines {
         machine.engine.shutdown().await.unwrap();
     }
@@ -155,17 +163,17 @@ async fn a_drop_file_freezes_and_changes_by_accepted_request() {
     assert!(is_read_only(&bob.file("shared/menu.txt")));
     bob.edit("shared/menu.txt", "salad");
     eventually("bob's edit is set aside", || async {
-        !bob.engine.aside().unwrap().is_empty()
+        !bob.engine.aside().await.is_empty()
     })
     .await;
-    let id = bob.engine.aside().unwrap()[0].id;
+    let file = bob.engine.aside().await[0].file.clone();
     let paths = bob
         .engine
-        .request_aside(id, Mode::Propose, "lighter")
+        .request_aside(&file, Mode::Propose, "lighter")
         .await
         .unwrap();
     eventually("alice sees the proposal", || async {
-        alice.engine.requests().await.len() == 1
+        alice.engine.requests().await.len() == 2
     })
     .await;
     assert_eq!(alice.read("shared/menu.txt").as_deref(), Some("soup"));
@@ -210,15 +218,15 @@ async fn concurrent_edits_of_one_member_keep_the_later_and_set_aside_the_other()
             laptop.read("+alice/todo.txt"),
             desktop.read("+alice/todo.txt"),
         );
-        let set_aside =
-            laptop.engine.aside().unwrap().len() + desktop.engine.aside().unwrap().len();
-        one.is_some() && one == two && one.as_deref() != Some("base") && set_aside == 1
+        let (aside_one, aside_two) = (laptop.engine.aside().await, desktop.engine.aside().await);
+        one.is_some()
+            && one == two
+            && one.as_deref() != Some("base")
+            && aside_one.len() == 1
+            && aside_two.len() == 1
     })
     .await;
-    let aside: Vec<_> = [laptop, desktop]
-        .iter()
-        .flat_map(|machine| machine.engine.aside().unwrap())
-        .collect();
+    let aside = laptop.engine.aside().await;
     assert_eq!(aside[0].item.reason, Reason::Superseded);
     for machine in machines {
         assert!(machine.engine.status().await.errors.is_empty());

@@ -4,7 +4,6 @@
 //! walking, writing and laying out the root, and reading the group's files
 //! as older versions of pigeon wrote them.
 
-pub mod aside;
 pub mod blobs;
 pub mod config;
 pub mod disk;

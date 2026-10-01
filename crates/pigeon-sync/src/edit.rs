@@ -254,7 +254,8 @@ impl Inner {
         let requests = if changes.is_empty() {
             Vec::new()
         } else {
-            self.request(work, changes, mode, message).await?
+            self.request(work, changes, mode, message, &self.member)
+                .await?
         };
         Ok(Edited {
             published,

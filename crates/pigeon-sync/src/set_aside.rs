@@ -1,15 +1,19 @@
-//! Keeping on this machine what it may not publish as it is: edits to
+//! Setting aside what this machine may not publish as it is: edits to
 //! files it may not write, versions it published that fell, and files whose
-//! names no portable path holds, each once.
+//! names no portable path holds, each once; showing each item to the group
+//! through a set-aside file, and forgetting it once someone resolved it by
+//! deleting that file.
 
 use std::path::Path;
 
 use anyhow::Result;
 use pigeon_core::clock::Stamp;
-use pigeon_store::aside::{AsideItem, Reason};
+use pigeon_core::statement::{AsideItem, Reason, aside_path};
+use pigeon_store::disk;
+use pigeon_store::index::hash_file;
 
 use crate::disk_sync::{Probe, file_stat};
-use crate::engine::{Inner, Work, now};
+use crate::engine::{Inner, JoinState, Work, now};
 
 impl Inner {
     /// Adds `item` unless the list holds the same content for the path.
@@ -73,6 +77,52 @@ impl Inner {
             reason: Reason::Unportable(reason),
             time: now(),
         })?;
+        Ok(())
+    }
+
+    /// Publishes a set-aside file for each item that has none, and forgets
+    /// each item whose file was deleted, with the file it was found in when
+    /// that file's name no portable path holds and the disk still shows the
+    /// item's content there.
+    pub(crate) async fn share_aside(&self, work: &mut Work) -> Result<()> {
+        if work.join != JoinState::Joined {
+            return Ok(());
+        }
+        let files = self.state.aside_files()?;
+        for (id, item) in self.state.aside()? {
+            let Some(file) = files.get(&id) else {
+                let stamp = self.clock.stamp();
+                let file = aside_path(&stamp);
+                let body = serde_json::to_vec_pretty(&item)?;
+                self.publish_statement(work, stamp, file.clone(), body)
+                    .await?;
+                self.state.set_aside_file(id, &file)?;
+                continue;
+            };
+            let deleted = self
+                .ledger
+                .lock()
+                .head(&file.key())
+                .is_some_and(|head| !head.is_live());
+            if deleted {
+                self.state.take_aside(id)?;
+                self.remove_unportable(&item)?;
+                work.protect_due = true;
+            }
+        }
+        Ok(())
+    }
+
+    /// Removes the file whose name no portable path holds that `item` was
+    /// found in, if the disk still shows the item's content there.
+    fn remove_unportable(&self, item: &AsideItem) -> Result<()> {
+        let (Reason::Unportable(_), Some(content)) = (&item.reason, item.content) else {
+            return Ok(());
+        };
+        let location = self.root.join(&item.path);
+        if hash_file(&location).is_ok_and(|hash| hash == content.hash) {
+            disk::remove(&self.root, &location)?;
+        }
         Ok(())
     }
 }
