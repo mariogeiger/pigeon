@@ -1,11 +1,13 @@
-//! A draft selection as text, one rule per line: `follow /docs/`, `frozen
-//! now /report/` or `frozen <RFC 3339 time> /report/`, and `free *.iso`;
-//! blank lines and lines starting with `#` say nothing. Reads and writes
-//! the rules, and previews what saving a draft would change.
+//! A draft selection as text, one rule per line: `follow /docs/`, `pin now
+//! /report/` or `pin <RFC 3339 time> /report/`, and `free *.iso`; blank
+//! lines and lines starting with `#` say nothing. Reads and writes the
+//! rules, and previews what saving a draft would change, with the times
+//! each pin can choose.
 
 use anyhow::{Result, anyhow};
 use pigeon_core::clock::{parse_rfc3339, rfc3339};
 use pigeon_core::selection::{Cutoff, Rule, compile};
+use pigeon_sync::views::PinTime;
 use pigeon_sync::{Engine, Preview};
 use serde_json::{Value, json};
 
@@ -23,7 +25,7 @@ pub struct Line {
 pub fn format_rule(rule: &Rule) -> String {
     let mode = match rule.cutoff {
         Cutoff::PlusInfinity => "follow".to_owned(),
-        Cutoff::At(time) => format!("frozen {}", rfc3339(time)),
+        Cutoff::At(time) => format!("pin {}", rfc3339(time)),
         Cutoff::MinusInfinity => "free".to_owned(),
     };
     format!("{mode} {}", rule.pattern)
@@ -42,25 +44,23 @@ fn word(text: &str) -> (&str, &str) {
         .map_or((text, ""), |(first, rest)| (first, rest.trim_start()))
 }
 
-/// Reads one rule, `now` standing for the time of `frozen now`.
+/// Reads one rule, `now` standing for the time of `pin now`.
 fn rule(line: &str, now: u64) -> Result<Rule, String> {
     let (mode, rest) = word(line);
     let (cutoff, pattern) = match mode {
         "follow" => (Cutoff::PlusInfinity, rest),
         "free" => (Cutoff::MinusInfinity, rest),
-        "frozen" => {
+        "pin" => {
             let (when, pattern) = word(rest);
             let time = match when {
                 "now" => now,
-                "" => return Err("frozen needs a time: now or an RFC 3339 time".to_owned()),
+                "" => return Err("pin needs a time: now or an RFC 3339 time".to_owned()),
                 time => parse_rfc3339(time)?,
             };
             (Cutoff::At(time), pattern)
         }
         _ => {
-            return Err(format!(
-                "{mode:?} is not a mode: write follow, frozen or free"
-            ));
+            return Err(format!("{mode:?} is not a mode: write follow, pin or free"));
         }
     };
     if pattern.is_empty() {
@@ -73,7 +73,7 @@ fn rule(line: &str, now: u64) -> Result<Rule, String> {
     })
 }
 
-/// Reads every rule line of `text`, `now` standing for `frozen now`.
+/// Reads every rule line of `text`, `now` standing for `pin now`.
 #[must_use]
 pub fn parse(text: &str, now: u64) -> Vec<Line> {
     text.lines()
@@ -126,11 +126,27 @@ pub async fn preview(engine: &Engine, text: &str) -> Result<Value> {
         .filter_map(|&index| lines[index].rule.clone().ok())
         .collect();
     let preview = engine.preview(rules).await?;
-    Ok(preview_json(&lines, &valid, &preview))
+    let times = lines
+        .iter()
+        .map(|line| match &line.rule {
+            Ok(Rule {
+                pattern,
+                cutoff: Cutoff::At(_),
+            }) => engine.pin_times(pattern).map(Some),
+            _ => Ok(None),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(preview_json(&lines, &valid, &preview, &times))
 }
 
-/// `preview` as JSON whose rules are `lines`, the valid ones at `valid`.
-fn preview_json(lines: &[Line], valid: &[usize], preview: &Preview) -> Value {
+/// `preview` as JSON whose rules are `lines`, the valid ones at `valid`,
+/// each pin with the `times` it can choose.
+fn preview_json(
+    lines: &[Line],
+    valid: &[usize],
+    preview: &Preview,
+    times: &[Option<Vec<PinTime>>],
+) -> Value {
     let line_of = |rule: Option<usize>| rule.map(|rule| valid[rule]);
     let rules: Vec<Value> = lines
         .iter()
@@ -147,6 +163,7 @@ fn preview_json(lines: &[Line], valid: &[usize], preview: &Preview) -> Value {
                     "pattern": rule.pattern,
                     "matches": effect.map(|effect| effect.matches),
                     "decides": effect.map(|effect| effect.decides),
+                    "times": times[index],
                 }),
                 Err(error) => json!({ "line": line.number, "error": error }),
             }
@@ -200,14 +217,14 @@ mod tests {
             },
         ];
         let text = format(&given);
-        assert!(text.starts_with("follow /docs/\nfrozen 2026-10-01T12:00:00."));
+        assert!(text.starts_with("follow /docs/\npin 2026-10-01T12:00:00."));
         assert!(text.ends_with(" /my report/\nfree *.iso\n"));
         assert_eq!(rules(&text, 0).unwrap(), given);
     }
 
     #[test]
-    fn frozen_now_takes_the_time_given_and_comments_say_nothing() {
-        let text = "# keep the report\n\n  frozen   now  /report/\r\nfree  *.iso\n";
+    fn pin_now_takes_the_time_given_and_comments_say_nothing() {
+        let text = "# keep the report\n\n  pin   now  /report/\r\nfree  *.iso\n";
         let lines = parse(text, 42);
         assert_eq!(
             lines,
@@ -233,8 +250,7 @@ mod tests {
 
     #[test]
     fn each_line_that_is_no_rule_says_why() {
-        let text =
-            "keep /a/\nfollow\nfrozen\nfrozen yesterday /a/\nfree !a\nfollow /a{b/\nfollow /ok/\n";
+        let text = "keep /a/\nfollow\npin\npin yesterday /a/\nfree !a\nfollow /a{b/\nfollow /ok/\n";
         let lines = parse(text, 0);
         let errors: Vec<&str> = lines
             .iter()

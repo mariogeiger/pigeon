@@ -124,7 +124,7 @@ const PATTERN: Param = required(
 );
 const RULES: Param = required(
     "rules",
-    "A file of rules, or - for standard input: one per line, such as `follow /docs/`, `frozen now /report/`, `frozen 2026-10-01T12:00:00Z /old/` or `free *.iso`",
+    "A file of rules, or - for standard input: one per line, such as `follow /docs/`, `pin now /report/`, `pin 2026-10-01T12:00:00Z /old/` or `free *.iso`",
     Kind::Rules,
 );
 const FOLDER: Param = required(
@@ -430,6 +430,13 @@ pub const ACTIONS: &[Action] = &[
             PATTERN,
             required("time", "The time, such as 2026-10-01T12:00:00Z", Kind::Time),
         ],
+    ),
+    view(
+        "selection",
+        "times",
+        "List the times at which pinning files holds something new: those of their versions",
+        &[PATTERN],
+        &["time", "files"],
     ),
     view(
         "selection",

@@ -153,6 +153,7 @@ async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
             Ok(Value::Null)
         }
         ("file", verb) => on_files(engine, args, verb).await,
+        ("selection", "times") => to_json(engine.pin_times(args.required("pattern")?)?),
         ("selection", "list") => Ok(Value::String(draft::format(&engine.selection().await))),
         ("selection", "preview") => {
             draft::preview(engine, args.text("rules").unwrap_or_default()).await

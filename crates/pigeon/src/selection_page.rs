@@ -25,7 +25,7 @@ fn count(count: u64, noun: &str) -> String {
 fn row(rule: &Rule) -> Value {
     let (mode, time) = match rule.cutoff {
         Cutoff::PlusInfinity => ("follow", None),
-        Cutoff::At(time) => ("frozen", Some(pigeon_core::clock::rfc3339(time))),
+        Cutoff::At(time) => ("pin", Some(pigeon_core::clock::rfc3339(time))),
         Cutoff::MinusInfinity => ("free", None),
     };
     json!({ "mode": mode, "time": time, "pattern": rule.pattern })
@@ -91,16 +91,17 @@ pub fn selection(
                     button type="button" class="down" title="Move down" { "↓" }
                     select class="mode" {
                         option value="follow" { "follow" }
-                        option value="frozen" { "frozen" }
+                        option value="pin" { "pin" }
                         option value="free" { "free" }
                     }
                     span class="when" {
                         " at "
                         select class="at" {
                             option value="now" { "now" }
+                            optgroup class="versions" label="a version" {}
                             option value="time" { "a time" }
                         }
-                        input type="text" class="time" placeholder="2026-10-01T12:00:00Z";
+                        input type="datetime-local" step="1" class="time";
                     }
                     input type="text" class="pattern" list="patterns";
                     span class="effect" {}
@@ -256,7 +257,7 @@ pub fn preview_parts(group: &str, preview: &Value) -> Value {
                 return json!({ "error": error });
             }
             let (text, masked) = effect(rule);
-            json!({ "effect": text, "masked": masked })
+            json!({ "effect": text, "masked": masked, "times": rule["times"] })
         })
         .collect();
     let (_, downloaded_bytes) = delta_bytes(preview, "download");
@@ -304,7 +305,7 @@ mod tests {
             "rules": [
                 { "line": 1, "rule": "follow +mario/", "pattern": "+mario/", "matches": 42, "decides": { "files": 40, "bytes": 2_000_000 } },
                 { "line": 2, "rule": "free *.iso", "pattern": "*.iso", "matches": 3, "decides": { "files": 3, "bytes": 900_000 } },
-                { "line": 3, "rule": "frozen 2026-10-01T12:00:00Z /old/", "pattern": "/old/", "matches": 2, "decides": { "files": 0, "bytes": 0 } },
+                { "line": 3, "rule": "pin 2026-10-01T12:00:00Z /old/", "pattern": "/old/", "matches": 2, "decides": { "files": 0, "bytes": 0 }, "times": [{ "time": "2026-09-30T08:00:00Z", "files": 2 }] },
                 { "line": 4, "error": "\"keep\" is not a mode" },
                 { "line": 5, "rule": "follow /none/", "pattern": "/none/", "matches": 0, "decides": { "files": 0, "bytes": 0 } },
             ],
@@ -323,11 +324,11 @@ mod tests {
         assert_eq!(
             parts["rows"],
             json!([
-                { "effect": "matches 42 files · decides 40 (2.0 MB)", "masked": false },
-                { "effect": "matches 3 files · decides 3 (900.0 KB)", "masked": false },
-                { "effect": "matches 2 files · masked", "masked": true },
+                { "effect": "matches 42 files · decides 40 (2.0 MB)", "masked": false, "times": null },
+                { "effect": "matches 3 files · decides 3 (900.0 KB)", "masked": false, "times": null },
+                { "effect": "matches 2 files · masked", "masked": true, "times": [{ "time": "2026-09-30T08:00:00Z", "files": 2 }] },
                 { "error": "\"keep\" is not a mode" },
-                { "effect": "matches 0 files", "masked": true },
+                { "effect": "matches 0 files", "masked": true, "times": null },
             ])
         );
         assert_eq!(parts["save"], "Save: +180.0 MB, -890.0 MB");

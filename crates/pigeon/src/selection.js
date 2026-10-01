@@ -1,7 +1,9 @@
 // The selection editor: rows of rules held as a draft, which the daemon
 // previews after each change and as files arrive, saved whole only by Save,
 // which asks first when it frees space and refuses when the selection
-// changed elsewhere since the draft began.
+// changed elsewhere since the draft began. A pin holds its files at now, at
+// one of the versions the preview lists, or at a time picked in local time;
+// each time is kept exactly as the RFC 3339 text the daemon reads.
 "use strict";
 (() => {
   const editor = document.getElementById("editor");
@@ -17,21 +19,56 @@
   let timer = null;
   let asked = 0;
 
+  const toDate = (time) => new Date(time.replace(/(\.\d{3})\d+/, "$1"));
+
+  const toLocal = (time) => {
+    const date = toDate(time);
+    const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+    return shifted.toISOString().slice(0, 19);
+  };
+
+  const pinned = (row) => {
+    const at = row.querySelector(".at").value;
+    if (at !== "time") return at;
+    return row.dataset.time || "-";
+  };
+
   const line = (row) => {
     const mode = row.querySelector(".mode").value;
     const pattern = row.querySelector(".pattern").value;
-    if (mode !== "frozen") return `${mode} ${pattern}`;
-    const time = row.querySelector(".time").value.trim();
-    const at = row.querySelector(".at").value === "now" ? "now" : time || "-";
-    return `frozen ${at} ${pattern}`;
+    if (mode !== "pin") return `${mode} ${pattern}`;
+    return `pin ${pinned(row)} ${pattern}`;
   };
 
   const draft = () => [...list.children].map(line).join("\n") + "\n";
 
   const shape = (row) => {
-    const frozen = row.querySelector(".mode").value === "frozen";
-    row.querySelector(".when").hidden = !frozen;
+    const pin = row.querySelector(".mode").value === "pin";
+    row.querySelector(".when").hidden = !pin;
     row.querySelector(".time").hidden = row.querySelector(".at").value !== "time";
+  };
+
+  const offer = (row, times) => {
+    const versions = row.querySelector(".versions");
+    const known = JSON.stringify(times);
+    if (versions.dataset.times === known) return;
+    versions.dataset.times = known;
+    const at = row.querySelector(".at");
+    const chosen = at.value === "time" ? row.dataset.time : at.value;
+    versions.replaceChildren(
+      ...times.map(({ time, files }) => {
+        const label = `${toDate(time).toLocaleString()} · ${files} file${files === 1 ? "" : "s"}`;
+        return new Option(label, time);
+      }),
+    );
+    versions.hidden = times.length === 0;
+    if (times.some(({ time }) => time === chosen)) {
+      at.value = chosen;
+    } else if (chosen !== "now") {
+      at.value = "time";
+      if (chosen) row.dataset.time = chosen;
+    }
+    shape(row);
   };
 
   const add = (rule) => {
@@ -39,8 +76,9 @@
     row.querySelector(".mode").value = rule.mode;
     row.querySelector(".pattern").value = rule.pattern;
     if (rule.time) {
+      row.dataset.time = rule.time;
       row.querySelector(".at").value = "time";
-      row.querySelector(".time").value = rule.time;
+      row.querySelector(".time").value = toLocal(rule.time);
     }
     shape(row);
     list.append(row);
@@ -52,6 +90,7 @@
     [...list.children].forEach((row, index) => {
       const part = parts.rows[index] ?? {};
       row.querySelector(".effect").textContent = part.effect ?? "";
+      offer(row, part.times ?? []);
       row.classList.toggle("masked", part.masked === true);
       const error = row.querySelector(".error");
       error.hidden = part.error === undefined;
@@ -91,7 +130,16 @@
   };
 
   list.addEventListener("input", (event) => {
-    shape(event.target.closest("li"));
+    const row = event.target.closest("li");
+    const field = event.target;
+    if (field.classList.contains("time")) {
+      row.dataset.time = field.value === "" ? "" : new Date(field.value).toISOString();
+    } else if (field.classList.contains("at") && field.value === "time" && row.dataset.time) {
+      row.querySelector(".time").value = toLocal(row.dataset.time);
+    } else if (field.classList.contains("at") && field.value !== "now" && field.value !== "time") {
+      row.dataset.time = field.value;
+    }
+    shape(row);
     schedule();
   });
 

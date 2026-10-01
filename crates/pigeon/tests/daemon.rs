@@ -655,8 +655,16 @@ async fn the_selection_editor_previews_a_draft_and_saves_it_whole() {
     let parts = editor_preview(&peer, "free +alice/\nkeep x\n").await;
     assert_eq!(
         parts["rows"][0],
-        json!({"effect": "matches 1 file · decides 1 (6 B)", "masked": false})
+        json!({"effect": "matches 1 file · decides 1 (6 B)", "masked": false, "times": null})
     );
+    let times = peer
+        .call("selection", "times", json!({"pattern": "+alice/"}))
+        .await
+        .unwrap();
+    assert_eq!(times.as_array().unwrap().len(), 1, "{times}");
+    assert_eq!(times[0]["files"], 1);
+    let pinned = editor_preview(&peer, "pin now +alice/\n").await;
+    assert_eq!(pinned["rows"][0]["times"], times);
     assert!(
         parts["rows"][1]["error"]
             .as_str()

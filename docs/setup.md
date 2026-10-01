@@ -151,13 +151,15 @@ rule winning, and preview them before saving:
 pigeon selection list > rules.txt
 cat rules.txt
 # follow +mario/
-# frozen 2026-10-01T12:00:00Z /report/
+# pin 2026-10-01T12:00:00Z /report/
 # free *.iso
 pigeon selection preview --rules rules.txt
 pigeon selection set --rules rules.txt --version <the version the preview showed>
 ```
 
-`frozen now` freezes files at the time of saving. The preview counts the
+`pin now` pins files at the time of saving, and
+`pigeon selection times --pattern /report/` lists the times of the versions
+of the files a pattern matches: pinning at each holds something new. The preview counts the
 files and bytes held now and after saving, and what saving would download,
 free and freeze, with the rule that decides each file. `set` replaces the
 whole selection, keeping the rules as written, and with `--version` it
@@ -167,8 +169,10 @@ published is never removed.
 The web UI's Selection page edits a draft of the rules the same way: each
 row tells how many files its rule matches and decides, the preview beside
 it updates on each keystroke and as files arrive, and nothing changes
-until Save, which asks first when it frees space. If the selection changes
-elsewhere meanwhile, a banner offers to reload it or keep the draft.
+until Save, which asks first when it frees space. A pin row offers now,
+each of those version times with the number of files changed, or a date and
+time picked in local time. If the selection changes elsewhere meanwhile, a
+banner offers to reload it or keep the draft.
 
 The Files page gives each file and folder a box: checked
 when followed, mixed when only part of a folder is. Unchecking asks whether

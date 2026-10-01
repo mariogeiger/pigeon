@@ -1,19 +1,19 @@
 //! What the engine shows: its status, the group's files as this machine
 //! holds them, a file's history, the members, the requests, the set-aside
-//! list, the selection and the retention, each as plain data for the
-//! command line and the API.
+//! list, the selection, the times a pin can choose and the retention, each
+//! as plain data for the command line and the API.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::Result;
-use pigeon_core::clock::{MachineId, Stamp};
+use pigeon_core::clock::{MachineId, Stamp, rfc3339};
 use pigeon_core::ledger::Version;
 use pigeon_core::name::MemberName;
 use pigeon_core::patch::Content;
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::retention::Retention;
-use pigeon_core::selection::{Cutoff, Rule};
-use pigeon_core::statement::{Decision, RequestStatement};
+use pigeon_core::selection::{Cutoff, Rule, compile, matches};
+use pigeon_core::statement::{Decision, RequestStatement, STATEMENTS};
 use pigeon_store::aside::AsideItem;
 use pigeon_store::index::IndexEntry;
 use serde::Serialize;
@@ -73,6 +73,15 @@ pub struct PendingView {
 }
 
 /// One accepted version of a file.
+/// A time at which some files a pattern matches have a version, and how
+/// many: pinning the pattern holds something else at each such time and
+/// the same between two of them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PinTime {
+    pub time: String,
+    pub files: usize,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct VersionView {
     pub stamp: Stamp,
@@ -276,6 +285,37 @@ impl Engine {
             .iter()
             .map(VersionView::from)
             .collect()
+    }
+
+    /// Every time at which pinning `pattern` holds something new, newest
+    /// first.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `pattern` is no gitignore pattern.
+    pub fn pin_times(&self, pattern: &str) -> Result<Vec<PinTime>> {
+        let matcher = compile(pattern)?;
+        let ledger = self.inner.ledger.lock();
+        let mut files = BTreeMap::<u64, usize>::new();
+        for key in ledger.keys() {
+            let Some(head) = ledger.head(key) else {
+                continue;
+            };
+            if head.path.is_inside(STATEMENTS) || !matches(&matcher, &head.path) {
+                continue;
+            }
+            for version in ledger.versions(key) {
+                *files.entry(version.stamp.time).or_default() += 1;
+            }
+        }
+        Ok(files
+            .into_iter()
+            .rev()
+            .map(|(time, files)| PinTime {
+                time: rfc3339(time),
+                files,
+            })
+            .collect())
     }
 
     #[must_use]
