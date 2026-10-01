@@ -4,6 +4,12 @@ All notable user-visible changes to pigeon are documented here. While the
 version is 0.x, a change that breaks compatibility increments the second
 number, and any other change the third.
 
+## 0.2.1 — 2026-10-01
+
+### Added
+
+- The README opens with a 20-second animation of how pigeon works.
+
 ## 0.2.0 — 2026-10-01
 
 ### Changed
