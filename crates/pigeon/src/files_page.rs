@@ -16,7 +16,7 @@ use crate::file_status::{countdown, file_status, folder_status, legend};
 use crate::file_tree::{self, Facts, Folder, Followed, Leaf, Row};
 use crate::form::form;
 use crate::group_pages::{encode, file_link, fill};
-use crate::pages::{action, layout};
+use crate::pages::{Bar, action, layout, short_time};
 use crate::render::size;
 
 /// The value of a box's `data-state`.
@@ -156,11 +156,6 @@ fn adds_freely(path: &str, member: &str) -> bool {
             .rev()
             .find_map(|name| name.strip_prefix('+'))
             .is_none_or(|tag| tag.eq_ignore_ascii_case(member))
-}
-
-/// A time in RFC 3339 to the minute.
-fn short_time(time: &str) -> String {
-    time.get(..16).unwrap_or(time).replacen('T', " ", 1)
 }
 
 /// The menu button of a row, which tells `files.js` what can be done:
@@ -336,7 +331,8 @@ fn row(
 /// The whole group as a tree: the folders above `under` open, and those
 /// of `member`, until one opens or closes others.
 #[must_use]
-pub fn files(group: &str, member: &str, under: &str, files: &Value, waiting: &Value) -> Markup {
+pub fn files(bar: &Bar<'_>, member: &str, under: &str, files: &Value, waiting: &Value) -> Markup {
+    let group = bar.group;
     let files = files.as_array().map(Vec::as_slice).unwrap_or_default();
     let waiting = waiting.as_array().map(Vec::as_slice).unwrap_or_default();
     let tree = Folder::root(entries(files, waiting));
@@ -378,12 +374,18 @@ pub fn files(group: &str, member: &str, under: &str, files: &Value, waiting: &Va
         (dialogs(group, &back))
         script src="/files.js" defer {}
     };
-    layout("Files", Some(group), &body)
+    layout("Files", Some(bar), &body)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const BAR: Bar = Bar {
+        group: "cheapmo",
+        tab: Some(crate::pages::Tab::Files),
+        waiting: 0,
+    };
     use serde_json::json;
 
     fn file(path: &str, cutoff: &Value) -> Value {
@@ -406,7 +408,7 @@ mod tests {
             file("docs/none/e.txt", &json!("MinusInfinity")),
             file("docs/[x].txt", &json!({"At": 5})),
         ]);
-        let page = files("cheapmo", "alice", "", &list, &json!([])).into_string();
+        let page = files(&BAR, "alice", "", &list, &json!([])).into_string();
         assert!(
             row_of(&page, "docs/all")
                 .contains(r#"data-pattern="/docs/all/" data-state="checked" checked"#)
@@ -437,7 +439,7 @@ mod tests {
             file("team/+alice/b.txt", &json!("PlusInfinity")),
             file("team/+bob/c.txt", &json!("PlusInfinity")),
         ]);
-        let page = files("cheapmo", "alice", "docs/deep", &list, &json!([])).into_string();
+        let page = files(&BAR, "alice", "docs/deep", &list, &json!([])).into_string();
         assert!(row_of(&page, "docs").contains("data-open"));
         assert!(!row_of(&page, "docs/deep/a.txt").contains("hidden"));
         assert!(!row_of(&page, "team/+alice/b.txt").contains("hidden"));
@@ -455,7 +457,7 @@ mod tests {
             {"path": "+alice/new/b.txt", "here": true, "due_in": 3, "freezes": false, "deleted": false, "cutoff": "PlusInfinity", "size": 4},
             {"path": "+alice/c.txt", "here": true, "due_in": 192, "freezes": true, "deleted": false, "cutoff": "MinusInfinity", "size": 5},
         ]);
-        let page = files("cheapmo", "alice", "", &list, &waiting).into_string();
+        let page = files(&BAR, "alice", "", &list, &waiting).into_string();
         assert!(page.contains(r#"⏳ <span data-due="2">0:02</span>"#));
         assert!(page.contains(r#"<span data-due="192">3:12</span>"#));
         assert!(row_of(&page, "+alice/new").contains("⏳ 1"));
@@ -479,7 +481,7 @@ mod tests {
              "deleted": false, "cutoff": "MinusInfinity", "size": 7,
              "rivals": [{"author": "alice", "path": "inbox/Report.txt", "due_in": 200, "wins": false}]},
         ]);
-        let page = files("cheapmo", "alice", "", &json!([]), &waiting).into_string();
+        let page = files(&BAR, "alice", "", &json!([]), &waiting).into_string();
         let mine = row_of(&page, "inbox/Report.txt");
         assert!(mine.contains(r#"🛑 bob <span data-due="42">0:42</span>"#));
         assert!(mine.contains("rename it to keep both"));

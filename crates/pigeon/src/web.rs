@@ -1,8 +1,9 @@
 //! The web UI's routes: each page fetches its data through the catalog's
 //! views, or from the engine where it compares contents, each form posts
 //! to `/act/<noun>/<verb>`, which runs the action as the API does, the
-//! selection editor previews its draft, and a group's event stream tells
-//! its pages when to fetch themselves again and which program serves them.
+//! configuration editor previews its text, and a group's event stream
+//! tells its pages when to fetch themselves again and which program serves
+//! them.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -23,12 +24,13 @@ use pigeon_sync::Engine;
 use serde_json::{Map, Value, json};
 
 use crate::api::{App, call};
-use crate::catalog::{GROUP, Kind, find};
+use crate::catalog::{Kind, find};
+use crate::changes_page::{self, AsideCard, RequestCard};
 use crate::files_page;
-use crate::form::{BACK, Fill, form};
-use crate::group_pages::{self, RequestCard};
-use crate::pages::{self, Side, action, diff, layout};
-use crate::selection_page;
+use crate::form::BACK;
+use crate::group_pages;
+use crate::overview_page::{self, Overview};
+use crate::pages::{self, Bar, Side, Tab, diff, layout};
 
 /// Why a page cannot be shown, and where to go back to.
 struct Failure {
@@ -96,11 +98,40 @@ async fn home(State(app): State<Arc<App>>) -> Page {
     Ok(html_page(&pages::home(&groups)))
 }
 
+/// How many changes of `group` wait for its member to act.
+async fn waiting(app: &App, group: &str) -> Result<usize, Failure> {
+    let status = view(app, "group", "status", json!({ "group": group })).await?;
+    let requests = view(app, "request", "list", json!({ "group": group })).await?;
+    let aside = view(app, "aside", "list", json!({ "group": group })).await?;
+    let me = status["member"].as_str().unwrap_or_default();
+    Ok(changes_page::waiting(&requests, &aside, me))
+}
+
+/// The bar of `group`'s page at `tab`.
+async fn bar<'a>(app: &App, group: &'a str, tab: Option<Tab>) -> Result<Bar<'a>, Failure> {
+    Ok(Bar {
+        group,
+        tab,
+        waiting: waiting(app, group).await?,
+    })
+}
+
 async fn overview(State(app): State<Arc<App>>, Path(group): Path<String>) -> Page {
-    let status = view(&app, "group", "status", json!({ "group": group })).await?;
-    let key = view(&app, "group", "key", json!({ "group": group })).await?;
-    let key = key["key"].as_str().unwrap_or_default();
-    Ok(html_page(&pages::overview(&group, &status, key)))
+    let of_group = || json!({ "group": group });
+    let status = view(&app, "group", "status", of_group()).await?;
+    let members = view(&app, "member", "list", of_group()).await?;
+    let key = view(&app, "group", "key", of_group()).await?;
+    let config = view(&app, "config", "show", of_group()).await?;
+    let places = view(&app, "selection", "places", of_group()).await?;
+    let shown = Overview {
+        status: &status,
+        members: &members,
+        key: key["key"].as_str().unwrap_or_default(),
+        config: &config,
+        places: &places,
+    };
+    let bar = bar(&app, &group, Some(Tab::Overview)).await?;
+    Ok(html_page(&overview_page::overview(&bar, &shown)))
 }
 
 async fn files(
@@ -115,8 +146,9 @@ async fn files(
     let list = view(&app, "file", "list", json!({ "group": group })).await?;
     let waiting = view(&app, "file", "pending", json!({ "group": group })).await?;
     let member = status["member"].as_str().unwrap_or_default();
+    let bar = bar(&app, &group, Some(Tab::Files)).await?;
     Ok(html_page(&files_page::files(
-        &group, member, under, &list, &waiting,
+        &bar, member, under, &list, &waiting,
     )))
 }
 
@@ -161,8 +193,9 @@ async fn file(
         })
         .cloned()
         .unwrap_or(Value::Null);
+    let bar = bar(&app, &group, None).await?;
     Ok(html_page(&group_pages::file(
-        &group, path, &current, &history, &waiting,
+        &bar, path, &current, &history, &waiting,
     )))
 }
 
@@ -193,108 +226,93 @@ fn version_content(engine: &Engine, path: &GroupPath, time: Option<u64>) -> Opti
     version.and_then(|version| version.content)
 }
 
-async fn requests(State(app): State<Arc<App>>, Path(group): Path<String>) -> Page {
-    let cards = with_engine(&app, &group, async |engine| {
-        let me = engine.status().await.member;
-        let mut cards = Vec::new();
-        for request in engine.requests().await {
-            let mut changes = Vec::new();
-            for change in &request.statement.changes {
-                let old = change.replaces.and_then(|stamp| {
-                    engine
-                        .history(&change.path)
-                        .into_iter()
-                        .find(|version| version.stamp == stamp)
-                        .and_then(|version| version.content)
-                });
-                let markup = change_diff(engine, old.as_ref(), change.content.as_ref()).await;
-                changes.push((change.path.as_str().to_owned(), markup));
-            }
-            let decides = request.statement.owner == me
-                && request.statement.mode == pigeon_core::statement::Mode::Propose
-                && request.decision.is_none()
-                && !request.applied;
-            cards.push(RequestCard {
-                request: serde_json::to_value(&request).unwrap_or(Value::Null),
-                changes,
-                decides,
+/// The changes of `group`'s requests, each with its difference.
+async fn request_cards(engine: &Engine) -> Vec<RequestCard> {
+    let mut cards = Vec::new();
+    for request in engine.requests().await {
+        let mut changes = Vec::new();
+        for change in &request.statement.changes {
+            let old = change.replaces.and_then(|stamp| {
+                engine
+                    .history(&change.path)
+                    .into_iter()
+                    .find(|version| version.stamp == stamp)
+                    .and_then(|version| version.content)
             });
+            let markup = change_diff(engine, old.as_ref(), change.content.as_ref()).await;
+            changes.push((change.path.as_str().to_owned(), markup));
         }
-        cards
+        cards.push(RequestCard {
+            request: serde_json::to_value(&request).unwrap_or(Value::Null),
+            changes,
+        });
+    }
+    cards
+}
+
+/// The items this machine set aside, each with its difference from the
+/// current version of its path.
+async fn aside_cards(engine: &Engine) -> Vec<AsideCard> {
+    let mut cards = Vec::new();
+    for item in engine.aside().unwrap_or_default() {
+        let diff = match GroupPath::parse(&item.item.path) {
+            Ok(path) => {
+                let current = version_content(engine, &path, None);
+                change_diff(engine, current.as_ref(), item.item.content.as_ref()).await
+            }
+            Err(error) => html! { p class="mark" { (error) } },
+        };
+        cards.push(AsideCard {
+            item: serde_json::to_value(&item).unwrap_or(Value::Null),
+            diff,
+        });
+    }
+    cards
+}
+
+async fn changes(
+    State(app): State<Arc<App>>,
+    Path(group): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Page {
+    let (me, requests, aside) = with_engine(&app, &group, async |engine| {
+        let me = engine.status().await.member.to_string();
+        (me, request_cards(engine).await, aside_cards(engine).await)
     })
     .await?;
-    Ok(html_page(&group_pages::requests(&group, &cards)))
-}
-
-async fn aside(State(app): State<Arc<App>>, Path(group): Path<String>) -> Page {
-    let items = with_engine(&app, &group, async |engine| {
-        let mut items = Vec::new();
-        for item in engine.aside().unwrap_or_default() {
-            let markup = match GroupPath::parse(&item.item.path) {
-                Ok(path) => {
-                    let current = version_content(engine, &path, None);
-                    change_diff(engine, current.as_ref(), item.item.content.as_ref()).await
-                }
-                Err(error) => html! { p class="mark" { (error) } },
-            };
-            items.push((serde_json::to_value(&item).unwrap_or(Value::Null), markup));
-        }
-        items
-    })
-    .await?;
-    Ok(html_page(&group_pages::aside(&group, &items)))
-}
-
-async fn members(State(app): State<Arc<App>>, Path(group): Path<String>) -> Page {
-    let list = view(&app, "member", "list", json!({ "group": group })).await?;
-    let back = format!("/g/{group}/members");
-    let fill = Fill {
-        group: Some(&group),
-        ..Fill::default()
+    let listed = |values: Vec<Value>| Value::Array(values);
+    let waiting = changes_page::waiting(
+        &listed(requests.iter().map(|card| card.request.clone()).collect()),
+        &listed(aside.iter().map(|card| card.item.clone()).collect()),
+        &me,
+    );
+    let bar = Bar {
+        group: &group,
+        tab: Some(Tab::Changes),
+        waiting,
     };
-    let forms = html! {
-        @for (noun, verb) in [
-            ("member", "exclude"),
-            ("group", "leave"),
-        ] {
-            (form(action(noun, verb), &back, fill))
-        }
-    };
-    let page = pages::listing(&group, "Members", action("member", "list"), &list, &forms);
-    Ok(html_page(&page))
-}
-
-async fn selection(State(app): State<Arc<App>>, Path(group): Path<String>) -> Page {
-    let rules = with_engine(&app, &group, async |engine| engine.selection().await).await?;
-    let files = view(&app, "file", "list", json!({ "group": group })).await?;
-    let places = view(&app, "selection", "places", json!({ "group": group })).await?;
-    let version = pigeon_core::selection::version(&rules);
-    Ok(html_page(&selection_page::selection(
-        &group, &rules, &version, &files, &places,
+    let done = query.contains_key("done");
+    Ok(html_page(&changes_page::changes(
+        &bar, &me, &requests, &aside, done,
     )))
 }
 
-/// What saving the draft in the form field `rules` would change, as the
-/// pieces the editor shows.
-async fn selection_preview(
+/// What applying the text in the form field `text` as the group's
+/// configuration would change, as the pieces the editor shows.
+async fn config_preview(
     State(app): State<Arc<App>>,
     Path(group): Path<String>,
     Form(form): Form<HashMap<String, String>>,
 ) -> Response {
-    let rules = form.get("rules").cloned().unwrap_or_default();
-    let args = json!({ "group": group, "rules": rules });
+    let text = form.get("text").cloned().unwrap_or_default();
+    let args = json!({ "group": group, "text": text });
     let Value::Object(args) = args else {
         unreachable!("the arguments are an object")
     };
-    match call(&app, "selection", "preview", args).await {
-        Ok(preview) => Json(selection_page::preview_parts(&group, &preview)).into_response(),
+    match call(&app, "config", "preview", args).await {
+        Ok(preview) => Json(overview_page::preview_parts(&group, &preview)).into_response(),
         Err((status, message)) => (status, Json(json!({ "error": message }))).into_response(),
     }
-}
-
-async fn retention(State(app): State<Arc<App>>, Path(group): Path<String>) -> Page {
-    let retention = view(&app, "retention", "show", json!({ "group": group })).await?;
-    Ok(html_page(&pages::retention(&group, &retention)))
 }
 
 async fn raw(
@@ -383,9 +401,9 @@ async fn files_script() -> Response {
     script(include_str!("files.js"))
 }
 
-/// The script of the selection editor.
-async fn selection_script() -> Response {
-    script(include_str!("selection.js"))
+/// The script of the configuration editor.
+async fn config_editor_script() -> Response {
+    script(include_str!("config_editor.js"))
 }
 
 /// Whether `back` is a page of this server, never another site.
@@ -441,10 +459,6 @@ async fn act(
     if !local_page(&back) {
         "/".clone_into(&mut back);
     }
-    let group = values
-        .get(GROUP.name)
-        .and_then(Value::as_str)
-        .map(str::to_owned);
     match call(&app, &noun, &verb, values).await {
         Ok(Value::Null) => Redirect::to(&back).into_response(),
         Ok(result) => {
@@ -453,7 +467,7 @@ async fn act(
                 p { a href=(back) { "Back" } }
             };
             let title = format!("{noun} {verb}");
-            Html(layout(&title, group.as_deref(), &body).into_string()).into_response()
+            Html(layout(&title, None, &body).into_string()).into_response()
         }
         Err((status, message)) => Failure::new(status, message, &back).into_response(),
     }
@@ -466,17 +480,13 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/g/{group}", get(overview))
         .route("/g/{group}/files", get(files))
         .route("/g/{group}/file", get(file))
-        .route("/g/{group}/requests", get(requests))
-        .route("/g/{group}/aside", get(aside))
-        .route("/g/{group}/members", get(members))
-        .route("/g/{group}/selection", get(selection))
-        .route("/g/{group}/selection/preview", post(selection_preview))
-        .route("/g/{group}/retention", get(retention))
+        .route("/g/{group}/changes", get(changes))
+        .route("/g/{group}/config/preview", post(config_preview))
         .route("/g/{group}/raw", get(raw))
         .route("/g/{group}/events", get(events))
         .route("/live.js", get(live_script))
         .route("/files.js", get(files_script))
-        .route("/selection.js", get(selection_script))
+        .route("/config_editor.js", get(config_editor_script))
         .route("/act/{noun}/{verb}", post(act))
 }
 

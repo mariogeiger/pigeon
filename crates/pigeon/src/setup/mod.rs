@@ -13,11 +13,14 @@ mod root;
 mod tree;
 
 use std::io::IsTerminal;
+use std::time::SystemTime;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use dialoguer::console::Term;
+use pigeon_core::clock::ntp_time;
 use pigeon_core::path::GroupPath;
 use pigeon_core::statement::STATEMENTS;
+use pigeon_store::config::Config;
 use serde_json::{Map, Value, json};
 
 use self::checklist::{Checklist, Mark};
@@ -149,6 +152,21 @@ fn run_daemon(home: &Home, list: &mut Checklist) -> Result<()> {
     }
 }
 
+/// Makes this machine keep the history of every file it downloads, not
+/// only its member's, in the group's config.toml.
+fn keep_every_history(home: &Home, group: &str) -> Result<()> {
+    let shown = call(home, "config", "show", json!({ "group": group }))?;
+    let text = shown["text"].as_str().unwrap_or_default();
+    let (mut config, _) =
+        Config::parse(text, ntp_time(SystemTime::now())).map_err(|reason| anyhow!("{reason}"))?;
+    config.retention.everything = true;
+    let text = config.render().map_err(|reason| anyhow!("{reason}"))?;
+    let version = &shown["version"];
+    let args = json!({ "group": group, "text": text, "version": version, "yes": true });
+    call(home, "config", "set", args)?;
+    Ok(())
+}
+
 /// Chooses what this machine follows: everything for a server, or what
 /// one checks in the tree of the group's files.
 fn follow(home: &Home, list: &mut Checklist, membership: &Membership) -> Result<()> {
@@ -162,12 +180,7 @@ fn follow(home: &Home, list: &mut Checklist, membership: &Membership) -> Result<
             "follow",
             json!({ "group": group, "pattern": "*" }),
         )?;
-        call(
-            home,
-            "retention",
-            "set",
-            json!({ "group": group, "everything": "on" }),
-        )?;
+        keep_every_history(home, group)?;
         return list.set(FOLLOW, Mark::Done, "everything, with its history (server)");
     }
     let tag = format!("+{}", membership.member);

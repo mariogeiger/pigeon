@@ -1,8 +1,9 @@
 //! The command line: `pigeon <noun> <verb>` commands generated from the
 //! catalog, which prompt for a missing argument only when a terminal is
-//! attached and otherwise call the daemon's API; plus the commands that run
-//! the daemon, set pigeon up, install its service, update it, serve a
-//! relay, link to the web UI, and complete the shell.
+//! attached and otherwise call the daemon's API, and ask before a reload
+//! frees space; plus the commands that run the daemon, set pigeon up,
+//! install its service, update it, serve a relay, link to the web UI, and
+//! complete the shell.
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
@@ -15,14 +16,14 @@ use serde_json::{Map, Value};
 
 use crate::catalog::{ACTIONS, Action, GROUP, Kind, NOUNS, Param, Scope, find};
 use crate::home::Home;
-use crate::{api, client, relay, render, serve, service, setup, update};
+use crate::{api, client, config_preview, relay, render, serve, service, setup, update};
 
 fn param_arg(param: &Param) -> Arg {
     let arg = Arg::new(param.name).long(param.name).help(param.about);
     match param.kind {
         Kind::Flag => arg.action(ArgAction::SetTrue),
         Kind::Choice(choices) => arg.value_parser(PossibleValuesParser::new(choices)),
-        Kind::Bytes | Kind::Rules => arg.value_hint(ValueHint::FilePath).value_name("FILE"),
+        Kind::Bytes | Kind::Document => arg.value_hint(ValueHint::FilePath).value_name("FILE"),
         Kind::Folder => arg.value_hint(ValueHint::DirPath).value_name("FOLDER"),
         Kind::Number => arg.value_name("NUMBER"),
         Kind::Text | Kind::Path | Kind::Pattern | Kind::Time => arg,
@@ -194,13 +195,66 @@ pub fn arguments(action: &Action, matches: &ArgMatches, ask: bool) -> Result<Map
         };
         let value = match param.kind {
             Kind::Bytes => BASE64.encode(&read_local(&value)?),
-            Kind::Rules => String::from_utf8(read_local(&value)?)
+            Kind::Document => String::from_utf8(read_local(&value)?)
                 .with_context(|| format!("--{}: {value} is not UTF-8 text", param.name))?,
             _ => value,
         };
         args.insert(param.name.to_owned(), Value::String(value));
     }
     Ok(args)
+}
+
+/// What the edits of `group`'s config.toml free on this machine, as text,
+/// if anything; nothing when the file does not read, which reloading then
+/// names.
+fn freed(home: &Home, group: &str) -> Option<String> {
+    let mut args = Map::new();
+    args.insert(GROUP.name.to_owned(), Value::String(group.to_owned()));
+    let preview = client::call(home, "config", "preview", &args).ok()?;
+    let total = &preview["deltas"]
+        .as_array()?
+        .iter()
+        .find(|delta| delta["delta"] == "free")?["total"];
+    let files = total["files"].as_u64().filter(|files| *files > 0)?;
+    let bytes = total["bytes"].as_u64().unwrap_or_default();
+    Some(format!(
+        "{group} frees {}",
+        config_preview::amount(pigeon_sync::Amount { files, bytes })
+    ))
+}
+
+/// Asks the person at the terminal, when the edits that reloading applies
+/// free space on this machine, whether to apply them, telling what each
+/// group frees; adds `yes` to `args` if so.
+///
+/// # Errors
+///
+/// Fails if the groups cannot be listed, the question cannot be asked, or
+/// the person declines.
+fn confirm_reload(home: &Home, args: &mut Map<String, Value>) -> Result<()> {
+    let groups = client::call(home, "group", "list", &Map::new())?;
+    let freed: Vec<String> = groups
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|group| freed(home, group["name"].as_str()?))
+        .collect();
+    if freed.is_empty() {
+        return Ok(());
+    }
+    eprintln!(
+        "The edits free space on this machine: {}.",
+        freed.join(", ")
+    );
+    let apply = dialoguer::Confirm::new()
+        .with_prompt("Apply them?")
+        .default(false)
+        .interact()?;
+    if !apply {
+        bail!("nothing changed");
+    }
+    args.insert("yes".to_owned(), Value::Bool(true));
+    Ok(())
 }
 
 /// Runs the command line `matches` describes.
@@ -262,7 +316,10 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
                 .subcommand()
                 .ok_or_else(|| anyhow!("run `pigeon {noun} --help`"))?;
             let action = find(noun, verb).ok_or_else(|| anyhow!("run `pigeon {noun} --help`"))?;
-            let args = arguments(action, verb_matches, interactive())?;
+            let mut args = arguments(action, verb_matches, interactive())?;
+            if (noun, verb) == ("daemon", "reload") && !args.contains_key("yes") && interactive() {
+                confirm_reload(&home, &mut args)?;
+            }
             let result = client::call(&home, noun, verb, &args)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);

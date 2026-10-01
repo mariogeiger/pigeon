@@ -31,3 +31,6 @@ exactly one owner, whose machines alone write it.
    header, and split the file before it reaches 1000 lines.
 9. **Write in English.** The code, the documentation, and everything pigeon
    says to the people who use it are in English.
+10. **The web and the command line do the same.** Everything doable in the
+    web interface is doable on the command line, and the other way round,
+    with as little code as possible written twice.

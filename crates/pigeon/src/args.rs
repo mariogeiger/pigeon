@@ -63,8 +63,8 @@ impl Args {
             let param = action
                 .param(&name)
                 .or((action.scope == Scope::Group && name == GROUP.name).then_some(&GROUP));
-            let empty =
-                value.as_str() == Some("") && param.is_none_or(|param| param.kind != Kind::Rules);
+            let empty = value.as_str() == Some("")
+                && param.is_none_or(|param| param.kind != Kind::Document);
             if value.is_null() || empty {
                 continue;
             }

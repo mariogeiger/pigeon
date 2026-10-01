@@ -4,6 +4,39 @@ All notable user-visible changes to pigeon are documented here. While the
 version is 0.x, a change that breaks compatibility increments the second
 number, and any other change the third.
 
+## 0.3.0 — 2026-10-01
+
+### Changed
+
+- The web interface's bar reads 🐦 pigeon › group, then the group's tabs:
+  Overview, Files and Changes, which counts what waits for you. Pages show a
+  🐦 icon.
+- The Overview page holds the group's status in one line, its errors and
+  incompatible machines if any, the members with their machines and who is
+  online, to exclude one or leave, the group key with a Copy button, the
+  places, and the raw ids folded under Details.
+- `config.toml` is how one changes the selection and the retention: the
+  Overview page edits it, highlighted, with a live preview of what saving
+  would download, free and freeze, rule by rule, and lets a pin pick one of
+  its files' version times or any local time. Save asks first when it frees
+  space, refuses if the file changed elsewhere, and applies it to this group
+  only. `pigeon config show`, `preview` and `set` do the same on the
+  command line.
+- `pigeon daemon reload` tells what the edits download, free and freeze on
+  each group, and asks first when they free space; `--yes` skips the
+  question, and without a terminal it refuses unless given.
+- The Changes page merges the requests and the set-aside list, one line per
+  change by who must act: to you, here but not sent, waiting for others,
+  and the requests done on demand; each difference opens on click.
+- `pigeon member list` shows each member's machines and those online.
+
+### Removed
+
+- The Selection, Retention, Members, Requests and Set aside pages, now part
+  of Overview and Changes.
+- `pigeon selection list`, `set` and `preview`, and `pigeon retention show`
+  and `set`: edit `config.toml` instead.
+
 ## 0.2.5 — 2026-10-01
 
 ### Changed

@@ -7,7 +7,6 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
 use pigeon_core::name::MemberName;
-use pigeon_core::retention::Retention;
 use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_core::statement::Decision;
 use pigeon_sync::{Edit, Engine};
@@ -16,8 +15,8 @@ use serde_json::{Value, json};
 
 use crate::args::Args;
 use crate::catalog::{GROUP, Scope};
+use crate::config_preview;
 use crate::daemon::{Daemon, Stop};
-use crate::draft;
 
 fn to_json(value: impl Serialize) -> Result<Value> {
     Ok(serde_json::to_value(value)?)
@@ -103,7 +102,8 @@ pub async fn perform(daemon: &Daemon, args: &Args) -> Result<Value> {
             Ok(Value::Null)
         }
         ("daemon", "restart") => Ok(json!({ "restarts": daemon.restart()? })),
-        ("daemon", "reload") => Ok(json!({ "groups": daemon.reload().await? })),
+        ("daemon", "reload") => Ok(Value::Array(daemon.reload(args.flag("yes")).await?)),
+        ("config", verb) => on_config(daemon, args, verb).await,
         _ if action.scope == Scope::Group => {
             let groups = daemon.groups().await;
             let (_, engine) = choose(&groups, args.text(GROUP.name))?;
@@ -113,16 +113,35 @@ pub async fn perform(daemon: &Daemon, args: &Args) -> Result<Value> {
     }
 }
 
-/// A retention as the `retention set` arguments read it.
-fn retention_in_days(retention: &Retention) -> Value {
-    json!({
-        "every": retention.every,
-        "daily": retention.daily,
-        "weekly": retention.weekly,
-        "deletion": retention.before_deletion,
-        "quota": retention.quota_percent,
-        "everything": if retention.everything { "on" } else { "off" },
-    })
+/// Shows, previews or replaces a group's `config.toml`.
+async fn on_config(daemon: &Daemon, args: &Args, verb: &str) -> Result<Value> {
+    let group = {
+        let groups = daemon.groups().await;
+        choose(&groups, args.text(GROUP.name))?.0.to_owned()
+    };
+    if verb == "set" {
+        let text = args.required("text")?;
+        daemon
+            .apply_config(&group, text, args.text("version"), args.flag("yes"))
+            .await?;
+        return Ok(Value::Null);
+    }
+    let path = daemon.home().group(&group).config_path();
+    let current =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let version = config_preview::version(&current);
+    match verb {
+        "show" => Ok(json!({ "path": path, "version": version, "text": current })),
+        "preview" => {
+            let groups = daemon.groups().await;
+            let (_, engine) = choose(&groups, Some(&group))?;
+            let text = args.text("text").unwrap_or(&current);
+            let mut preview = config_preview::preview(engine, text).await?;
+            preview["version"] = json!(version);
+            Ok(preview)
+        }
+        _ => bail!("{} is not implemented", args.action.command()),
+    }
 }
 
 /// The member a call names.
@@ -158,15 +177,6 @@ async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
         }
         ("file", verb) => on_files(engine, args, verb).await,
         ("selection", "times") => to_json(engine.pin_times(args.required("pattern")?)?),
-        ("selection", "list") => Ok(Value::String(draft::format(&engine.selection().await))),
-        ("selection", "preview") => {
-            draft::preview(engine, args.text("rules").unwrap_or_default()).await
-        }
-        ("selection", "set") => {
-            let rules = draft::rules(args.text("rules").unwrap_or_default(), engine.now())?;
-            engine.set_selection(rules, args.text("version")).await?;
-            Ok(Value::Null)
-        }
         ("selection", verb @ ("places" | "place" | "unplace")) => place(engine, args, verb).await,
         ("selection", verb) => {
             let cutoff = match verb {
@@ -206,8 +216,6 @@ async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
                 .await?;
             Ok(json!({ "requests": requests }))
         }
-        ("retention", "show") => to_json(retention_in_days(&engine.retention().await)),
-        ("retention", "set") => set_retention(engine, args).await,
         _ => bail!("{} is not implemented", action.command()),
     }
 }
@@ -268,25 +276,4 @@ async fn place(engine: &Engine, args: &Args, verb: &str) -> Result<Value> {
             Ok(Value::Null)
         }
     }
-}
-
-/// Changes the retention by the arguments given, keeping the others.
-async fn set_retention(engine: &Engine, args: &Args) -> Result<Value> {
-    let mut retention = engine.retention().await;
-    let days = |name: &str, current: u64| args.optional_number(name).unwrap_or(current);
-    retention.every = days("every", retention.every);
-    retention.daily = days("daily", retention.daily);
-    retention.weekly = days("weekly", retention.weekly);
-    retention.before_deletion = days("deletion", retention.before_deletion);
-    if let Some(quota) = args.optional_number("quota") {
-        retention.quota_percent = u8::try_from(quota)
-            .ok()
-            .filter(|percent| *percent <= 100)
-            .ok_or_else(|| anyhow!("--quota is a percentage, from 0 to 100"))?;
-    }
-    if let Some(switch) = args.text("everything") {
-        retention.everything = switch == "on";
-    }
-    engine.set_retention(&retention).await?;
-    to_json(retention_in_days(&retention))
 }

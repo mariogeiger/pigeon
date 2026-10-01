@@ -1,8 +1,8 @@
 # Setting up a group
 
 This guide founds a group, brings in its members and their machines, and
-sets up an always-on server and the group's own relay. Every command below
-also exists as a form in the web interface the daemon links to. Each
+sets up an always-on server and the group's own relay. Everything below can
+also be done in the web interface the daemon links to. Each
 command asks for a missing argument when a terminal is attached, and
 prints JSON with `--json`. On a machine with several groups, `-g <group>`
 picks one.
@@ -54,7 +54,9 @@ base directories put configuration, data and state. On macOS one folder,
   `groups/<group>/config.toml` holds the member, the root, the selection,
   the retention and the places. Edit it by hand, then apply it with
   `pigeon daemon reload`, which changes nothing if a group's file does not
-  read. pigeon rewrites the file whole, without your comments, whenever it
+  read, tells what the edits download, free and freeze on this machine,
+  and asks first when they free space; `--yes` skips the question. The
+  Overview page of the web interface edits the same file. pigeon rewrites the file whole, without your comments, whenever it
   changes a setting, and refuses to while the file holds edits it has not
   read.
 - The data, in `~/.local/share/pigeon`: for each group, in
@@ -150,7 +152,9 @@ newcomer.
   publication. pigeon never publishes them, not even their names.
 - A file pigeon may not publish, such as an edit in someone else's folder,
   is set aside. `pigeon aside list` shows these files, and `pigeon aside
-  restore`, `request` or `discard` deals with them.
+  restore`, `request` or `discard` deals with them. The web interface's
+  Changes page lists them under "Here, not sent", between the requests
+  addressed to you and those waiting for others.
 
 ## 6. Choose what each machine holds
 
@@ -169,35 +173,33 @@ pigeon selection pin --pattern /report/ --time 2026-10-01T12:00:00Z
 and `unfollow` stops syncing them, keeping the files unless `--free`
 removes them. `pin` holds files as they were at a past time.
 
-To edit every rule at once, write them one per line, the last matching
-rule winning, and preview them before saving:
+To edit every rule at once, edit the `selection` list of the group's
+`config.toml`, one rule per line, the last matching rule winning:
 
-```sh
-pigeon selection list > rules.txt
-cat rules.txt
-# follow +mario/
-# pin 2026-10-01T12:00:00Z /report/
-# free *.iso
-pigeon selection preview --rules rules.txt
-pigeon selection set --rules rules.txt --version <the version the preview showed>
+```toml
+selection = [
+    "follow +mario/",
+    "pin 2026-10-01T12:00:00Z /report/",
+    "free *.iso",
+]
 ```
 
-`pin now` pins files at the time of saving, and
+`pin now` pins files at the time the file is applied, and
 `pigeon selection times --pattern /report/` lists the times of the versions
-of the files a pattern matches: pinning at each holds something new. The preview counts the
-files and bytes held now and after saving, and what saving would download,
-free and freeze, with the rule that decides each file. `set` replaces the
-whole selection, keeping the rules as written, and with `--version` it
-refuses if the selection changed since the preview. A modified copy not yet
-published is never removed.
+of the files a pattern matches: pinning at each holds something new.
+`pigeon config preview` counts the files and bytes held now and after
+applying the file, and what applying it would download, free and freeze,
+with the rule that decides each file; `pigeon daemon reload` applies it. A
+modified copy not yet published is never removed.
 
-The web UI's Selection page edits a draft of the rules the same way: each
-row tells how many files its rule matches and decides, the preview below
-them updates on each keystroke and as files arrive, and nothing changes
-until Save, which asks first when it frees space. A pin row offers now,
-each of those version times with the number of files changed, or a date and
-time picked in local time. If the selection changes elsewhere meanwhile, a
-banner offers to reload it or keep the draft.
+The web interface's Overview page holds the same file in an editor. Below
+it, a preview updates on each keystroke and as files arrive: the totals now
+and after saving, what each rule matches and decides, the largest files
+each change concerns, and a warning when your own files would go. A pin's
+row offers each of those version times with the number of files, or a date
+and time picked in local time, and rewrites its line. Nothing changes until
+Save, which asks first when it frees space, applies the file to this group
+only, and refuses if the file changed elsewhere since the page loaded it.
 
 The Files page shows the whole group as one tree whose folders open and
 close in place, as `pigeon setup` does, with each folder's size, latest
@@ -224,8 +226,9 @@ the folder waits: nothing in it syncs, and nothing counts as deleted.
 
 Each machine keeps past versions of the files its member writes. It keeps
 every version for a day, then one a day for a month and one a week for a
-year, within 20% of the disk. `pigeon retention set` changes this, and
-`--everything on` extends it to every file the machine downloads.
+year, within 20% of the disk. The `[retention]` table of `config.toml`
+changes this, counting days, and `everything = true` extends it to every
+file the machine downloads.
 
 ## 7. Run a server
 
@@ -235,8 +238,10 @@ their owners' machines are off. It joins as a member of its own:
 ```sh
 pigeon group join --key <the key> --member server
 pigeon selection follow --pattern '*'
-pigeon retention set --everything on
 ```
+
+then set `everything = true` under `[retention]` in its `config.toml`, and
+run `pigeon daemon reload`.
 
 It owns no folder, so it writes nobody's files. Run its daemon with
 `pigeon service install --linger`, which starts it at boot. On Linux and

@@ -168,6 +168,18 @@ fn base64(text: &str) -> String {
     BASE64.encode(text.as_bytes())
 }
 
+/// The selection lines of the config.toml of `peer`'s only group.
+async fn selection(peer: &Peer) -> Vec<String> {
+    let shown = peer.call("config", "show", json!({})).await.unwrap();
+    let config: toml::Table = shown["text"].as_str().unwrap().parse().unwrap();
+    config["selection"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line.as_str().unwrap().to_owned())
+        .collect()
+}
+
 #[tokio::test]
 async fn the_api_answers_only_localhost_calls_with_the_token() {
     let lookup = MemoryLookup::new();
@@ -259,12 +271,14 @@ async fn two_daemons_share_files_and_answer_requests() {
     })
     .await;
     eventually("alice reviews the difference", async || {
-        let page = a.page("/g/cheapmo/requests").await;
+        let page = a.page("/g/cheapmo/changes").await;
         page.contains("- hello") && page.contains("+ bonjour")
     })
     .await;
-    let page = a.page("/g/cheapmo/requests").await;
+    let page = a.page("/g/cheapmo/changes").await;
+    assert!(page.contains("<h2>To you</h2>"), "{page}");
     assert!(page.contains(r#"action="/act/request/accept""#));
+    assert!(page.contains("Changes (1)"), "{page}");
     a.call("request", "accept", json!({"request": request}))
         .await
         .unwrap();
@@ -364,7 +378,7 @@ async fn web_forms_run_their_action_and_return() {
     .unwrap();
     let boundary = "pigeonboundary";
     let fields = [
-        ("back", "/g/cheapmo/selection"),
+        ("back", "/g/cheapmo/files"),
         ("group", "cheapmo"),
         ("pattern", "/docs/"),
     ];
@@ -384,30 +398,10 @@ async fn web_forms_run_their_action_and_return() {
         )
         .await;
     assert_eq!(answer.status, 303, "{}", answer.body);
-    assert_eq!(answer.location.as_deref(), Some("/g/cheapmo/selection"));
-    let rules = peer.call("selection", "list", json!({})).await.unwrap();
-    assert_eq!(rules, json!("follow +alice/\nfollow /docs/\n"));
-    let page = peer.page("/g/cheapmo/selection").await;
-    assert!(page.contains("/docs/"));
-    let set = peer
-        .call("retention", "set", json!({"quota": 5, "everything": "on"}))
-        .await
-        .unwrap();
-    assert_eq!(
-        set,
-        json!({"every": 1, "daily": 30, "weekly": 365, "deletion": 365, "quota": 5, "everything": "on"})
-    );
-    let page = peer.page("/g/cheapmo/retention").await;
-    assert!(
-        page.contains(r#"<input type="number" min="0" name="quota" value="5">"#),
-        "{page}"
-    );
-    assert!(page.contains(r#"<option value="on" selected>"#));
-    let error = peer
-        .call("retention", "set", json!({"quota": 101}))
-        .await
-        .unwrap_err();
-    assert!(error.contains("percentage"), "{error}");
+    assert_eq!(answer.location.as_deref(), Some("/g/cheapmo/files"));
+    assert_eq!(selection(&peer).await, ["follow +alice/", "follow /docs/"]);
+    let page = peer.page("/g/cheapmo").await;
+    assert!(page.contains("follow /docs/"), "{page}");
 }
 
 fn dummy(kind: Kind, peer: &Peer) -> Value {
@@ -417,7 +411,7 @@ fn dummy(kind: Kind, peer: &Peer) -> Value {
         Kind::Pattern => json!("/dummy/"),
         Kind::Folder => json!(peer.root("dummy")),
         Kind::Bytes => json!(base64("dummy")),
-        Kind::Rules => json!("follow /dummy/"),
+        Kind::Document => json!("member = \"alice\"\n"),
         Kind::Number => json!(0),
         Kind::Time => json!("2026-01-01T00:00:00Z"),
         Kind::Choice(choices) => json!(choices[0]),
@@ -458,7 +452,7 @@ async fn every_action_of_the_catalog_is_carried_out() {
 }
 
 #[tokio::test]
-async fn the_members_page_offers_exclusion_and_leaving_takes_this_machine_out() {
+async fn the_overview_offers_exclusion_and_leaving_takes_this_machine_out() {
     let lookup = MemoryLookup::new();
     let peer = Peer::start(&lookup).await;
     peer.call(
@@ -469,10 +463,12 @@ async fn the_members_page_offers_exclusion_and_leaving_takes_this_machine_out() 
     .await
     .unwrap();
     eventually("alice joined", async || peer.joined().await).await;
-    let page = peer.page("/g/cheapmo/members").await;
-    for verb in ["member/exclude", "group/leave"] {
-        assert!(page.contains(&format!(r#"action="/act/{verb}""#)), "{verb}");
-    }
+    let page = peer.page("/g/cheapmo").await;
+    assert!(page.contains(r#"action="/act/group/leave""#), "{page}");
+    assert!(
+        page.contains("<td>alice (you)</td><td>1</td><td>1</td>"),
+        "{page}"
+    );
     peer.call("group", "leave", json!({})).await.unwrap();
     let status = peer.call("group", "status", json!({})).await.unwrap();
     assert_eq!(
@@ -600,8 +596,10 @@ async fn group_pages_follow_files_and_hear_each_change() {
     peer.call("selection", "follow", json!({"pattern": "/+alice/"}))
         .await
         .unwrap();
-    let rules = peer.call("selection", "list", json!({})).await.unwrap();
-    assert_eq!(rules, json!("follow +alice/\nfollow /+alice/\n"));
+    assert_eq!(
+        selection(&peer).await,
+        ["follow +alice/", "follow /+alice/"]
+    );
     assert_eq!(
         peer.call("file", "pending", json!({})).await.unwrap(),
         json!([])
@@ -639,32 +637,39 @@ async fn the_daemon_stops_with_event_streams_open_and_restarts_only_onto_another
         .unwrap();
 }
 
-/// What the selection editor of the group cheapmo shows of `draft`.
-async fn editor_preview(peer: &Peer, draft: &str) -> Value {
-    let encoded = draft
-        .replace('+', "%2B")
-        .replace('/', "%2F")
-        .replace('\n', "%0A")
-        .replace(' ', "+");
+/// `text` as a value of a URL-encoded form.
+fn form_value(text: &str) -> String {
+    text.bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() {
+                char::from(byte).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect()
+}
+
+/// What the configuration editor of the group cheapmo shows of `text`.
+async fn editor_preview(peer: &Peer, text: &str) -> (u16, Value) {
     let answer = peer
         .send(
             "POST",
-            "/g/cheapmo/selection/preview",
+            "/g/cheapmo/config/preview",
             vec![peer.cookie()],
             Some((
                 "application/x-www-form-urlencoded".to_owned(),
-                format!("rules={encoded}").into_bytes(),
+                format!("text={}", form_value(text)).into_bytes(),
             )),
         )
         .await;
-    assert_eq!(answer.status, 200, "{}", answer.body);
-    serde_json::from_str(&answer.body).unwrap()
+    (answer.status, serde_json::from_str(&answer.body).unwrap())
 }
 
-#[tokio::test]
-async fn the_selection_editor_previews_a_draft_and_saves_it_whole() {
-    let lookup = MemoryLookup::new();
-    let peer = Peer::start(&lookup).await;
+/// A daemon whose member alice founded cheapmo and wrote a note of 6
+/// bytes, which is on disk, and the note's path there.
+async fn alice_with_notes(lookup: &MemoryLookup) -> (Peer, PathBuf) {
+    let peer = Peer::start(lookup).await;
     peer.call(
         "group",
         "create",
@@ -680,129 +685,140 @@ async fn the_selection_editor_previews_a_draft_and_saves_it_whole() {
     )
     .await
     .unwrap();
-    let notes = std::path::Path::new(&peer.root("cheapmo")).join("+alice/notes.txt");
+    let notes = peer.root("cheapmo").join("+alice/notes.txt");
     eventually("the notes are on disk", async || notes.exists()).await;
-    let page = peer.page("/g/cheapmo/selection").await;
+    (peer, notes)
+}
+
+#[tokio::test]
+async fn the_config_editor_previews_a_text_and_saves_it_whole() {
+    let lookup = MemoryLookup::new();
+    let (peer, notes) = alice_with_notes(&lookup).await;
+    let page = peer.page("/g/cheapmo").await;
     for part in [
-        r#"<section id="editor" data-keep"#,
-        r#"<script src="/selection.js" defer></script>"#,
-        r#"<option value="/+alice/notes.txt">"#,
-        r#"<option value="/+alice/">"#,
+        r#"<section id="config" data-keep"#,
+        r#"<script src="/config_editor.js" defer></script>"#,
         "<h2>Places</h2>",
+        "<h2>Members</h2>",
     ] {
         assert!(page.contains(part), "{part}: {page}");
     }
     let script = peer
-        .send("GET", "/selection.js", vec![peer.cookie()], None)
+        .send("GET", "/config_editor.js", vec![peer.cookie()], None)
         .await;
     assert_eq!(script.status, 200);
-    assert!(script.body.contains("/selection/preview"));
+    assert!(script.body.contains("/config/preview"));
 
-    let parts = editor_preview(&peer, "free +alice/\nkeep x\n").await;
-    assert_eq!(
-        parts["rows"][0],
-        json!({"effect": "matches 1 file · decides 1 (6 B)", "masked": false, "times": null})
-    );
-    let times = peer
-        .call("selection", "times", json!({"pattern": "+alice/"}))
-        .await
-        .unwrap();
-    assert_eq!(times.as_array().unwrap().len(), 1, "{times}");
-    assert_eq!(times[0]["files"], 1);
-    let pinned = editor_preview(&peer, "pin now +alice/\n").await;
-    assert_eq!(pinned["rows"][0]["times"], times);
-    assert!(
-        parts["rows"][1]["error"]
-            .as_str()
-            .unwrap()
-            .contains("not a mode")
-    );
+    let shown = peer.call("config", "show", json!({})).await.unwrap();
+    let text = shown["text"].as_str().unwrap();
+    let freeing = text.replace("\"follow +alice/\"", "\"free +alice/\"");
+    assert_ne!(freeing, text);
+    let (status, parts) = editor_preview(&peer, &freeing).await;
+    assert_eq!(status, 200, "{parts}");
+    assert_eq!(parts["version"], shown["version"]);
     assert_eq!(parts["save"], "Save: -6 B");
     assert!(parts["confirm"].is_string());
     let panel = parts["panel"].as_str().unwrap();
+    assert!(
+        panel.contains("matches 1 file · decides 1 (6 B)"),
+        "{panel}"
+    );
     assert!(
         panel.contains("warning: <code>+alice/</code> will no longer be here"),
         "{panel}"
     );
     assert!(panel.contains("free: -1 file, -6 B"), "{panel}");
 
+    let pinning = text.replace("\"follow +alice/\"", "\"pin now +alice/\"");
     let preview = peer
-        .call("selection", "preview", json!({"rules": "free +alice/\n"}))
+        .call("config", "preview", json!({"text": pinning}))
         .await
         .unwrap();
-    assert_eq!(preview["version"], parts["version"]);
-    assert_eq!(preview["after"], json!({"files": 0, "bytes": 0}));
+    let times = &preview["rules"][0]["times"];
+    assert_eq!(times.as_array().unwrap().len(), 1, "{preview}");
+    assert_eq!(times[0]["files"], 1);
+    let span = &preview["rules"][0]["span"];
+    let start = usize::try_from(span[0].as_u64().unwrap()).unwrap();
+    let end = usize::try_from(span[1].as_u64().unwrap()).unwrap();
+    assert_eq!(&pinning[start..end], "\"pin now +alice/\"");
+    let (_, pinned) = editor_preview(&peer, &pinning).await;
+    assert!(pinned["panel"].as_str().unwrap().contains(r#"class="pin""#));
+    let (status, invalid) = editor_preview(&peer, &text.replace("follow +alice/", "keep x")).await;
+    assert_ne!(status, 200);
+    assert!(
+        invalid["error"].as_str().unwrap().contains("not a mode"),
+        "{invalid}"
+    );
+
+    let set = |text: &str, version: &Value, yes: bool| json!({"text": text, "version": version, "yes": yes});
     let error = peer
-        .call(
-            "selection",
-            "set",
-            json!({"rules": "free +alice/\n", "version": "stale"}),
-        )
+        .call("config", "set", set(&freeing, &json!("stale"), true))
         .await
         .unwrap_err();
     assert!(error.contains("changed since"), "{error}");
     let error = peer
-        .call("selection", "set", json!({"rules": "keep x\n"}))
+        .call("config", "set", set(&freeing, &shown["version"], false))
         .await
         .unwrap_err();
-    assert!(error.contains("line 1: "), "{error}");
-    peer.call(
-        "selection",
-        "set",
-        json!({"rules": "free +alice/\n", "version": preview["version"]}),
-    )
-    .await
-    .unwrap();
-    let rules = peer.call("selection", "list", json!({})).await.unwrap();
-    assert_eq!(rules, json!("free +alice/\n"));
-    assert!(!notes.exists());
-    peer.call("selection", "set", json!({"rules": ""}))
+    assert!(
+        error.contains("frees 1 file, 6 B") && error.contains("--yes"),
+        "{error}"
+    );
+    let error = peer
+        .call(
+            "config",
+            "set",
+            set("member = 1\n", &shown["version"], true),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.contains("member"), "{error}");
+    assert!(notes.exists(), "a refused text changes nothing");
+    peer.call("config", "set", set(&freeing, &shown["version"], true))
         .await
         .unwrap();
-    assert_eq!(
-        peer.call("selection", "list", json!({})).await.unwrap(),
-        json!("")
-    );
+    assert_eq!(selection(&peer).await, ["free +alice/"]);
+    eventually("the notes are freed", async || !notes.exists()).await;
+    assert!(peer.joined().await);
 }
 
 #[tokio::test]
 async fn reloading_applies_the_configurations_edited_by_hand_unless_one_is_invalid() {
     let lookup = MemoryLookup::new();
-    let peer = Peer::start(&lookup).await;
-    peer.call(
-        "group",
-        "create",
-        json!({"name": "cheapmo", "member": "alice", "root": peer.root("cheapmo")}),
-    )
-    .await
-    .unwrap();
+    let (peer, notes) = alice_with_notes(&lookup).await;
     let home = Home::new(peer.dir.path().join("home"));
     let config = home.group("cheapmo").config_path();
     let text = std::fs::read_to_string(&config).unwrap();
     let edited = text
         .replace("member = \"alice\"", "member = \"carol\"")
-        .replace("\"follow +alice/\"", "\"follow +alice/\", \"free *.iso\"")
+        .replace("\"follow +alice/\"", "\"free +alice/\", \"free *.iso\"")
         .replace("quota = 20", "quota = 7");
     assert_ne!(edited, text);
     std::fs::write(&config, &edited).unwrap();
     let invalid = home.group("other").config_path();
     std::fs::create_dir_all(invalid.parent().unwrap()).unwrap();
     std::fs::write(&invalid, "member = 1\n").unwrap();
+    let member = async || {
+        let status = peer.call("group", "status", json!({})).await.unwrap();
+        status["member"].clone()
+    };
     let error = peer.call("daemon", "reload", json!({})).await.unwrap_err();
     assert!(error.contains(&invalid.display().to_string()), "{error}");
-    let quota = |retention: Value| retention["quota"].clone();
-    let retention = peer.call("retention", "show", json!({})).await.unwrap();
-    assert_eq!(quota(retention), 20, "a refused reload changes nothing");
+    assert_eq!(member().await, "alice", "a refused reload changes nothing");
     std::fs::remove_dir_all(invalid.parent().unwrap()).unwrap();
-    assert_eq!(
-        peer.call("daemon", "reload", json!({})).await,
-        Ok(json!({"groups": ["cheapmo"]}))
+    let error = peer.call("daemon", "reload", json!({})).await.unwrap_err();
+    assert!(
+        error.contains("cheapmo frees 1 file, 6 B") && error.contains("--yes"),
+        "{error}"
     );
-    let retention = peer.call("retention", "show", json!({})).await.unwrap();
-    assert_eq!(quota(retention), 7);
-    let rules = peer.call("selection", "list", json!({})).await.unwrap();
-    assert_eq!(rules, json!("follow +alice/\nfree *.iso\n"));
-    let status = peer.call("group", "status", json!({})).await.unwrap();
-    assert_eq!(status["member"], "carol");
+    assert_eq!(member().await, "alice");
+    assert!(notes.exists());
+    assert_eq!(
+        peer.call("daemon", "reload", json!({"yes": true})).await,
+        Ok(json!([{"group": "cheapmo", "download": "", "free": "1 file, 6 B", "freeze": ""}]))
+    );
+    assert_eq!(member().await, "carol");
+    assert_eq!(selection(&peer).await, ["free +alice/", "free *.iso"]);
     assert_eq!(std::fs::read_to_string(&config).unwrap(), edited);
+    eventually("the notes are freed", async || !notes.exists()).await;
 }

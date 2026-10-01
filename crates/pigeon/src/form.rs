@@ -36,7 +36,7 @@ fn input(param: &Param, value: Option<&str>) -> Markup {
             @match param.kind {
                 Kind::Flag => input type="checkbox" name=(name) value="true";
                 Kind::Bytes => input type="file" name=(name) required[required];
-                Kind::Rules => textarea name=(name) rows="6" { (value) }
+                Kind::Document => textarea name=(name) rows="6" { (value) }
                 Kind::Number => input type="number" min="0" name=(name) value=(value) required[required];
                 Kind::Choice(choices) => select name=(name) {
                     @for choice in choices {

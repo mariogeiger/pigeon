@@ -1,6 +1,6 @@
-//! The web UI's pages as HTML: the layout, tables of an action's columns,
-//! text differences, and one function per page, each from data the
-//! handlers fetched.
+//! The web UI's pages as HTML: the layout with its bar, tables of an
+//! action's columns, text differences, an object's fields, and the page of
+//! the groups.
 
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use serde_json::Value;
@@ -12,7 +12,10 @@ use crate::render::{cell, field, header};
 
 const STYLE: &str = "
 body { font: 15px system-ui, sans-serif; margin: 0 auto; max-width: 70rem; padding: 1rem; }
-nav a { margin-right: 1rem; }
+nav { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: baseline; padding-bottom: .5rem; border-bottom: 1px solid #ddd; }
+nav a { text-decoration: none; color: inherit; } nav a:hover { text-decoration: underline; }
+nav .crumbs { font-size: 17px; } nav .tabs { display: flex; gap: 1rem; margin-left: auto; }
+nav .current { font-weight: bold; }
 table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
 th, td { text-align: left; padding: .25rem .5rem; border-bottom: 1px solid #ddd; }
 form.action { display: inline-flex; flex-wrap: wrap; gap: .5rem; align-items: end; margin: .25rem 0; }
@@ -21,26 +24,35 @@ details.action form { display: flex; }
 label { display: flex; flex-direction: column; font-size: 13px; }
 pre.diff { background: #f6f6f6; padding: .5rem; overflow-x: auto; }
 .ins { background: #dfd; } .del { background: #fdd; }
-.notice { background: #eef; padding: .5rem; } .error { background: #fdd; padding: .5rem; }
+.notice { background: #eef; padding: .5rem; } .error { background: #fdd; padding: .5rem; white-space: pre-wrap; }
 .mark { color: #a50; font-weight: bold; }
+.quiet { color: #666; font-size: 13px; }
 section { margin: 1.5rem 0; }
-ol.rules { list-style: none; padding: 0; }
-ol.rules li { display: flex; flex-wrap: wrap; gap: .25rem; align-items: center; padding: .25rem 0; border-bottom: 1px solid #eee; }
-ol.rules input.pattern { flex: 1; min-width: 8rem; font-family: monospace; }
-ol.rules .effect { font-size: 13px; color: #555; }
-ol.rules .error { flex-basis: 100%; }
-ol.rules li.masked input, ol.rules li.masked .effect { color: #999; }
-form.add { display: flex; gap: .25rem; } form.add input { flex: 1; font-family: monospace; }
 table.tree td { padding-top: .1rem; padding-bottom: .1rem; }
 table.tree button.twist, table.tree button.more { border: 0; background: none; padding: 0; font: inherit; cursor: pointer; }
 table.tree tr.draft { color: #888; }
 table.tree tr.target { background: #ffd; }
 table.tree .status { white-space: nowrap; margin-right: .5em; cursor: help; }
 ul.legend { list-style: none; padding: 0; font-size: 13px; color: #555; columns: 2; }
-table.tree form.action, table.tree div[data-confirm] { display: inline; }
+table.tree form.action, table.tree div[data-confirm], table.members div[data-confirm] { display: inline; }
 dialog .choices { display: flex; flex-direction: column; align-items: start; gap: .25rem; margin-bottom: .5rem; }
 dialog .choices form { margin: 0; }
 dialog form label { margin: .5rem 0; }
+.key { display: flex; gap: .5rem; } .key input { flex: 1; font-family: monospace; }
+.code { position: relative; font: 13px/1.5 ui-monospace, monospace; }
+.code pre, .code textarea { margin: 0; padding: .5rem; border: 1px solid #ccc; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; box-sizing: border-box; width: 100%; tab-size: 4; }
+.code pre { position: absolute; inset: 0; overflow: hidden; pointer-events: none; color: #222; background: #fcfcfc; }
+.code textarea { position: relative; resize: vertical; background: transparent; color: transparent; caret-color: #000; min-height: 12rem; }
+.t-comment { color: #888; } .t-table { color: #a3d; font-weight: bold; } .t-key { color: #05a; }
+.t-string { color: #070; } .t-literal { color: #b50; } .t-mode { color: #070; font-weight: bold; }
+table.rules code { white-space: pre-wrap; } table.rules .effect { color: #555; font-size: 13px; }
+table.rules tr.masked { color: #999; }
+ul.changes { list-style: none; padding: 0; }
+ul.changes > li { border-bottom: 1px solid #eee; padding: .25rem 0; }
+ul.changes .line { display: flex; flex-wrap: wrap; gap: .25rem .75rem; align-items: center; }
+ul.changes .line .what { flex: 1; min-width: 16rem; }
+ul.changes .line form.action, ul.changes .line details.action { margin: 0; }
+ul.changes details.diff > summary { cursor: pointer; font-size: 13px; color: #555; }
 ";
 
 /// The action `noun verb`, which the catalog defines.
@@ -53,31 +65,70 @@ pub fn action(noun: &str, verb: &str) -> &'static Action {
     find(noun, verb).expect("the web UI uses actions of the catalog")
 }
 
+/// The pages of a group that the bar names as tabs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tab {
+    Overview,
+    Files,
+    Changes,
+}
+
+/// Where a group's page stands in the bar: its group, its tab if it is
+/// one, and how many changes wait for this member to act.
+#[derive(Clone, Copy, Debug)]
+pub struct Bar<'a> {
+    pub group: &'a str,
+    pub tab: Option<Tab>,
+    pub waiting: usize,
+}
+
+/// The icon of every page: a bird.
+const ICON: &str = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐦</text></svg>";
+
+/// The bar atop every page: pigeon, linking to the groups, then the
+/// group's name and tabs, the current one in bold.
+fn bar(bar: Option<&Bar<'_>>) -> Markup {
+    html! {
+        nav {
+            span class="crumbs" {
+                a href="/" { "🐦 pigeon" }
+                @if let Some(bar) = bar {
+                    " › " a href={ "/g/" (bar.group) } { (bar.group) }
+                }
+            }
+            @if let Some(bar) = bar {
+                span class="tabs" {
+                    @for (tab, label, address) in [
+                        (Tab::Overview, "Overview", ""),
+                        (Tab::Files, "Files", "/files"),
+                        (Tab::Changes, "Changes", "/changes"),
+                    ] {
+                        a class=[(bar.tab == Some(tab)).then_some("current")] href={ "/g/" (bar.group) (address) } {
+                            (label)
+                            @if tab == Tab::Changes && bar.waiting > 0 { " (" (bar.waiting) ")" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// A whole page, which `live.js` keeps live when it is a group's.
 #[must_use]
-pub fn layout(title: &str, group: Option<&str>, body: &Markup) -> Markup {
+pub fn layout(title: &str, place: Option<&Bar<'_>>, body: &Markup) -> Markup {
     html! {
         (DOCTYPE)
         html {
             head {
                 meta charset="utf-8";
                 title { (title) " · pigeon" }
+                link rel="icon" href=(ICON);
                 style { (PreEscaped(STYLE)) }
                 script src="/live.js" defer {}
             }
-            body data-group=[group] {
-                nav {
-                    a href="/" { "Groups" }
-                    @if let Some(group) = group {
-                        a href={ "/g/" (group) } { (group) }
-                        a href={ "/g/" (group) "/files" } { "Files" }
-                        a href={ "/g/" (group) "/requests" } { "Requests" }
-                        a href={ "/g/" (group) "/aside" } { "Set aside" }
-                        a href={ "/g/" (group) "/members" } { "Members" }
-                        a href={ "/g/" (group) "/selection" } { "Selection" }
-                        a href={ "/g/" (group) "/retention" } { "Retention" }
-                    }
-                }
+            body data-group=[place.map(|place| place.group)] {
+                (bar(place))
                 p id="updated" class="notice" hidden {
                     "pigeon has been updated. "
                     button type="button" { "Reload the page" }
@@ -120,6 +171,12 @@ pub fn table(action: &Action, items: &Value, link: &dyn Fn(&Value) -> Option<Str
             }
         }
     }
+}
+
+/// A time in RFC 3339 to the minute.
+#[must_use]
+pub fn short_time(time: &str) -> String {
+    time.get(..16).unwrap_or(time).replacen('T', " ", 1)
 }
 
 /// The bytes as text, if they are UTF-8 without NUL.
@@ -207,124 +264,4 @@ pub fn fields(value: &Value) -> Markup {
             }
         }
     }
-}
-
-/// How a machine that runs another version of pigeon compares with this
-/// one, as its standing says.
-fn standing_text(standing: &Value) -> &'static str {
-    match standing.as_str() {
-        Some("older") => "older",
-        Some("newer") => "newer",
-        Some("pre-hello") => "older, from before hello",
-        _ => "unknown",
-    }
-}
-
-/// The machines that run a version of pigeon this one cannot talk to, each
-/// with its member, whether it is older or newer, and its version.
-fn incompatible_section(machines: &[Value]) -> Markup {
-    let told = |machine: &Value, column: &str| cell(column, &machine[column]);
-    html! {
-        section {
-            h2 { "Incompatible machines" }
-            p class="mark" {
-                "These machines run a version of pigeon whose protocol this one does not speak, so they cannot sync with it. Run "
-                code { "pigeon update" }
-                " on each machine that is older, or on this one if one is newer."
-            }
-            table {
-                tr { th { "member" } th { "machine" } th { "is" } th { "version" } th { "commit" } th { "protocol" } }
-                @for machine in machines {
-                    tr {
-                        td { (told(machine, "member")) }
-                        td { (told(machine, "machine")) }
-                        td { (standing_text(&machine["standing"])) }
-                        td { (told(machine, "version")) }
-                        td { (told(machine, "commit")) }
-                        td { (told(machine, "protocol")) }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// How a group stands here, its key, the form that names the group's
-/// relay, which machines run a version of pigeon this one cannot talk to,
-/// and, unless the member belongs, why and the form to claim a name.
-#[must_use]
-pub fn overview(group: &str, status: &Value, key: &str) -> Markup {
-    let mut shown = status.clone();
-    let incompatible = shown
-        .as_object_mut()
-        .and_then(|fields| fields.remove("incompatible"));
-    let incompatible = incompatible
-        .as_ref()
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default();
-    let back = format!("/g/{group}");
-    let fill = Fill {
-        group: Some(group),
-        ..Fill::default()
-    };
-    let body = html! {
-        (fields(&shown))
-        @if status["join"]["state"] != "joined" {
-            p class="mark" {
-                (status["join"]["reason"].as_str().unwrap_or("This machine has not joined yet."))
-            }
-            (form(action("member", "claim"), &back, fill))
-        }
-        @if !incompatible.is_empty() {
-            (incompatible_section(incompatible))
-        }
-        section {
-            h2 { "Group key" }
-            p { "Share it with a new member so that their machine can join." }
-            textarea readonly rows="3" cols="80" { (key) }
-        }
-        section {
-            h2 { "Relay" }
-            p { "Machines that cannot connect directly talk through a relay, which sees only ciphertext: iroh's public relays, or the group's own, served by " code { "pigeon relay" } "." }
-            (form(action("group", "relay"), &back, fill))
-        }
-    };
-    layout(group, Some(group), &body)
-}
-
-/// A generic page: a view's table and the forms that go with it.
-#[must_use]
-pub fn listing(group: &str, title: &str, view: &Action, items: &Value, forms: &Markup) -> Markup {
-    let body = html! {
-        (table(view, items, &|_| None))
-        (forms)
-    };
-    layout(title, Some(group), &body)
-}
-
-/// This machine's retention, and the form to change it, filled with the
-/// current values.
-#[must_use]
-pub fn retention(group: &str, retention: &Value) -> Markup {
-    let back = format!("/g/{group}/retention");
-    let current: Vec<(&str, String)> = action("retention", "set")
-        .params
-        .iter()
-        .map(|param| (param.name, cell(param.name, &retention[param.name])))
-        .collect();
-    let defaults: Vec<(&str, &str)> = current
-        .iter()
-        .map(|(name, value)| (*name, value.as_str()))
-        .collect();
-    let fill = Fill {
-        group: Some(group),
-        fixed: &[],
-        defaults: &defaults,
-    };
-    let body = html! {
-        (fields(retention))
-        (form(action("retention", "set"), &back, fill))
-    };
-    layout("Retention", Some(group), &body)
 }

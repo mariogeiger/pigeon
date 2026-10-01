@@ -203,12 +203,12 @@ mod tests {
             "rules": [{"rule": "follow /a/", "matches": 2}, {"rule": "free *.iso", "matches": 0}],
         });
         assert_eq!(
-            text(find("selection", "preview").unwrap(), &preview),
+            text(find("config", "preview").unwrap(), &preview),
             "now\n  bytes  2.0 KB\n  files  2\nrules\n  -\n    matches  2\n    rule     follow /a/\n  -\n    matches  0\n    rule     free *.iso\nversion  ab\n"
         );
         let rules = json!("follow /a/\nfree *.iso\n");
         assert_eq!(
-            text(find("selection", "list").unwrap(), &rules),
+            text(find("config", "show").unwrap(), &rules),
             "follow /a/\nfree *.iso\n"
         );
     }

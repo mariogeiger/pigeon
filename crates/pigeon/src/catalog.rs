@@ -22,9 +22,9 @@ pub enum Kind {
     Choice(&'static [&'static str]),
     /// On or off, off by default.
     Flag,
-    /// Selection rules, one per line such as `follow /docs/`, where no
-    /// rule at all is a value too: a local file on the command line.
-    Rules,
+    /// A text such as a configuration, where an empty one is a value too:
+    /// a local file on the command line.
+    Document,
 }
 
 /// One argument of an action.
@@ -99,7 +99,6 @@ const fn optional(name: &'static str, about: &'static str, kind: Kind) -> Param 
 }
 
 const MODES: &[&str] = &["propose", "force"];
-const SWITCH: &[&str] = &["off", "on"];
 const MODE: Param = optional(
     "mode",
     "For files one may not write: propose the change to their owner, or force it",
@@ -123,10 +122,10 @@ const PATTERN: Param = required(
     "Which files, as a .pigeonignore pattern such as /docs/ or *.pdf",
     Kind::Pattern,
 );
-const RULES: Param = required(
-    "rules",
-    "A file of rules, or - for standard input: one per line, such as `follow /docs/`, `pin now /report/`, `pin 2026-10-01T12:00:00Z /old/` or `free *.iso`",
-    Kind::Rules,
+const YES: Param = optional(
+    "yes",
+    "Apply it even where it frees space on this machine, without asking",
+    Kind::Flag,
 );
 const FOLDER: Param = required(
     "folder",
@@ -205,9 +204,12 @@ pub const NOUNS: &[(&str, &str)] = &[
         "The group's files: list, write, delete, rename and publish them",
     ),
     ("selection", "Which files this machine holds"),
+    (
+        "config",
+        "The group's config.toml on this machine: its member, root, selection, retention and places",
+    ),
     ("request", "Changes asked of a file's owner"),
     ("aside", "What this machine may not publish as it is"),
-    ("retention", "Which past versions this machine keeps"),
     (
         "daemon",
         "Run pigeon, which syncs every group, answers the API and serves the web UI, or stop, restart or reload it",
@@ -285,7 +287,14 @@ pub const ACTIONS: &[Action] = &[
         "list",
         "List the members",
         &[],
-        &["name", "joined", "key", "rebound.by", "rebound.time"],
+        &[
+            "name",
+            "machines",
+            "online",
+            "joined",
+            "rebound.by",
+            "rebound.time",
+        ],
     ),
     action(
         "member",
@@ -374,33 +383,6 @@ pub const ACTIONS: &[Action] = &[
             MESSAGE,
         ],
     ),
-    view(
-        "selection",
-        "list",
-        "List the selection's rules, one per line as `selection set` reads them; the last matching rule wins",
-        &[],
-        &[],
-    ),
-    view(
-        "selection",
-        "preview",
-        "Show what replacing the selection with rules would download, free and freeze here",
-        &[RULES],
-        &[],
-    ),
-    action(
-        "selection",
-        "set",
-        "Replace the whole selection with rules, kept as given",
-        &[
-            RULES,
-            optional(
-                "version",
-                "The version `selection preview` showed: refuse if the selection changed since",
-                Kind::Text,
-            ),
-        ],
-    ),
     action(
         "selection",
         "follow",
@@ -469,6 +451,42 @@ pub const ACTIONS: &[Action] = &[
         &[FOLDER],
     ),
     view(
+        "config",
+        "show",
+        "Show the group's config.toml as it is now, with its version",
+        &[],
+        &[],
+    ),
+    view(
+        "config",
+        "preview",
+        "Show what applying a configuration would download, free and freeze here, rule by rule: the text given, or config.toml as it is now",
+        &[optional(
+            "text",
+            "A file holding the configuration, or - for standard input",
+            Kind::Document,
+        )],
+        &[],
+    ),
+    action(
+        "config",
+        "set",
+        "Replace config.toml with a text that reads, and apply it to this group",
+        &[
+            required(
+                "text",
+                "A file holding the configuration, or - for standard input",
+                Kind::Document,
+            ),
+            optional(
+                "version",
+                "The version `config show` gave: refuse if config.toml changed since",
+                Kind::Text,
+            ),
+            YES,
+        ],
+    ),
+    view(
         "request",
         "list",
         "List the requests",
@@ -515,56 +533,15 @@ pub const ACTIONS: &[Action] = &[
         "Request a set-aside item from the owner of its path",
         &[ID, MODE, MESSAGE],
     ),
-    view(
-        "retention",
-        "show",
-        "Show which past versions this machine keeps",
-        &[],
-        &[],
-    ),
-    action(
-        "retention",
-        "set",
-        "Change which past versions this machine keeps",
-        &[
-            optional(
-                "every",
-                "Keep every version for this many days",
-                Kind::Number,
-            ),
-            optional(
-                "daily",
-                "Keep the last version of each day for this many days",
-                Kind::Number,
-            ),
-            optional(
-                "weekly",
-                "Keep the last version of each week for this many days",
-                Kind::Number,
-            ),
-            optional(
-                "deletion",
-                "Keep the last version before a deletion for this many days",
-                Kind::Number,
-            ),
-            optional(
-                "quota",
-                "Let past versions fill at most this percentage of the disk",
-                Kind::Number,
-            ),
-            optional(
-                "everything",
-                "Keep the history of every file this machine downloads, not only yours",
-                Kind::Choice(SWITCH),
-            ),
-        ],
-    ),
-    on_machine(action(
-        "daemon",
-        "reload",
-        "Restart every group from its files, applying the edits of each group's config.toml, unless one does not read",
-        &[],
-    )),
+    on_machine(Action {
+        columns: &["group", "download", "free", "freeze"],
+        ..action(
+            "daemon",
+            "reload",
+            "Restart every group from its files, applying the edits of each group's config.toml, unless one does not read; tell what they download, free and freeze here",
+            &[YES],
+        )
+    }),
     on_machine(action("daemon", "stop", "Stop the daemon", &[])),
     on_machine(action(
         "daemon",

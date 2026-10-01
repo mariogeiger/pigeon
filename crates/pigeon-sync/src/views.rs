@@ -1,10 +1,11 @@
 //! What the engine shows: its status, with which member owns each machine
 //! that runs another version of pigeon and which version, the group's
-//! files as this machine holds them, a file's history, the members, the
-//! requests, the set-aside list, the selection, the times a pin can choose
-//! and the retention, each as plain data for the command line and the API.
+//! files as this machine holds them, a file's history, the members with
+//! their machines, the requests, the set-aside list, the selection, the
+//! times a pin can choose and the retention, each as plain data for the
+//! command line and the API.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use anyhow::Result;
 use pigeon_core::clock::{MachineId, Stamp, rfc3339};
@@ -125,14 +126,17 @@ impl From<&Version> for VersionView {
     }
 }
 
-/// A member, with the key their name is bound to, none once excluded, and
-/// who last rebound it and when.
+/// A member, with the key their name is bound to, none once excluded, who
+/// last rebound it and when, the machines that signed patches for them,
+/// and which of those this one talks to now, itself included.
 #[derive(Clone, Debug, Serialize)]
 pub struct MemberView {
     pub name: MemberName,
     pub key: Option<iroh_base::PublicKey>,
     pub joined: String,
     pub rebound: Option<RebindingView>,
+    pub machines: Vec<MachineId>,
+    pub online: Vec<MachineId>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -329,19 +333,40 @@ impl Engine {
 
     #[must_use]
     pub fn members(&self) -> Vec<MemberView> {
-        self.inner
-            .ledger
-            .lock()
+        let inner = &self.inner;
+        let mut online: BTreeSet<MachineId> = inner.node.peers().into_iter().collect();
+        online.insert(inner.me());
+        let ledger = inner.ledger.lock();
+        let mut machines = BTreeMap::<&MemberName, BTreeSet<MachineId>>::new();
+        for patch in ledger.patches() {
+            machines
+                .entry(&patch.cert.name)
+                .or_default()
+                .insert(patch.cert.machine);
+        }
+        ledger
             .members()
             .iter()
-            .map(|(name, member)| MemberView {
-                name: name.clone(),
-                key: member.key,
-                joined: member.joined.rfc3339(),
-                rebound: member.rebound.as_ref().map(|rebinding| RebindingView {
-                    by: rebinding.by.clone(),
-                    time: rebinding.stamp.rfc3339(),
-                }),
+            .map(|(name, member)| {
+                let machines: Vec<MachineId> = machines
+                    .get(name)
+                    .map(|machines| machines.iter().copied().collect())
+                    .unwrap_or_default();
+                MemberView {
+                    name: name.clone(),
+                    key: member.key,
+                    joined: member.joined.rfc3339(),
+                    rebound: member.rebound.as_ref().map(|rebinding| RebindingView {
+                        by: rebinding.by.clone(),
+                        time: rebinding.stamp.rfc3339(),
+                    }),
+                    online: machines
+                        .iter()
+                        .copied()
+                        .filter(|machine| online.contains(machine))
+                        .collect(),
+                    machines,
+                }
             })
             .collect()
     }

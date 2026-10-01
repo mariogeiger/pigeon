@@ -1,6 +1,5 @@
-//! The web UI's pages on one group's files and its pending work: one file
-//! with its history, the requests with their differences, and the
-//! set-aside list.
+//! The web UI's page of one file, with its history and what can be done to
+//! it, and the addresses and form fillings the group's pages share.
 
 use std::fmt::Write;
 
@@ -11,8 +10,7 @@ use serde_json::Value;
 
 use crate::files_page::waiting_note;
 use crate::form::{Fill, form};
-use crate::pages::{action, fields, layout, table};
-use crate::render::cell;
+use crate::pages::{Bar, action, fields, layout, table};
 
 /// `text` as a URL query value.
 #[must_use]
@@ -49,7 +47,8 @@ pub fn fill<'a>(
 /// published, its versions, and what can be done
 /// to it.
 #[must_use]
-pub fn file(group: &str, path: &str, file: &Value, history: &Value, waiting: &Value) -> Markup {
+pub fn file(bar: &Bar<'_>, path: &str, file: &Value, history: &Value, waiting: &Value) -> Markup {
+    let group = bar.group;
     let back = file_link(group, path);
     let pattern = GroupPath::parse(path)
         .map(|path| exact_pattern(&path))
@@ -82,80 +81,7 @@ pub fn file(group: &str, path: &str, file: &Value, history: &Value, waiting: &Va
             (form(action("selection", verb), &back, fill(group, &[("pattern", &pattern)], &[])))
         }
     };
-    layout(path, Some(group), &body)
-}
-
-/// One request and the difference each of its changes makes.
-pub struct RequestCard {
-    pub request: Value,
-    pub changes: Vec<(String, Markup)>,
-    /// Whether this member is the one to accept or refuse it.
-    pub decides: bool,
-}
-
-/// Every request, newest first, with the forms to answer the ones
-/// addressed to this member.
-#[must_use]
-pub fn requests(group: &str, cards: &[RequestCard]) -> Markup {
-    let back = format!("/g/{group}/requests");
-    let body = html! {
-        @if cards.is_empty() { p { "No requests." } }
-        @for card in cards.iter().rev() {
-            @let request = &card.request;
-            @let statement = &request["statement"];
-            section {
-                h2 {
-                    (cell("", &statement["mode"])) " by " (cell("", &request["author"]))
-                    " to " (cell("", &statement["owner"]))
-                }
-                p { (cell("", &request["time"])) " · " (cell("", &request["path"])) }
-                @if let Some(message) = statement["message"].as_str().filter(|m| !m.is_empty()) {
-                    blockquote { (message) }
-                }
-                @if request["outdated"] == true {
-                    p class="mark" { "Based on an old version." }
-                }
-                @if request["applied"] == true {
-                    p { "Applied." }
-                } @else if let Some(decision) = request["decision"].as_str() {
-                    p { "Decision: " (decision) }
-                }
-                @for (path, diff) in &card.changes {
-                    h3 { a href=(file_link(group, path)) { (path) } }
-                    (diff)
-                }
-                @if card.decides {
-                    @let path = request["path"].as_str().unwrap_or_default();
-                    (form(action("request", "accept"), &back, fill(group, &[("request", path)], &[])))
-                    (form(action("request", "refuse"), &back, fill(group, &[("request", path)], &[])))
-                }
-            }
-        }
-    };
-    layout("Requests", Some(group), &body)
-}
-
-/// Every set-aside item, with what it would change and the forms that
-/// resolve it.
-#[must_use]
-pub fn aside(group: &str, items: &[(Value, Markup)]) -> Markup {
-    let back = format!("/g/{group}/aside");
-    let body = html! {
-        @if items.is_empty() { p { "Nothing set aside." } }
-        @for (item, diff) in items {
-            @let id = cell("", &item["id"]);
-            @let path = item["path"].as_str().unwrap_or_default();
-            section {
-                h2 { (path) }
-                p { (cell("", &item["reason"])) " · " (cell("", &item["time"])) }
-                (diff)
-                (form(action("aside", "request"), &back, fill(group, &[("id", &id)], &[])))
-                (form(action("aside", "restore"), &back, fill(group, &[("id", &id)], &[("to", path)])))
-                (form(action("aside", "discard"), &back, fill(group, &[("id", &id)], &[])))
-            }
-        }
-    };
-    layout("Set aside", Some(group), &body)
+    layout(path, Some(bar), &body)
 }
 
 #[cfg(test)]

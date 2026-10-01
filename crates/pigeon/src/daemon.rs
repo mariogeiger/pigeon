@@ -1,6 +1,6 @@
 //! The groups running on this machine: one engine per group, started from
 //! each group's folders, restarted from them when the user reloads their
-//! configurations, and created when the user founds or joins a group,
+//! configurations or applies one, and created when the user founds or joins a group,
 //! which then waits for the group's verdict on the member's name; the
 //! groups heard before joining, to show the names one may join under; and
 //! why the daemon stops, which a restart onto a newly installed program is
@@ -15,12 +15,14 @@ use pigeon_core::clock::ntp_time;
 use pigeon_core::name::MemberName;
 use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_store::config::{Config, ConfigFile};
-use pigeon_store::group_dirs::GroupDirs;
+use pigeon_store::group_dirs::{GroupDirs, write_private};
 use pigeon_store::group_key::GroupKey;
 use pigeon_store::legacy;
-use pigeon_sync::{Engine, JoinState, Listener, Names, Options};
+use pigeon_sync::{Delta, Engine, JoinState, Listener, Names, Options};
+use serde_json::{Value, json};
 use tokio::sync::{Mutex, RwLock, RwLockReadGuard, watch};
 
+use crate::config_preview;
 use crate::home::Home;
 use crate::program::Program;
 use crate::shared_root::{create_root, shared_root};
@@ -308,21 +310,48 @@ impl Daemon {
         self.verdict(group).await
     }
 
-    /// Restarts every group from its folders, so that the edits of
-    /// its `config.toml` apply; starts the groups added there and stops
-    /// those gone. Changes nothing unless every configuration reads.
-    /// Returns the groups running.
+    /// Restarts every group from its folders, so that the edits of its
+    /// `config.toml` apply; starts the groups added there and stops those
+    /// gone. Changes nothing unless every configuration reads, nor, unless
+    /// `yes`, if the edits free space on this machine. Returns, for each
+    /// group running before, what its edits download, free and freeze.
     ///
     /// # Errors
     ///
     /// Fails, naming the file and what in it is wrong, if a configuration
-    /// is invalid, or naming the groups that do not start again.
-    pub async fn reload(&self) -> Result<Vec<String>> {
+    /// is invalid, naming what the edits free unless `yes`, or naming the
+    /// groups that do not start again.
+    pub async fn reload(&self, yes: bool) -> Result<Vec<Value>> {
         let mut groups = self.groups.write().await;
         let names = self.home.group_names()?;
         let now = ntp_time(SystemTime::now());
+        let mut changes = Vec::new();
+        let mut freed = Vec::new();
         for name in &names {
-            self.home.group(name).load_config(now)?;
+            let dirs = self.home.group(name);
+            dirs.load_config(now)?;
+            let Some(engine) = groups.get(name) else {
+                continue;
+            };
+            let path = dirs.config_path();
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading {}", path.display()))?;
+            let (_, preview) = config_preview::plan(engine, &text)
+                .await
+                .with_context(|| path.display().to_string())?;
+            let free = config_preview::total(&preview, Delta::Free);
+            if free.files > 0 {
+                freed.push(format!("{name} frees {}", config_preview::amount(free)));
+            }
+            let mut change = config_preview::summary(&preview);
+            change["group"] = json!(name);
+            changes.push(change);
+        }
+        if !yes && !freed.is_empty() {
+            bail!(
+                "the edits free space on this machine: {}; pass --yes to apply them",
+                freed.join(", ")
+            );
         }
         for (name, engine) in std::mem::take(&mut *groups) {
             if let Err(error) = engine.shutdown().await {
@@ -341,7 +370,54 @@ impl Daemon {
         if !failed.is_empty() {
             bail!("{}", failed.join("; "));
         }
-        Ok(groups.keys().cloned().collect())
+        Ok(changes)
+    }
+
+    /// Writes `text` as the `config.toml` of `group` and restarts the
+    /// group from it, unless the text is no configuration, the file is no
+    /// longer at `version` when one is given, or, unless `yes`, the text
+    /// frees space on this machine.
+    ///
+    /// # Errors
+    ///
+    /// Fails saying which of these refuses it, or if the file cannot be
+    /// written or the group does not start again.
+    pub async fn apply_config(
+        &self,
+        group: &str,
+        text: &str,
+        version: Option<&str>,
+        yes: bool,
+    ) -> Result<()> {
+        let mut groups = self.groups.write().await;
+        let engine = groups
+            .get(group)
+            .ok_or_else(|| anyhow!("no group {group} on this machine: see `pigeon group list`"))?;
+        let dirs = self.home.group(group);
+        let path = dirs.config_path();
+        let current = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        if version.is_some_and(|version| version != config_preview::version(&current)) {
+            bail!(
+                "{} changed since you read it: read it again, then apply your edits to it",
+                path.display()
+            );
+        }
+        let (_, preview) = config_preview::plan(engine, text).await?;
+        let free = config_preview::total(&preview, Delta::Free);
+        if !yes && free.files > 0 {
+            bail!(
+                "this frees {} on this machine: pass --yes to apply it",
+                config_preview::amount(free)
+            );
+        }
+        write_private(&path, text.as_bytes())?;
+        if let Some(engine) = groups.remove(group) {
+            engine.shutdown().await?;
+        }
+        let engine = Engine::start(&dirs, self.options.clone()).await?;
+        groups.insert(group.to_owned(), engine);
+        Ok(())
     }
 
     /// Stops every group.
