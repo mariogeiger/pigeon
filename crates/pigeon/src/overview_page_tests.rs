@@ -142,3 +142,23 @@ fn the_page_holds_the_file_and_offers_to_exclude_others_or_leave() {
         "{page}"
     );
 }
+
+#[test]
+fn a_pin_line_missing_its_time_is_offered_times() {
+    let pins = json!([
+        { "span": [3, 9], "pattern": "/docs/", "times": [{ "time": "2026-09-30T08:00:00Z", "files": 2 }] },
+        { "span": [12, 18], "pattern": "", "times": [] },
+    ]);
+    let fixes = unfinished_pins(&pins).into_string();
+    assert!(
+        fixes.contains(r#"data-start="3" data-end="9" data-pattern="/docs/""#),
+        "{fixes}"
+    );
+    assert!(fixes.contains("Pin <code>/docs/</code> at "), "{fixes}");
+    assert!(
+        fixes.contains(r#"<option value="" disabled selected>"#),
+        "{fixes}"
+    );
+    assert!(fixes.contains(r#"data-files="2 files""#), "{fixes}");
+    assert!(fixes.contains("Pin at "), "{fixes}");
+}

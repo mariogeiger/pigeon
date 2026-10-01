@@ -26,6 +26,7 @@ use serde_json::{Map, Value, json};
 use crate::api::{App, call};
 use crate::catalog::{Kind, find};
 use crate::changes_page::{self, AsideCard, RequestCard};
+use crate::config_preview;
 use crate::files_page;
 use crate::form::BACK;
 use crate::group_pages;
@@ -305,13 +306,21 @@ async fn config_preview(
     Form(form): Form<HashMap<String, String>>,
 ) -> Response {
     let text = form.get("text").cloned().unwrap_or_default();
-    let args = json!({ "group": group, "text": text });
+    let args = json!({ "group": group, "text": &text });
     let Value::Object(args) = args else {
         unreachable!("the arguments are an object")
     };
     match call(&app, "config", "preview", args).await {
         Ok(preview) => Json(overview_page::preview_parts(&group, &preview)).into_response(),
-        Err((status, message)) => (status, Json(json!({ "error": message }))).into_response(),
+        Err((status, message)) => {
+            let pins = with_engine(&app, &group, async |engine| {
+                Value::Array(config_preview::unfinished_pins(engine, &text))
+            })
+            .await
+            .unwrap_or(Value::Null);
+            let fix = overview_page::unfinished_pins(&pins).into_string();
+            (status, Json(json!({ "error": message, "fix": fix }))).into_response()
+        }
     }
 }
 

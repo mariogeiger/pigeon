@@ -749,6 +749,11 @@ async fn the_config_editor_previews_a_text_and_saves_it_whole() {
         invalid["error"].as_str().unwrap().contains("not a mode"),
         "{invalid}"
     );
+    let (_, unfinished) =
+        editor_preview(&peer, &text.replace("follow +alice/", "pin +alice/")).await;
+    let fix = unfinished["fix"].as_str().unwrap();
+    assert!(fix.contains(r#"data-pattern="+alice/""#), "{fix}");
+    assert!(fix.contains(r#"data-files="1 file""#), "{fix}");
 
     let set = |text: &str, version: &Value, yes: bool| json!({"text": text, "version": version, "yes": yes});
     let error = peer

@@ -4,6 +4,15 @@ All notable user-visible changes to pigeon are documented here. While the
 version is 0.x, a change that breaks compatibility increments the second
 number, and any other change the third.
 
+## 0.3.1 — 2026-10-01
+
+### Added
+
+- A selection line of the config editor that pins without a valid time,
+  such as `"pin "` or `"pin /docs/"`, gets under its error a menu of the
+  times its files have versions at, now, or a local date and time, which
+  write the time into the line.
+
 ## 0.3.0 — 2026-10-01
 
 ### Changed

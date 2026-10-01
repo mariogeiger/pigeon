@@ -2,11 +2,12 @@
 //! machine, the text read by the parser `pigeon daemon reload` uses: what
 //! its selection would download, free and freeze, each rule with what it
 //! matches and decides, where the text spells it and, for a pin, the times
-//! it can choose; and the version of a text, which tells whether the file
-//! changed since one read it.
+//! it can choose, which a pin line that does not read is offered too; and
+//! the version of a text, which tells whether the file changed since one
+//! read it.
 
 use anyhow::{Result, anyhow};
-use pigeon_core::clock::rfc3339;
+use pigeon_core::clock::{parse_rfc3339, rfc3339};
 use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_store::config::Config;
 use pigeon_sync::{Amount, Delta, Engine, Preview};
@@ -28,9 +29,10 @@ struct Spelled {
     selection: Vec<toml::Spanned<String>>,
 }
 
-/// Where `text` spells each selection line, quotes included, in UTF-16
-/// code units, as a browser counts; none unless every line reads.
-fn spans(text: &str) -> Vec<[usize; 2]> {
+/// Each selection line of `text` with where the text spells it, quotes
+/// included, in UTF-16 code units, as a browser counts; none unless the
+/// text is TOML.
+fn lines(text: &str) -> Vec<(String, [usize; 2])> {
     let units = |end: usize| {
         text.get(..end)
             .map_or(0, |head| head.encode_utf16().count())
@@ -39,11 +41,55 @@ fn spans(text: &str) -> Vec<[usize; 2]> {
         .map(|spelled| {
             spelled
                 .selection
-                .iter()
-                .map(|line| [units(line.span().start), units(line.span().end)])
+                .into_iter()
+                .map(|line| {
+                    let span = [units(line.span().start), units(line.span().end)];
+                    (line.into_inner(), span)
+                })
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Where `text` spells each selection line, as `lines` gives it.
+fn spans(text: &str) -> Vec<[usize; 2]> {
+    lines(text).into_iter().map(|(_, span)| span).collect()
+}
+
+/// The pattern a pin line names after its time, or after `pin` when its
+/// time is missing or does not read.
+fn pinned_pattern(rest: &str) -> &str {
+    let rest = rest.trim();
+    let (when, after) = rest
+        .split_once(char::is_whitespace)
+        .map_or((rest, ""), |(when, after)| (when, after.trim_start()));
+    if when == "now" || parse_rfc3339(when).is_ok() {
+        after
+    } else {
+        rest
+    }
+}
+
+/// Each selection line of `text` that pins but does not read, with where
+/// the text spells it, the pattern it names, if any, and the times at
+/// which pinning the files that pattern matches, or every file without
+/// one, holds something new.
+#[must_use]
+pub fn unfinished_pins(engine: &Engine, text: &str) -> Vec<Value> {
+    lines(text)
+        .into_iter()
+        .filter_map(|(line, span)| {
+            let rest = line.trim_start().strip_prefix("pin")?;
+            let pin = rest.is_empty() || rest.starts_with(char::is_whitespace);
+            if !pin || Rule::parse(&line, || 0).is_ok() {
+                return None;
+            }
+            let pattern = pinned_pattern(rest);
+            let matched = if pattern.is_empty() { "*" } else { pattern };
+            let times = engine.pin_times(matched).unwrap_or_default();
+            Some(json!({ "span": span, "pattern": pattern, "times": times }))
+        })
+        .collect()
 }
 
 /// The configuration `text` holds, and what applying it would change on
@@ -148,6 +194,15 @@ mod tests {
         assert_eq!(line(spans[0]), "\"follow /a/\"");
         assert_eq!(line(spans[1]), "\"pin now /b/\"");
         assert!(super::spans("selection = [").is_empty());
+    }
+
+    #[test]
+    fn a_pin_names_its_pattern_with_or_without_its_time() {
+        assert_eq!(pinned_pattern(""), "");
+        assert_eq!(pinned_pattern(" /docs/"), "/docs/");
+        assert_eq!(pinned_pattern(" now /my docs/"), "/my docs/");
+        assert_eq!(pinned_pattern(" 2026-10-01T12:00:00Z /a/"), "/a/");
+        assert_eq!(pinned_pattern(" 2026-10-01T12:00:00Z"), "");
     }
 
     #[test]

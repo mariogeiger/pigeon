@@ -2,7 +2,8 @@
 //! with its errors and incompatible machines if any; its members, to
 //! exclude one or leave; its key; the editor of this machine's
 //! `config.toml`, which `config_editor.js` previews on each keystroke and
-//! saves whole; the folders kept elsewhere; and the raw ids, folded.
+//! saves whole, offering times to a pin line missing one; the folders kept
+//! elsewhere; and the raw ids, folded.
 
 use maud::{Markup, html};
 use serde_json::{Value, json};
@@ -140,6 +141,7 @@ fn editor(config: &Value) -> Markup {
                 textarea spellcheck="false" rows=(rows) aria-label="config.toml" { (text) }
             }
             p class="error problem" hidden {}
+            div class="fix" {}
             p { button type="button" class="save" { "Save" } }
             div class="preview" { p { "Computing the preview…" } }
             script src="/config_editor.js" defer {}
@@ -244,8 +246,9 @@ fn pin_choice(rule: &Value) -> Markup {
     let listed = times.iter().any(|known| known["time"] == time);
     html! {
         select class="pin" aria-label="Hold these files as they were at" {
+            @if time.is_empty() { option value="" disabled selected { "choose a time…" } }
             option value="now" { "now" }
-            @if !listed { option value=(time) data-time=(time) selected { (time) } }
+            @if !listed && !time.is_empty() { option value=(time) data-time=(time) selected { (time) } }
             @if !times.is_empty() {
                 optgroup label="a version" {
                     @for known in times {
@@ -260,6 +263,24 @@ fn pin_choice(rule: &Value) -> Markup {
         }
         " "
         input type="datetime-local" step="1" class="pin-time" data-time=(time) aria-label="or at a time";
+    }
+}
+
+/// For each pin line that does not read, the times it may hold its files
+/// at, which rewrite the line.
+#[must_use]
+pub fn unfinished_pins(pins: &Value) -> Markup {
+    html! {
+        @for pin in items(pins) {
+            @let span = &pin["span"];
+            p class="pin-fix" data-start=[span[0].as_u64()] data-end=[span[1].as_u64()] data-pattern=(cell("", &pin["pattern"])) {
+                "Pin "
+                @if let Some(pattern) = pin["pattern"].as_str().filter(|pattern| !pattern.is_empty()) {
+                    code { (pattern) } " "
+                }
+                "at " (pin_choice(pin))
+            }
+        }
     }
 }
 

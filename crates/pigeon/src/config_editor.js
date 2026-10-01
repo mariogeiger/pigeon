@@ -2,7 +2,8 @@
 // highlighted as TOML by a layer drawn under it, which the daemon reads
 // after each keystroke to preview what saving would download, free and
 // freeze, rule by rule; a pin's row offers the times its files have
-// versions at, or any local time, and choosing one rewrites its line.
+// versions at, or any local time, and choosing one rewrites its line, as
+// does a pin line that misses its time, under the error it gets.
 // Save applies the whole text, asking first when it frees space, and
 // refusing when the file changed elsewhere since the editor loaded it.
 "use strict";
@@ -12,6 +13,7 @@
   const text = editor.querySelector("textarea");
   const layer = editor.querySelector(".code pre");
   const problem = editor.querySelector(".problem");
+  const fix = editor.querySelector(".fix");
   const save = editor.querySelector("button.save");
   const conflict = editor.querySelector(".conflict");
   const panel = editor.querySelector(".preview");
@@ -74,13 +76,13 @@
   };
 
   const label = () => {
-    for (const option of panel.querySelectorAll("option[data-time]")) {
+    for (const option of editor.querySelectorAll("option[data-time]")) {
       const date = toDate(option.dataset.time);
       if (Number.isNaN(date.getTime())) continue;
       const files = option.dataset.files;
       option.textContent = date.toLocaleString() + (files === undefined ? "" : ` · ${files}`);
     }
-    for (const field of panel.querySelectorAll("input.pin-time")) {
+    for (const field of editor.querySelectorAll("input.pin-time")) {
       field.value = toLocal(field.dataset.time);
     }
   };
@@ -89,6 +91,7 @@
     latest = parts.version;
     conflict.hidden = latest === base;
     problem.hidden = true;
+    fix.replaceChildren();
     panel.innerHTML = parts.panel;
     panel.style.opacity = "";
     label();
@@ -97,9 +100,11 @@
     question = parts.confirm;
   };
 
-  const refuse = (error) => {
+  const refuse = (error, pins) => {
     problem.textContent = error;
     problem.hidden = false;
+    fix.innerHTML = pins ?? "";
+    label();
     panel.style.opacity = "0.5";
     save.textContent = "Save";
     save.disabled = true;
@@ -117,7 +122,7 @@
       const parts = await response.json();
       if (id !== asked) return false;
       if (parts.error !== undefined) {
-        refuse(parts.error);
+        refuse(parts.error, parts.fix);
         return false;
       }
       show(parts);
@@ -140,14 +145,15 @@
       preview();
       return;
     }
-    text.setRangeText(JSON.stringify(`pin ${time} ${row.dataset.pattern}`), start, end, "preserve");
+    const line = `pin ${time} ${row.dataset.pattern}`.trimEnd();
+    text.setRangeText(JSON.stringify(line), start, end, "preserve");
     draw();
     preview();
   };
 
-  panel.addEventListener("change", (event) => {
+  editor.addEventListener("change", (event) => {
     const field = event.target;
-    const row = field.closest("tr[data-start]");
+    const row = field.closest("[data-start]");
     if (row === null) return;
     if (field.matches("select.pin")) {
       pin(row, field.value);
