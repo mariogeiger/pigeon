@@ -165,6 +165,18 @@ mod tests {
     }
 
     #[test]
+    fn a_star_follows_everything() {
+        let selection = Selection::new([Rule {
+            pattern: "*".into(),
+            cutoff: Cutoff::PlusInfinity,
+        }])
+        .unwrap();
+        for file in ["a.txt", "@alice/notes.txt", "src/deep/a.rs"] {
+            assert_eq!(selection.cutoff(&path(file)), Cutoff::PlusInfinity);
+        }
+    }
+
+    #[test]
     fn setting_a_pattern_again_moves_it_last() {
         let mut selection = Selection::default();
         for (pattern, cutoff) in [

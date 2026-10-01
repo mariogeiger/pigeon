@@ -85,6 +85,15 @@ the shell's completion script. The daemon keeps its state in
   place, a junction on Windows, so its files keep their paths. While the
   destination is missing, such as an unplugged disk, the folder waits:
   nothing in it syncs, and nothing is taken for deleted.
+- **History.** Each machine keeps past versions of the files it writes:
+  every version for a day, then one a day for a month and one a week for a
+  year, within 20% of the disk. `pigeon retention set --everything on`
+  extends this to every file it downloads.
+- **A server.** An always-on machine joins as a member of its own, such as
+  `server`, follows everything with `pigeon selection follow --pattern '*'`,
+  and keeps history. Owning no folder, it writes nobody's files, and it
+  serves them while their owners' machines are off. The CLI manages it over
+  SSH.
 - **Peer to peer.** Machines connect directly, end-to-end encrypted, over the
   local network or the internet.
 - **Many sources at once.** A file arrives in pieces from every machine that

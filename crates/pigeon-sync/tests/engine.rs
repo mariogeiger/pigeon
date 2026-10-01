@@ -2,7 +2,8 @@
 //! them, edits nobody may publish are set aside and undone, drop files
 //! freeze and change through requests, concurrent edits of one member keep
 //! the later, a taken name joins nothing, and edits through actions publish
-//! or request each file under its own rule, and the quota drops history.
+//! or request each file under its own rule, the quota drops history, and
+//! keeping history keeps the past versions of others' files too.
 
 mod common;
 
@@ -407,6 +408,44 @@ async fn the_quota_drops_past_versions_and_keeps_current_ones() {
         alice.engine.read(&current).await.unwrap().as_deref(),
         Some(&b"two"[..])
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn keeping_history_keeps_past_versions_of_others_files() {
+    let machines = group(&[("alice", "a"), ("bob", "b")]).await;
+    joined(&machines).await;
+    let [alice, bob] = &machines[..] else {
+        unreachable!()
+    };
+    bob.engine
+        .set_rule(rule("@alice/", Cutoff::PlusInfinity))
+        .await
+        .unwrap();
+    let keep = |everything| Retention {
+        everything,
+        ..bob.engine.retention().unwrap()
+    };
+    bob.engine.set_retention(&keep(true)).await.unwrap();
+    for text in ["one", "two"] {
+        alice.edit("@alice/a.txt", text);
+        eventually("bob follows alice", || async {
+            bob.read("@alice/a.txt").as_deref() == Some(text)
+        })
+        .await;
+    }
+    let history = bob.engine.history(&path("@alice/a.txt"));
+    let old = history[0].content.unwrap();
+    bob.engine.set_retention(&keep(true)).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    assert!(bob.engine.read(&old).await.unwrap().is_some());
+    bob.engine.set_retention(&keep(false)).await.unwrap();
+    eventually("without it the past version goes", || async {
+        bob.engine.read(&old).await.unwrap().is_none()
+    })
+    .await;
+    for machine in machines {
+        machine.engine.shutdown().await.unwrap();
+    }
 }
 
 #[cfg(unix)]
