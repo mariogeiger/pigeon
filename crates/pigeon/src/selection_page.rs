@@ -1,5 +1,5 @@
 //! The web UI's Selection page: an editor holding a draft of every rule,
-//! which `selection.js` previews on each keystroke and saves whole, beside
+//! which `selection.js` previews on each keystroke and saves whole, above
 //! the preview of what saving would download, free and freeze here; then
 //! the folders kept elsewhere.
 
@@ -64,7 +64,7 @@ pub fn selection(
     let rows: Vec<Value> = rules.iter().map(row).collect();
     let rows = Value::Array(rows).to_string();
     let body = html! {
-        section id="editor" class="editor" data-keep data-version=(version) data-rules=(rows) {
+        section id="editor" data-keep data-version=(version) data-rules=(rows) {
             div {
                 h2 { "Rules" }
                 p { "The last matching rule decides each file. Nothing changes until you save." }

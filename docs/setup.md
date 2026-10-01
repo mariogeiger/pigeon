@@ -174,8 +174,8 @@ refuses if the selection changed since the preview. A modified copy not yet
 published is never removed.
 
 The web UI's Selection page edits a draft of the rules the same way: each
-row tells how many files its rule matches and decides, the preview beside
-it updates on each keystroke and as files arrive, and nothing changes
+row tells how many files its rule matches and decides, the preview below
+them updates on each keystroke and as files arrive, and nothing changes
 until Save, which asks first when it frees space. A pin row offers now,
 each of those version times with the number of files changed, or a date and
 time picked in local time. If the selection changes elsewhere meanwhile, a

@@ -24,8 +24,6 @@ pre.diff { background: #f6f6f6; padding: .5rem; overflow-x: auto; }
 .notice { background: #eef; padding: .5rem; } .error { background: #fdd; padding: .5rem; }
 .mark { color: #a50; font-weight: bold; }
 section { margin: 1.5rem 0; }
-.editor { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1.5rem; align-items: start; }
-.editor .preview { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow-y: auto; }
 ol.rules { list-style: none; padding: 0; }
 ol.rules li { display: flex; flex-wrap: wrap; gap: .25rem; align-items: center; padding: .25rem 0; border-bottom: 1px solid #eee; }
 ol.rules input.pattern { flex: 1; min-width: 8rem; font-family: monospace; }

@@ -681,7 +681,7 @@ async fn the_selection_editor_previews_a_draft_and_saves_it_whole() {
     eventually("the notes are on disk", async || notes.exists()).await;
     let page = peer.page("/g/cheapmo/selection").await;
     for part in [
-        r#"<section id="editor" class="editor" data-keep"#,
+        r#"<section id="editor" data-keep"#,
         r#"<script src="/selection.js" defer></script>"#,
         r#"<option value="/+alice/notes.txt">"#,
         r#"<option value="/+alice/">"#,
