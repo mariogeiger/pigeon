@@ -1,6 +1,6 @@
 //! The ledger: every known patch, folded in stamp order into the accepted
 //! versions of each path, the member list with each name's current key, and
-//! the names that folders claim.
+//! the names that tags claim.
 //! Each patch is accepted or rejected as a whole against the state it lands
 //! on, so every machine holding the same patches computes the same tree.
 
@@ -10,9 +10,9 @@ use std::ops::Bound;
 use iroh_base::PublicKey;
 
 use crate::clock::{MachineId, Stamp};
-use crate::folder::{Folder, classify};
 use crate::identity::{GroupId, MachineCert};
 use crate::name::MemberName;
+use crate::ownership::{Ownership, classify};
 use crate::patch::{Change, Content, SignatureError, SignedPatch};
 use crate::path::{GroupPath, PathKey};
 use crate::statement::{
@@ -62,8 +62,8 @@ pub enum Rejection {
     UnknownMember(MemberName),
     #[error("the name {0} is taken by another key: choose another name")]
     OtherKey(MemberName),
-    #[error("a folder +{0} already claims the name {0}: choose another name")]
-    ClaimedByFolder(MemberName),
+    #[error("a path tagged +{0} already claims the name {0}: choose another name")]
+    ClaimedByTag(MemberName),
     #[error("{0} no longer belongs to this group")]
     Excluded(MemberName),
     #[error("{0} must be named <stamp>-<key or none> in a member's rebinding folder")]
@@ -92,7 +92,7 @@ enum Outcome {
     Rejected(Rejection),
 }
 
-/// The folded state: every accepted version, members, and folder claims.
+/// The folded state: every accepted version, members, and tag claims.
 #[derive(Default)]
 struct State {
     outcomes: BTreeMap<Stamp, Outcome>,
@@ -142,7 +142,7 @@ impl State {
             return Err(Rejection::UnknownMember(name.clone()));
         }
         if self.claims.get(name).copied().unwrap_or(0) > 0 {
-            return Err(Rejection::ClaimedByFolder(name.clone()));
+            return Err(Rejection::ClaimedByTag(name.clone()));
         }
         Ok(true)
     }
@@ -180,15 +180,15 @@ impl State {
                 .head(&change.path.key())
                 .filter(|version| version.is_live());
             let owner = match (classify(&change.path, is_member).0, head) {
-                (Folder::Personal(owner), _) => owner,
-                (Folder::Drop, Some(head)) => {
+                (Ownership::Personal(owner), _) => owner,
+                (Ownership::Drop, Some(head)) => {
                     if !applies && head.owner == *author {
                         return Err(Rejection::Frozen(change.path.clone()));
                     }
                     head.owner.clone()
                 }
-                (Folder::Drop, None) if change.content.is_none() => continue,
-                (Folder::Drop, None) => author.clone(),
+                (Ownership::Drop, None) if change.content.is_none() => continue,
+                (Ownership::Drop, None) => author.clone(),
             };
             if owner != *author {
                 return Err(Rejection::NotOwner {
@@ -381,16 +381,16 @@ impl Ledger {
             classify(path, |name| self.state.members.contains_key(name)).0,
             head,
         ) {
-            (Folder::Personal(owner), _) => owner,
-            (Folder::Drop, Some(head)) => head.owner.clone(),
-            (Folder::Drop, None) => author.clone(),
+            (Ownership::Personal(owner), _) => owner,
+            (Ownership::Drop, Some(head)) => head.owner.clone(),
+            (Ownership::Drop, None) => author.clone(),
         }
     }
 
     /// Whether files at `path` freeze once published.
     #[must_use]
     pub fn freezes(&self, path: &GroupPath) -> bool {
-        classify(path, |name| self.state.members.contains_key(name)).0 == Folder::Drop
+        classify(path, |name| self.state.members.contains_key(name)).0 == Ownership::Drop
     }
 
     /// Whether `rejection` is the outcome of the patch `stamp`, or `Ok` if

@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// The protocol's name on the wire.
-pub const SYNC_ALPN: &[u8] = b"pigeon/sync/4";
+pub const SYNC_ALPN: &[u8] = b"pigeon/sync/5";
 
 /// The largest message either side accepts.
 pub const MAX_MESSAGE: usize = 64 << 20;

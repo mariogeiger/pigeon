@@ -121,6 +121,48 @@ fn only_the_owner_writes_a_personal_file() {
 }
 
 #[test]
+fn the_rightmost_tag_of_a_path_names_its_owner() {
+    let mario = machine("mario", 1);
+    let bob = machine("bob", 2);
+    let mut ledger = Ledger::new(group());
+    ledger.insert(mario.join(1)).unwrap();
+    ledger.insert(bob.join(2)).unwrap();
+    let into_bobs = mario.patch(3, vec![change("+mario/+bob/a", Some(1), None)], None);
+    ledger.insert(into_bobs.clone()).unwrap();
+    assert!(matches!(
+        rejection(&ledger, into_bobs.stamp()),
+        Rejection::NotOwner { .. }
+    ));
+    let bobs = bob.patch(4, vec![change("+mario/+bob/a", Some(2), None)], None);
+    ledger.insert(bobs.clone()).unwrap();
+    assert!(ledger.outcome(&bobs.stamp()).unwrap().is_ok());
+    let tagged = mario.patch(5, vec![change("docs/texte+mario.txt", Some(1), None)], None);
+    ledger.insert(tagged.clone()).unwrap();
+    let edit = mario.patch(
+        6,
+        vec![change(
+            "docs/texte+mario.txt",
+            Some(2),
+            Some(tagged.stamp()),
+        )],
+        None,
+    );
+    ledger.insert(edit.clone()).unwrap();
+    assert!(ledger.outcome(&edit.stamp()).unwrap().is_ok());
+    let by_bob = bob.patch(7, vec![change("docs/texte+mario.txt", Some(3), None)], None);
+    ledger.insert(by_bob.clone()).unwrap();
+    assert!(matches!(
+        rejection(&ledger, by_bob.stamp()),
+        Rejection::NotOwner { .. }
+    ));
+    let head = ledger.head(&key("docs/texte+mario.txt")).unwrap();
+    assert_eq!(
+        (head.owner.as_str(), head.content),
+        ("mario", Some(content(2)))
+    );
+}
+
+#[test]
 fn the_earliest_drop_claim_wins_whatever_the_arrival_order() {
     let mario = machine("mario", 1);
     let bob = machine("bob", 2);
@@ -222,7 +264,7 @@ fn a_name_belongs_to_its_first_key() {
 }
 
 #[test]
-fn a_folder_claims_a_name_until_it_is_empty() {
+fn a_tag_claims_a_name_until_no_path_bears_it() {
     let mario = machine("mario", 1);
     let build = machine("build", 2);
     let mut ledger = Ledger::new(group());
@@ -233,7 +275,7 @@ fn a_folder_claims_a_name_until_it_is_empty() {
     ledger.insert(blocked.clone()).unwrap();
     assert!(matches!(
         rejection(&ledger, blocked.stamp()),
-        Rejection::ClaimedByFolder(_)
+        Rejection::ClaimedByTag(_)
     ));
     ledger
         .insert(mario.patch(

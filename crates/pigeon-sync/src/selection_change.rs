@@ -207,7 +207,7 @@ impl Engine {
             .filter(|entry| draft.cutoff(&entry.path) == Cutoff::MinusInfinity);
         let modified = inner.modified(&work, freed);
         let indexed: HashSet<PathKey> = entries.iter().map(|entry| entry.path.key()).collect();
-        let own = inner.config.member.folder();
+        let own = inner.config.member.tag();
         let mut tally = Tally::new(work.selection.version(), draft.rules().count());
         let ledger = inner.ledger.lock();
         for key in ledger.keys() {

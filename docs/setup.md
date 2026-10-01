@@ -103,13 +103,16 @@ newcomer.
 
 ## 5. Organize the files
 
-- A folder named `+` and a member's name, such as `/cheapmo/src/+mario`,
-  belongs to that member. Only their machines write it, and everyone reads
-  it. A member can have as many such folders as they like, anywhere in the
-  tree. A folder `+<name>` whose name no member holds stays an ordinary
-  folder, but while it exists nobody can join under that name.
-- Every other folder is a drop folder, where anyone adds files. A new file
-  is published once it has not changed for five minutes. After that it is
+- A tag, `+` followed by a member's name, makes a file that member's,
+  whether it names a folder holding the file, as in
+  `/cheapmo/src/+mario/plan.txt`, or sits in the file's own name, as in
+  `/cheapmo/docs/texte+mario.txt`. Read from right
+  to left, the first tag naming a member decides: `+mario/+emmy/a` is
+  emmy's. Only the owner's machines write the file, everyone reads it, and
+  it never freezes. A tag `+<name>` that names no member changes nothing,
+  but while it exists nobody can join under that name.
+- Every other file is a drop file, which anyone may add. A new file is
+  published once it has not changed for five minutes. After that it is
   frozen, and only a request changes it. `pigeon file pending` lists the
   edits still waiting, and `pigeon file publish --path <file or folder>`
   publishes them at once.

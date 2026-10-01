@@ -39,27 +39,30 @@ of the first implementation.
 - **P0** A folder is only a prefix shared by its files' paths, as in git: it
   exists while it holds a file, and renaming or deleting it renames or
   deletes every file inside, each under its own rule.
-- **P0** Every folder follows one rule with two settings: who may add files
-  to it, and when its files freeze. Only a file's owner's machines write it,
-  and only until it freezes; any other change goes through a request. A
-  personal folder lets only its owner add files, and they never freeze; a
-  drop folder lets anyone add files, and each freezes once published.
+- **P0** Every file follows one rule with two settings: who may add it, and
+  when it freezes. Only a file's owner's machines write it, and only until
+  it freezes; any other change goes through a request. A personal file only
+  its owner adds, and it never freezes; a drop file anyone adds, and it
+  freezes once published.
 - **P0** Freezing guards against mistakes, not against people: a frozen file
   still changes through a request, which everyone sees and which any
   member, its owner included, may force.
-- **P0** A member creates a personal folder by creating, on disk or in the web
-  UI, a folder named `+` followed by their name anywhere outside personal
-  folders, and may have as many as they like, such as `/cheapmo/src/+mario`
-  and `/cheapmo/etc/+mario`. The owner names its subfolders freely.
-- **P0** Outside personal folders, a folder `+<name>` claims the name
-  `<name>`, as joining does, and the earliest claim wins: once `<name>` is a
-  member, only they can create `+<name>`, and while a folder `+<name>`
-  exists, nobody can join under `<name>`. A folder `+<name>` whose name no
-  member holds is an ordinary folder.
-- **P0** Every other folder, the root included, is a drop folder.
-- **P0** Every file therefore has exactly one owner: the member whose personal
-  folder holds it, or the member who dropped it. Only the owner's machines
-  write it, so two people never conflict.
+- **P0** A tag `+<name>`, a `+` followed by every letter and digit after it,
+  anywhere in the name of a file or of a folder holding it, makes the file
+  personal to the member `<name>`, as in `/cheapmo/src/+mario/plan.txt` or
+  `/cheapmo/docs/texte+mario.txt`. Reading the path from right to left,
+  file name included, the first tag naming a member decides, so
+  `+mario/+emmy/a` is emmy's. A member may tag as many folders and files as
+  they like.
+- **P0** A tag read before the deciding one, or in a path that names no
+  member, claims its name, as joining does, and the earliest claim wins:
+  once `<name>` is a member, only they can create a file the tag `+<name>`
+  decides, and while a path claims `<name>`, nobody can join under it.
+- **P0** Every other file is a drop file, and a folder holding no tag is a
+  drop folder.
+- **P0** Every file therefore has exactly one owner: the member its path
+  tags, or the member who dropped it. Only the owner's machines write it, so
+  two people never conflict.
 - **P0** A change that an owner's machine sees on disk to a file it may write,
   whether an edit, a rename, or a deletion, is published once the file has
   stopped changing: after a few seconds, or after 5 minutes in a drop
@@ -92,7 +95,7 @@ of the first implementation.
   Between machines of one member, the later of two concurrent changes wins
   and the other is set aside; a proposal concurrent with a change is marked
   as based on an old version.
-- **P0** A member name, a folder `+<name>`, and a path in a drop folder are
+- **P0** A member name, a tag `+<name>`, and the path of a drop file are
   claims, compared without case, and the earliest claim wins: the losing
   machine sets its content aside, or asks for another name.
 
@@ -179,7 +182,7 @@ of the first implementation.
 - **P1** "Keep history" extends it to everything the machine downloads. The
   group's "server" is nothing special: an always-on machine, usually
   headless, that joins as a member of its own, such as `server`, follows
-  everything, and keeps history. It owns no personal folder, so it gains no
+  everything, and keeps history. No path tags it, so it gains no
   right to write anyone's files, and it serves files while their owners'
   machines are off.
 

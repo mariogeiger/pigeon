@@ -229,7 +229,7 @@ impl Daemon {
         let engine = Engine::start(&data, self.options.clone()).await?;
         engine
             .set_rule(Rule {
-                pattern: format!("{}/", member.folder()),
+                pattern: format!("{}/", member.tag()),
                 cutoff: Cutoff::PlusInfinity,
             })
             .await?;

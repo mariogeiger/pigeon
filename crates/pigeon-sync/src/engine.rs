@@ -499,7 +499,7 @@ impl Engine {
         let mut selection = state.selection()?;
         if selection.rules().next().is_none() {
             selection.set(Rule {
-                pattern: format!("{}/", config.member.folder()),
+                pattern: format!("{}/", config.member.tag()),
                 cutoff: Cutoff::PlusInfinity,
             })?;
             state.set_selection(&selection)?;
