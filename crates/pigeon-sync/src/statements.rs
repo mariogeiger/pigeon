@@ -146,8 +146,9 @@ impl Inner {
             .collect()
     }
 
-    /// Applies every request to this member that was forced or accepted
-    /// and not yet applied, once its contents are here.
+    /// Fetches the contents of every request to this member that is not
+    /// refused, so that the owner can review it, and applies those forced
+    /// or accepted and not yet applied once their contents are here.
     pub(crate) async fn apply_requests(self: &Arc<Self>, work: &mut Work) {
         if work.join != JoinState::Joined {
             return;
@@ -184,10 +185,10 @@ impl Inner {
             return Ok(());
         }
         let wanted = match statement.mode {
-            Mode::Force => true,
-            Mode::Propose => self.decision(&request.path, me).await == Some(Decision::Accept),
+            Mode::Force => Some(Decision::Accept),
+            Mode::Propose => self.decision(&request.path, me).await,
         };
-        if !wanted {
+        if wanted == Some(Decision::Refuse) {
             return Ok(());
         }
         let mut complete = true;
@@ -202,7 +203,7 @@ impl Inner {
                 );
             }
         }
-        if !complete {
+        if !complete || wanted != Some(Decision::Accept) {
             return Ok(());
         }
         let changes: Vec<Change> = {

@@ -133,7 +133,15 @@ impl DataDir {
 
 /// Writes a file readable only by its owner, through a temporary file so
 /// that a crash never leaves it half written.
-fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+///
+/// # Errors
+///
+/// Fails if the file cannot be written.
+///
+/// # Panics
+///
+/// Panics if `path` names no file in a folder.
+pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().expect("a data file has a parent");
     fs::create_dir_all(parent).map_err(StoreError::io(parent))?;
     let temporary = path.with_extension("tmp");

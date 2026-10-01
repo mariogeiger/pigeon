@@ -13,9 +13,45 @@ existing libraries, so that the group can adapt it at will.
 
 ## Status
 
-Nothing is implemented yet. [REQUIREMENTS.md](REQUIREMENTS.md) describes what
-the first version must do, and [SOUL.md](SOUL.md) holds the rules that never
+The first version is taking shape: [REQUIREMENTS.md](REQUIREMENTS.md)
+describes what it must do, and [SOUL.md](SOUL.md) holds the rules that never
 change.
+
+## Usage
+
+Build and install the single `pigeon` program, then run its daemon, which
+syncs every group of the machine and serves the web UI on localhost:
+
+```sh
+cargo install --path crates/pigeon
+pigeon daemon
+```
+
+From another terminal, found a group, or join one with the key a member
+shared:
+
+```sh
+pigeon group create --name cheapmo --member mario --root ~/cheapmo
+pigeon group key
+pigeon group join --key cheapmo-… --member alice
+```
+
+Every command reads `pigeon <noun> <verb>`, asks for a missing argument when
+a terminal is attached, and prints JSON with `--json`:
+
+```sh
+pigeon file list --under docs
+pigeon file write --path @mario/notes.txt --content notes.txt
+pigeon selection follow --pattern /docs/
+pigeon request list
+pigeon request accept --request .pigeon/requests/….json
+pigeon --help
+```
+
+`pigeon ui` prints the link that opens the web UI, which offers the same
+actions. `pigeon completions bash`, or `zsh`, `fish` and `powershell`, prints
+the shell's completion script. The daemon keeps its state in
+`$PIGEON_HOME`, by default `pigeon` in the user's data folder.
 
 ## How it works
 

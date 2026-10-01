@@ -1,22 +1,21 @@
-//! What a person can ask of the engine: change the selection, write,
-//! delete or rename files and publish at once, file and answer requests,
-//! and resolve set-aside items.
+//! What a person can ask of the engine besides editing the tree: change
+//! the selection, file and answer requests, and resolve set-aside items.
 
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use pigeon_core::patch::Change;
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_core::statement::{Decision, Mode};
-use pigeon_store::disk::{self, fs_path, install, temporary_path};
+use pigeon_store::disk::{self, fs_path};
 
 use crate::disk_sync::{Probe, file_stat};
 use crate::engine::{Engine, Inner, Work};
 use crate::watch::Rescan;
 
 impl Inner {
-    fn ensure_writable(&self, work: &Work, path: &GroupPath) -> Result<()> {
+    pub(crate) fn ensure_writable(&self, work: &Work, path: &GroupPath) -> Result<()> {
         let ledger = self.ledger.lock();
         if !self.writable(&ledger, work, path) {
             bail!(
@@ -28,7 +27,11 @@ impl Inner {
     }
 
     /// Compares `paths` with the ledger and publishes their edits at once.
-    async fn publish_now(self: &Arc<Self>, work: &mut Work, paths: &[GroupPath]) -> Result<()> {
+    pub(crate) async fn publish_now(
+        self: &Arc<Self>,
+        work: &mut Work,
+        paths: &[GroupPath],
+    ) -> Result<()> {
         let keys: Vec<PathKey> = paths.iter().map(GroupPath::key).collect();
         for path in paths {
             let probe = Probe::at(&self.config.root, path.clone());
@@ -67,75 +70,6 @@ impl Engine {
         }
         inner.refresh(&mut work, &Rescan::All).await;
         Ok(())
-    }
-
-    /// Writes `bytes` to the file at `path` and publishes it.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the member may not write the file or the disk refuses.
-    pub async fn write(&self, path: &GroupPath, bytes: &[u8]) -> Result<()> {
-        let inner = &self.inner;
-        let mut work = inner.work.lock().await;
-        inner.ensure_writable(&work, path)?;
-        let location = fs_path(&inner.config.root, path);
-        if let Some(parent) = location.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
-        }
-        let temporary = temporary_path(&location);
-        std::fs::write(&temporary, bytes)
-            .with_context(|| format!("writing {}", temporary.display()))?;
-        let executable = file_stat(&location)
-            .and_then(|stat| stat.executable)
-            .unwrap_or(false);
-        install(&temporary, &location, executable, true)?;
-        inner
-            .publish_now(&mut work, std::slice::from_ref(path))
-            .await
-    }
-
-    /// Deletes the file at `path` and publishes the deletion.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the member may not delete the file or the disk refuses.
-    pub async fn delete(&self, path: &GroupPath) -> Result<()> {
-        let inner = &self.inner;
-        let mut work = inner.work.lock().await;
-        inner.ensure_writable(&work, path)?;
-        disk::remove(&inner.config.root, &fs_path(&inner.config.root, path))?;
-        inner
-            .publish_now(&mut work, std::slice::from_ref(path))
-            .await
-    }
-
-    /// Moves the file at `from` to `to` and publishes both in one patch.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the member may not write both paths, `to` exists, or the
-    /// disk refuses.
-    pub async fn rename(&self, from: &GroupPath, to: &GroupPath) -> Result<()> {
-        let inner = &self.inner;
-        let mut work = inner.work.lock().await;
-        inner.ensure_writable(&work, from)?;
-        inner.ensure_writable(&work, to)?;
-        let root = &inner.config.root;
-        let source = fs_path(root, from);
-        let target = fs_path(root, to);
-        if from.key() != to.key() && file_stat(&target).is_some() {
-            bail!("{to} exists");
-        }
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
-        }
-        std::fs::rename(&source, &target).with_context(|| format!("moving {from} to {to}"))?;
-        disk::remove(root, &source)?;
-        inner
-            .publish_now(&mut work, &[from.clone(), to.clone()])
-            .await
     }
 
     /// Asks the owners of the changed files to apply `changes`, one

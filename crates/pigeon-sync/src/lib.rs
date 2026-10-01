@@ -4,6 +4,7 @@
 
 mod actions;
 mod disk_sync;
+pub mod edit;
 pub mod engine;
 mod protect;
 mod publish;
@@ -13,4 +14,5 @@ mod statements;
 pub mod views;
 pub mod watch;
 
+pub use edit::{Edit, Edited};
 pub use engine::{Engine, JoinState, Network, Options};

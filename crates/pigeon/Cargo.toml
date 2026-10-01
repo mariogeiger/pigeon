@@ -1,0 +1,34 @@
+[package]
+name = "pigeon"
+description = "Peer-to-peer file sync for a trusted group: the daemon, its JSON API, web UI and command line"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pigeon-core.workspace = true
+pigeon-store.workspace = true
+pigeon-sync.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+data-encoding.workspace = true
+dialoguer.workspace = true
+dirs.workspace = true
+getrandom.workspace = true
+maud.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+similar.workspace = true
+tokio.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+iroh.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -56,6 +56,17 @@ pub fn ntp_time(time: SystemTime) -> u64 {
     .0
 }
 
+/// Reads an RFC 3339 time, such as `2026-10-01T12:00:00Z`, as NTP64.
+///
+/// # Errors
+///
+/// Returns why the text is not an RFC 3339 time.
+pub fn parse_rfc3339(text: &str) -> Result<u64, String> {
+    NTP64::parse_rfc3339(text)
+        .map(|time| time.0)
+        .map_err(|error| format!("{text:?} is not an RFC 3339 time: {error:?}"))
+}
+
 /// A machine's hybrid logical clock.
 pub struct Clock {
     hlc: HLC,
@@ -117,5 +128,17 @@ mod tests {
         };
         clock.observe(&ahead).unwrap();
         assert!(clock.stamp().time > ahead.time);
+    }
+
+    #[test]
+    fn rfc3339_times_read_back_as_they_print() {
+        let machine = SecretKey::from_bytes(&[7; 32]).public();
+        let stamp = Stamp {
+            time: parse_rfc3339("2026-10-01T12:00:00Z").unwrap(),
+            machine,
+        };
+        assert_eq!(stamp.time >> 32, 1_790_856_000);
+        assert_eq!(parse_rfc3339(&stamp.rfc3339()), Ok(stamp.time));
+        assert!(parse_rfc3339("yesterday").is_err());
     }
 }

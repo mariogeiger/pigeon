@@ -43,6 +43,7 @@ pub struct FileView {
     pub owner: MemberName,
     pub content: Content,
     pub stamp: Stamp,
+    pub time: String,
     pub cutoff: Cutoff,
     /// Whether the disk shows some version of the file.
     pub held: bool,
@@ -92,6 +93,9 @@ pub struct RequestView {
     pub statement: RequestStatement,
     pub decision: Option<Decision>,
     pub applied: bool,
+    /// Whether a change replaces a version other than its file's current
+    /// one: the request was made without seeing a later change.
+    pub outdated: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -127,10 +131,35 @@ impl Engine {
         }
     }
 
-    /// The group key, which lets another member's machine join.
+    /// The group key, which lets another member's machine join; it names
+    /// this machine among the machines to dial first.
     #[must_use]
     pub fn group_key(&self) -> String {
-        self.inner.config.key.to_string()
+        let mut key = self.inner.config.key.clone();
+        if !key.bootstrap.contains(&self.inner.me()) {
+            key.bootstrap.insert(0, self.inner.me());
+        }
+        key.to_string()
+    }
+
+    /// The time of this machine's clock, never behind a version it has
+    /// seen.
+    #[must_use]
+    pub fn now(&self) -> u64 {
+        self.inner.clock.stamp().time
+    }
+
+    /// The bytes of `content`, if this machine holds them.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the blob store cannot be read.
+    pub async fn read(&self, content: &Content) -> Result<Option<Vec<u8>>> {
+        let blobs = &self.inner.blobs;
+        if !blobs.has(&content.hash).await? {
+            return Ok(None);
+        }
+        Ok(Some(blobs.read(&content.hash).await?))
     }
 
     /// Every file of the group at `under` or inside it.
@@ -169,6 +198,7 @@ impl Engine {
                     owner: version.owner.clone(),
                     content,
                     stamp: version.stamp,
+                    time: version.stamp.rfc3339(),
                     cutoff: work.selection.cutoff(&version.path),
                     held,
                     outdated: held && entry.and_then(|entry| entry.synced) != Some(version.stamp),
@@ -228,7 +258,14 @@ impl Engine {
                 continue;
             };
             let decision = inner.decision(&request.path, &statement.owner).await;
+            let outdated = {
+                let ledger = inner.ledger.lock();
+                statement.changes.iter().any(|change| {
+                    ledger.head(&change.path.key()).map(|head| head.stamp) != change.replaces
+                })
+            };
             views.push(RequestView {
+                outdated,
                 applied: applied.contains(&request.path),
                 path: request.path,
                 author: request.owner,

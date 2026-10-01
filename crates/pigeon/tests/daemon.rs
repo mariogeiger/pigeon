@@ -1,0 +1,357 @@
+//! Daemons on this host, each with its own pigeon folder, driven through
+//! the API and the web UI as the command line and a browser drive them.
+
+use std::future::Future;
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use data_encoding::BASE64;
+use iroh::address_lookup::MemoryLookup;
+use pigeon::api::{App, serve};
+use pigeon::catalog::{ACTIONS, Kind};
+use pigeon::client::call_at;
+use pigeon::daemon::Daemon;
+use pigeon::home::Home;
+use pigeon_sync::{Network, Options};
+use serde_json::{Map, Value, json};
+use tempfile::TempDir;
+
+struct Peer {
+    address: SocketAddr,
+    token: String,
+    dir: TempDir,
+}
+
+/// What a raw HTTP request got back.
+struct Answer {
+    status: u16,
+    location: Option<String>,
+    cookie: Option<String>,
+    body: String,
+}
+
+fn options(lookup: &MemoryLookup) -> Options {
+    Options {
+        network: Network::Local(lookup.clone()),
+        settle_personal: Duration::from_millis(100),
+        settle_drop: Duration::from_millis(400),
+        rescan: Duration::from_secs(60),
+        tick: Duration::from_millis(50),
+        join_delay: Duration::from_millis(300),
+        ..Options::default()
+    }
+}
+
+impl Peer {
+    async fn start(lookup: &MemoryLookup) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::new(dir.path().join("home"));
+        let token = home.token().unwrap();
+        let daemon = Daemon::start(home, options(lookup)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Arc::new(App {
+            daemon,
+            token: token.clone(),
+        });
+        tokio::spawn(serve(app, listener, std::future::pending()));
+        Self {
+            address,
+            token,
+            dir,
+        }
+    }
+
+    fn root(&self, name: &str) -> PathBuf {
+        self.dir.path().join(name)
+    }
+
+    /// Sends one request to the server, following no redirect.
+    async fn send(
+        &self,
+        method: &'static str,
+        path: &str,
+        headers: Vec<(&'static str, String)>,
+        body: Option<(String, Vec<u8>)>,
+    ) -> Answer {
+        let url = format!("http://{}{path}", self.address);
+        tokio::task::spawn_blocking(move || {
+            let agent: ureq::Agent = ureq::Agent::config_builder()
+                .http_status_as_error(false)
+                .max_redirects(0)
+                .build()
+                .into();
+            let mut request = ureq::http::Request::builder().method(method).uri(&url);
+            for (name, value) in headers {
+                request = request.header(name, value);
+            }
+            let mut response = match body {
+                Some((kind, bytes)) => agent
+                    .run(request.header("content-type", kind).body(bytes).unwrap())
+                    .unwrap(),
+                None => agent.run(request.body(()).unwrap()).unwrap(),
+            };
+            let header = |name: &str| {
+                response
+                    .headers()
+                    .get(name)
+                    .map(|value| value.to_str().unwrap().to_owned())
+            };
+            Answer {
+                status: response.status().as_u16(),
+                location: header("location"),
+                cookie: header("set-cookie"),
+                body: response.body_mut().read_to_string().unwrap(),
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    fn cookie(&self) -> (&'static str, String) {
+        ("cookie", format!("pigeon_token={}", self.token))
+    }
+
+    async fn call(&self, noun: &str, verb: &str, args: Value) -> Result<Value, String> {
+        let Value::Object(args) = args else {
+            unreachable!()
+        };
+        let (address, token) = (self.address, self.token.clone());
+        let (noun, verb) = (noun.to_owned(), verb.to_owned());
+        tokio::task::spawn_blocking(move || call_at(address, &token, &noun, &verb, &args))
+            .await
+            .unwrap()
+            .map_err(|error| error.to_string())
+    }
+
+    async fn page(&self, path: &str) -> String {
+        let answer = self.send("GET", path, vec![self.cookie()], None).await;
+        assert_eq!(answer.status, 200, "{path}");
+        answer.body
+    }
+
+    async fn joined(&self) -> bool {
+        let status = self.call("group", "status", json!({})).await.unwrap();
+        status["join"]["state"] == "joined"
+    }
+}
+
+/// Waits up to twenty seconds for `condition`.
+async fn eventually<F, Fut>(what: &str, mut condition: F)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = bool>,
+{
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while !condition().await {
+        assert!(tokio::time::Instant::now() < deadline, "timed out: {what}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+fn base64(text: &str) -> String {
+    BASE64.encode(text.as_bytes())
+}
+
+#[tokio::test]
+async fn the_api_answers_only_localhost_calls_with_the_token() {
+    let lookup = MemoryLookup::new();
+    let peer = Peer::start(&lookup).await;
+    let list = "/api/group/list";
+    let anonymous = peer.send("POST", list, vec![], None).await;
+    assert_eq!(anonymous.status, 401);
+    let wrong = vec![("authorization", "Bearer nope".to_owned())];
+    assert_eq!(peer.send("POST", list, wrong, None).await.status, 401);
+    let rebound = vec![
+        ("authorization", format!("Bearer {}", peer.token)),
+        ("host", "evil.example".to_owned()),
+    ];
+    assert_eq!(peer.send("POST", list, rebound, None).await.status, 403);
+    assert_eq!(peer.call("group", "list", json!({})).await, Ok(json!([])));
+    let error = peer.call("file", "list", json!({})).await.unwrap_err();
+    assert!(error.contains("`pigeon group create`"), "{error}");
+
+    assert_eq!(peer.send("GET", "/", vec![], None).await.status, 401);
+    let open = format!("/open?token={}", peer.token);
+    let open = peer.send("GET", &open, vec![], None).await;
+    assert_eq!(open.status, 303);
+    let cookie = open.cookie.unwrap();
+    assert!(cookie.starts_with(&format!("pigeon_token={};", peer.token)));
+    assert!(cookie.contains("HttpOnly") && cookie.contains("SameSite=Strict"));
+    let home = peer.page("/").await;
+    assert!(home.contains(r#"action="/act/group/create""#));
+    assert!(home.contains(r#"action="/act/group/join""#));
+}
+
+#[tokio::test]
+async fn two_daemons_share_files_and_answer_requests() {
+    let lookup = MemoryLookup::new();
+    let a = Peer::start(&lookup).await;
+    let b = Peer::start(&lookup).await;
+    let created = a
+        .call(
+            "group",
+            "create",
+            json!({"name": "cheapmo", "member": "alice", "password": "pa", "root": a.root("cheapmo")}),
+        )
+        .await
+        .unwrap();
+    let key = created["key"].as_str().unwrap();
+    b.call(
+        "group",
+        "join",
+        json!({"key": key, "member": "bob", "password": "pb", "root": b.root("cheapmo")}),
+    )
+    .await
+    .unwrap();
+    eventually("both joined", async || a.joined().await && b.joined().await).await;
+
+    let wrote = a
+        .call(
+            "file",
+            "write",
+            json!({"path": "@alice/notes.txt", "content": base64("hello\n")}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        wrote,
+        json!({"published": ["@alice/notes.txt"], "requests": []})
+    );
+    b.call("selection", "follow", json!({"pattern": "/@alice/"}))
+        .await
+        .unwrap();
+    let on_b = b.root("cheapmo").join("@alice/notes.txt");
+    eventually("bob holds the note", async || {
+        std::fs::read_to_string(&on_b).ok().as_deref() == Some("hello\n")
+    })
+    .await;
+
+    let asked = b
+        .call(
+            "file",
+            "write",
+            json!({"path": "@alice/notes.txt", "content": base64("bonjour\n"), "message": "in French"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(asked["published"], json!([]));
+    let request = asked["requests"][0].as_str().unwrap().to_owned();
+    eventually("alice sees the request", async || {
+        let requests = a.call("request", "list", json!({})).await.unwrap();
+        requests.as_array().unwrap().len() == 1
+    })
+    .await;
+    eventually("alice reviews the difference", async || {
+        let page = a.page("/g/cheapmo/requests").await;
+        page.contains("- hello") && page.contains("+ bonjour")
+    })
+    .await;
+    let page = a.page("/g/cheapmo/requests").await;
+    assert!(page.contains(r#"action="/act/request/accept""#));
+    a.call("request", "accept", json!({"request": request}))
+        .await
+        .unwrap();
+    let on_a = a.root("cheapmo").join("@alice/notes.txt");
+    eventually("both hold the accepted note", async || {
+        std::fs::read_to_string(&on_a).ok().as_deref() == Some("bonjour\n")
+            && std::fs::read_to_string(&on_b).ok().as_deref() == Some("bonjour\n")
+    })
+    .await;
+    let history = a
+        .call("file", "history", json!({"path": "@alice/notes.txt"}))
+        .await
+        .unwrap();
+    assert_eq!(history.as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn web_forms_run_their_action_and_return() {
+    let lookup = MemoryLookup::new();
+    let peer = Peer::start(&lookup).await;
+    peer.call(
+        "group",
+        "create",
+        json!({"name": "cheapmo", "member": "alice", "password": "pa", "root": peer.root("cheapmo")}),
+    )
+    .await
+    .unwrap();
+    let boundary = "pigeonboundary";
+    let fields = [
+        ("back", "/g/cheapmo/selection"),
+        ("group", "cheapmo"),
+        ("pattern", "/docs/"),
+    ];
+    let parts = fields.map(|(name, value)| {
+        format!(
+            "--{boundary}\r\ncontent-disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+        )
+    });
+    let form = format!("{}--{boundary}--\r\n", parts.concat());
+    let kind = format!("multipart/form-data; boundary={boundary}");
+    let answer = peer
+        .send(
+            "POST",
+            "/act/selection/follow",
+            vec![peer.cookie()],
+            Some((kind, form.into_bytes())),
+        )
+        .await;
+    assert_eq!(answer.status, 303, "{}", answer.body);
+    assert_eq!(answer.location.as_deref(), Some("/g/cheapmo/selection"));
+    let rules = peer.call("selection", "list", json!({})).await.unwrap();
+    assert_eq!(
+        rules[1],
+        json!({"pattern": "/docs/", "cutoff": "PlusInfinity"})
+    );
+    let page = peer.page("/g/cheapmo/selection").await;
+    assert!(page.contains("/docs/"));
+}
+
+fn dummy(kind: Kind, peer: &Peer) -> Value {
+    match kind {
+        Kind::Text | Kind::Secret => json!("x"),
+        Kind::Path => json!("@alice/dummy.txt"),
+        Kind::Pattern => json!("/dummy/"),
+        Kind::Folder => json!(peer.root("dummy")),
+        Kind::Bytes => json!(base64("dummy")),
+        Kind::Number => json!(0),
+        Kind::Time => json!("2026-01-01T00:00:00Z"),
+        Kind::Choice(choices) => json!(choices[0]),
+        Kind::Flag => json!(false),
+    }
+}
+
+#[tokio::test]
+async fn every_action_of_the_catalog_is_carried_out() {
+    let lookup = MemoryLookup::new();
+    let peer = Peer::start(&lookup).await;
+    peer.call(
+        "group",
+        "create",
+        json!({"name": "cheapmo", "member": "alice", "password": "pa", "root": peer.root("cheapmo")}),
+    )
+    .await
+    .unwrap();
+    for action in ACTIONS {
+        let mut args = Map::new();
+        for param in action.params {
+            args.insert(param.name.to_owned(), dummy(param.kind, &peer));
+        }
+        if action.scope == pigeon::catalog::Scope::Group {
+            args.insert("group".to_owned(), json!("cheapmo"));
+        }
+        let result = peer
+            .call(action.noun, action.verb, Value::Object(args))
+            .await;
+        if let Err(error) = result {
+            assert!(
+                !error.contains("not implemented"),
+                "{}: {error}",
+                action.command()
+            );
+        }
+    }
+}

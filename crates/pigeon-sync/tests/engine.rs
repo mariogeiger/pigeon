@@ -1,7 +1,8 @@
 //! Engines of one group on this host: files reach the machines that hold
 //! them, edits nobody may publish are set aside and undone, drop files
 //! freeze and change through requests, concurrent edits of one member keep
-//! the later, and a taken name joins nothing.
+//! the later, a taken name joins nothing, and edits through actions publish
+//! or request each file under its own rule.
 
 mod common;
 
@@ -10,7 +11,7 @@ use pigeon_core::path::GroupPath;
 use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_core::statement::{Decision, Mode};
 use pigeon_store::aside::Reason;
-use pigeon_sync::JoinState;
+use pigeon_sync::{Edit, JoinState};
 
 fn rule(pattern: &str, cutoff: Cutoff) -> Rule {
     Rule {
@@ -282,4 +283,89 @@ async fn a_restarted_machine_resumes_without_publishing_again() {
     })
     .await;
     alice.engine.shutdown().await.unwrap();
+}
+
+fn path(text: &str) -> GroupPath {
+    GroupPath::parse(text).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edits_publish_what_the_member_writes_and_request_the_rest() {
+    let machines = group(&[("alice", "a"), ("bob", "b")]).await;
+    joined(&machines).await;
+    let [alice, bob] = &machines[..] else {
+        unreachable!()
+    };
+    let write = |name: &str, text: &str| Edit::Write {
+        path: path(name),
+        bytes: text.as_bytes().to_vec(),
+    };
+    let written = alice
+        .engine
+        .edit(
+            vec![
+                write("@alice/docs/a.txt", "a"),
+                write("@alice/docs/b.txt", "b"),
+            ],
+            Mode::Propose,
+            "",
+        )
+        .await
+        .unwrap();
+    assert_eq!(written.published.len(), 2);
+    let renamed = alice
+        .engine
+        .edit(
+            vec![Edit::Rename {
+                from: path("@alice/docs"),
+                to: path("@alice/papers"),
+            }],
+            Mode::Propose,
+            "",
+        )
+        .await
+        .unwrap();
+    assert_eq!(renamed.published.len(), 4);
+    assert!(renamed.requests.is_empty());
+    assert_eq!(alice.read("@alice/papers/a.txt").as_deref(), Some("a"));
+    assert!(alice.read("@alice/docs/a.txt").is_none());
+
+    eventually("bob sees the renamed folder", || async {
+        bob.engine
+            .list(Some(&path("@alice/papers")))
+            .await
+            .unwrap()
+            .len()
+            == 2
+    })
+    .await;
+    let deleted = bob
+        .engine
+        .edit(
+            vec![Edit::Delete {
+                path: path("@alice/papers"),
+            }],
+            Mode::Force,
+            "tidying",
+        )
+        .await
+        .unwrap();
+    assert!(deleted.published.is_empty());
+    assert_eq!(deleted.requests.len(), 1);
+    eventually("alice applies the forced deletion", || async {
+        alice.read("@alice/papers/a.txt").is_none() && alice.read("@alice/papers/b.txt").is_none()
+    })
+    .await;
+    let missing = alice
+        .engine
+        .edit(
+            vec![Edit::Delete {
+                path: path("@alice/papers"),
+            }],
+            Mode::Propose,
+            "",
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(missing.to_string(), "no file at @alice/papers");
 }
