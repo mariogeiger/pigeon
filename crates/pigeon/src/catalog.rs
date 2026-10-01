@@ -118,7 +118,7 @@ const PASSWORD: Param = required(
 const WHO: Param = required("member", "The member's name", Kind::Text);
 const ROOT: Param = optional(
     "root",
-    "The group's folder on this machine, by default one named after the group in your home folder",
+    "The group's folder on this machine, by default /<group>, or C:\\<group> on Windows, the same path on every machine",
     Kind::Folder,
 );
 const PATTERN: Param = required(

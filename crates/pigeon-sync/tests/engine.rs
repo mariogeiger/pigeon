@@ -408,3 +408,37 @@ async fn the_quota_drops_past_versions_and_keeps_current_ones() {
         Some(&b"two"[..])
     );
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_root_reached_through_a_link_syncs_both_ways() {
+    let machines = group(&[("alice", "a")]).await;
+    joined(&machines).await;
+    let alice = &machines[0];
+    let bob = alice
+        .join_through_link(&alice.engine.group_key(), "bob", "b")
+        .await;
+    joined(std::slice::from_ref(&bob)).await;
+    for (machine, folder) in [(alice, "@bob/"), (&bob, "@alice/")] {
+        machine
+            .engine
+            .set_rule(rule(folder, Cutoff::PlusInfinity))
+            .await
+            .unwrap();
+    }
+    alice.edit("@alice/notes.txt", "from alice");
+    eventually("bob receives through his link", || async {
+        bob.read("@alice/notes.txt").as_deref() == Some("from alice")
+    })
+    .await;
+    bob.edit("@bob/notes.txt", "from bob");
+    eventually("bob's edit through his link is published", || async {
+        alice.read("@bob/notes.txt").as_deref() == Some("from bob")
+    })
+    .await;
+    assert!(bob.engine.status().await.errors.is_empty());
+    bob.engine.shutdown().await.unwrap();
+    for machine in machines {
+        machine.engine.shutdown().await.unwrap();
+    }
+}

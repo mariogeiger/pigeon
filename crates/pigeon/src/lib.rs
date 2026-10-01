@@ -15,4 +15,5 @@ mod pages;
 pub mod perform;
 pub mod render;
 pub mod serve;
+pub mod shared_root;
 mod web;

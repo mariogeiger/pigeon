@@ -14,6 +14,7 @@ use pigeon_sync::{Engine, JoinState, Options};
 use tokio::sync::{RwLock, RwLockReadGuard};
 
 use crate::home::Home;
+use crate::shared_root::{create_root, shared_root};
 
 /// Every group on this machine.
 pub struct Daemon {
@@ -109,12 +110,8 @@ impl Daemon {
                 "this machine is already in the group {name}: see `pigeon group status --group {name}`"
             );
         }
-        let root = match root {
-            Some(root) => root,
-            None => dirs::home_dir()
-                .ok_or_else(|| anyhow!("this system has no home folder: pass --root"))?
-                .join(&name),
-        };
+        let root = root.unwrap_or_else(|| shared_root(&name));
+        create_root(&root)?;
         let data = self.home.group(&name);
         let machine = data.machine_key()?;
         data.save_config(&GroupConfig::join(key, member, password, root, &machine))?;

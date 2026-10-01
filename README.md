@@ -31,7 +31,7 @@ From another terminal, found a group, or join one with the key a member
 shared:
 
 ```sh
-pigeon group create --name cheapmo --member mario --root ~/cheapmo
+pigeon group create --name cheapmo --member mario
 pigeon group key
 pigeon group join --key cheapmo-… --member alice
 ```
@@ -74,6 +74,12 @@ the shell's completion script. The daemon keeps its state in
 - **Subscriptions.** Everyone sees the whole tree, in the web interface or the
   command line; each machine downloads only the folders it subscribes to, and
   single files on demand.
+- **One path everywhere.** A group's root is `/cheapmo` on Linux and macOS
+  and `C:\cheapmo` on Windows, where programs on drive C: also resolve
+  `/cheapmo`, so paths written in files hold on every machine. When only an
+  administrator may create it, pigeon prints the command to run once: on
+  macOS, a line in `/etc/synthetic.conf` links `/cheapmo` to a folder of your
+  home. `--root` picks another folder.
 - **Peer to peer.** Machines connect directly, end-to-end encrypted, over the
   local network or the internet.
 

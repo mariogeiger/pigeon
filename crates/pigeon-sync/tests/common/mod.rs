@@ -69,11 +69,32 @@ impl Machine {
 
     /// Starts another machine on the same network, joining with `key`.
     pub async fn join_with(&self, key: &str, member: &str, password: &str) -> Machine {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
         start(
             key.parse().unwrap(),
             member,
             password,
-            tempfile::tempdir().unwrap(),
+            (dir, root),
+            self.options.clone(),
+        )
+        .await
+    }
+
+    /// Starts another machine on the same network, joining with `key`,
+    /// whose root is a link to a folder elsewhere, as macOS makes `/name`.
+    #[cfg(unix)]
+    pub async fn join_through_link(&self, key: &str, member: &str, password: &str) -> Machine {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("elsewhere");
+        std::fs::create_dir(&folder).unwrap();
+        let root = dir.path().join("root");
+        std::os::unix::fs::symlink(&folder, &root).unwrap();
+        start(
+            key.parse().unwrap(),
+            member,
+            password,
+            (dir, root),
             self.options.clone(),
         )
         .await
@@ -84,11 +105,10 @@ async fn start(
     key: GroupKey,
     member: &str,
     password: &str,
-    dir: TempDir,
+    (dir, root): (TempDir, PathBuf),
     options: Options,
 ) -> Machine {
     let data = DataDir::new(dir.path().join("data"));
-    let root = dir.path().join("root");
     let config = GroupConfig::join(
         key,
         MemberName::parse(member).unwrap(),
@@ -149,7 +169,8 @@ pub async fn group(members: &[(&str, &str)]) -> Vec<Machine> {
     let key = GroupKey::generate(MemberName::parse("friends").unwrap(), vec![first]);
     let mut machines = Vec::new();
     for (dir, (member, password)) in dirs.into_iter().zip(members) {
-        machines.push(start(key.clone(), member, password, dir, options(&lookup)).await);
+        let root = dir.path().join("root");
+        machines.push(start(key.clone(), member, password, (dir, root), options(&lookup)).await);
     }
     machines
 }

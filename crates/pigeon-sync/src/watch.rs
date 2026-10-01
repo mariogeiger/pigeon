@@ -43,16 +43,19 @@ pub fn rescan_of(root: &Path, location: &Path) -> Option<Rescan> {
         .map_or(Some(Rescan::All), |path| Some(Rescan::Under(path)))
 }
 
-/// Starts watching `root`; the watcher stops when dropped.
+/// Starts watching `root`, followed to the folder it may link to, since
+/// some systems report changes under that folder's own path; the watcher
+/// stops when dropped.
 ///
 /// # Errors
 ///
-/// Fails if the system refuses to watch the root.
+/// Fails if the root does not exist or the system refuses to watch it.
 pub fn watch(
     root: &Path,
     changes: mpsc::UnboundedSender<Rescan>,
 ) -> notify::Result<RecommendedWatcher> {
-    let base: PathBuf = root.to_path_buf();
+    let followed: PathBuf = root.canonicalize().map_err(notify::Error::io)?;
+    let base = followed.clone();
     let mut watcher =
         notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
             Ok(event) => {
@@ -69,7 +72,7 @@ pub fn watch(
                 let _ = changes.send(Rescan::All);
             }
         })?;
-    watcher.watch(root, RecursiveMode::Recursive)?;
+    watcher.watch(&followed, RecursiveMode::Recursive)?;
     Ok(watcher)
 }
 
@@ -93,9 +96,9 @@ mod tests {
     #[tokio::test]
     async fn reports_a_new_file() {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = dir.path();
         let (sender, mut changes) = mpsc::unbounded_channel();
-        let _watcher = watch(&root, sender).unwrap();
+        let _watcher = watch(root, sender).unwrap();
         std::fs::write(root.join("new.txt"), "x").unwrap();
         let expected = Rescan::Under(GroupPath::parse("new.txt").unwrap());
         let seen = tokio::time::timeout(Duration::from_secs(5), async {
