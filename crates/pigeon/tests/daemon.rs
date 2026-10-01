@@ -184,6 +184,7 @@ async fn the_api_answers_only_localhost_calls_with_the_token() {
     let cookie = open.cookie.unwrap();
     assert!(cookie.starts_with(&format!("pigeon_token={};", peer.token)));
     assert!(cookie.contains("HttpOnly") && cookie.contains("SameSite=Strict"));
+    assert!(cookie.contains("Max-Age=34560000"));
     let home = peer.page("/").await;
     assert!(home.contains(r#"action="/act/group/create""#));
     assert!(home.contains(r#"action="/act/group/join""#));

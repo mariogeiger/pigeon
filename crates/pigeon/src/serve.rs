@@ -12,6 +12,10 @@ use crate::api::{App, serve};
 use crate::daemon::Daemon;
 use crate::home::Home;
 
+/// The localhost port the daemon listens on unless told otherwise: fixed, so
+/// that the web UI keeps one address a browser can bookmark.
+pub const PORT: u16 = 6767;
+
 /// Runs the daemon of `home` on `port`, any free port for 0.
 ///
 /// # Errors
@@ -21,7 +25,9 @@ pub async fn run(home: Home, port: u16) -> Result<()> {
     let token = home.token()?;
     let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
         .await
-        .with_context(|| format!("listening on localhost port {port}"))?;
+        .with_context(|| {
+            format!("listening on localhost port {port}: if another program holds it, pass another with --port")
+        })?;
     let address = listener.local_addr()?;
     let daemon = Daemon::start(home.clone(), Options::default()).await?;
     home.save_address(address)?;

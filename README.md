@@ -23,7 +23,8 @@ pigeon ui
 Choose a password when asked, and use the same one on your other machines.
 If pigeon says only an administrator can create the group's folder, run the
 command it prints and join again. `pigeon ui` prints the link to the web
-interface, where you choose the folders to follow.
+interface, where you choose the folders to follow. Open it once per
+browser; from then on the interface is at <http://127.0.0.1:6767>.
 
 To found a group, run its server, or manage members, see
 [docs/setup.md](docs/setup.md).

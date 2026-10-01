@@ -20,9 +20,13 @@ Run the same command with `--force` to update.
 ## 2. Keep the daemon running
 
 `pigeon daemon` syncs every group of the machine and serves the API and the
-web interface on localhost. It keeps its state in `$PIGEON_HOME`, by
-default a `pigeon` folder in the user's data folder. Start it at login. On
-Linux, a systemd user service does this:
+web interface on localhost port 6767, or the one `--port` names. The link
+`pigeon ui` prints leaves the browser a cookie that lasts 400 days, so
+afterwards <http://127.0.0.1:6767> opens the interface directly.
+
+The daemon keeps its state in `$PIGEON_HOME`, by default a `pigeon` folder
+in the user's data folder. Start it at login. On Linux, a systemd user
+service does this:
 
 ```ini
 # ~/.config/systemd/user/pigeon.service

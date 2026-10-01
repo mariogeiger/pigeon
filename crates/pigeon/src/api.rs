@@ -27,6 +27,10 @@ use crate::web;
 /// The cookie that carries the token in the web UI.
 pub const COOKIE: &str = "pigeon_token";
 
+/// How long the browser keeps the token cookie, in seconds: 400 days, the
+/// longest browsers allow.
+const COOKIE_SECONDS: u32 = 400 * 24 * 60 * 60;
+
 /// What the server serves.
 pub struct App {
     pub daemon: Daemon,
@@ -113,7 +117,10 @@ async fn open(State(app): State<Arc<App>>, Query(query): Query<Open>) -> Respons
         )
             .into_response();
     }
-    let cookie = format!("{COOKIE}={}; HttpOnly; SameSite=Strict; Path=/", app.token);
+    let cookie = format!(
+        "{COOKIE}={}; HttpOnly; SameSite=Strict; Path=/; Max-Age={COOKIE_SECONDS}",
+        app.token
+    );
     ([(header::SET_COOKIE, cookie)], Redirect::to("/")).into_response()
 }
 

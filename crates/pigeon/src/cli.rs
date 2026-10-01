@@ -66,9 +66,8 @@ pub fn command() -> Command {
             .arg(
                 Arg::new("port")
                     .long("port")
-                    .help("The localhost port, any free one by default")
-                    .value_parser(clap::value_parser!(u16))
-                    .default_value("0"),
+                    .help(format!("The localhost port, {} by default; 0 picks any free one", serve::PORT))
+                    .value_parser(clap::value_parser!(u16)),
             ),
     )
     .subcommand(
@@ -188,7 +187,10 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
     };
     match noun {
         "daemon" => {
-            let port = noun_matches.get_one::<u16>("port").copied().unwrap_or(0);
+            let port = noun_matches
+                .get_one::<u16>("port")
+                .copied()
+                .unwrap_or(serve::PORT);
             tokio::runtime::Runtime::new()?.block_on(serve::run(home, port))
         }
         "relay" => {
