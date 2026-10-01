@@ -64,7 +64,7 @@ pub enum Rejection {
         "the name {0} is taken: another password made it, so choose another name or retype yours"
     )]
     OtherKey(MemberName),
-    #[error("a folder _{0} already claims the name {0}: choose another name")]
+    #[error("a folder +{0} already claims the name {0}: choose another name")]
     ClaimedByFolder(MemberName),
     #[error("{0} no longer belongs to this group")]
     Excluded(MemberName),

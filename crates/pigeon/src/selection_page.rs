@@ -302,14 +302,14 @@ mod tests {
             "now": { "files": 120, "bytes": 3_100_000_000_u64 },
             "after": { "files": 21, "bytes": 2_400_000_000_u64 },
             "rules": [
-                { "line": 1, "rule": "follow _mario/", "pattern": "_mario/", "matches": 42, "decides": { "files": 40, "bytes": 2_000_000 } },
+                { "line": 1, "rule": "follow +mario/", "pattern": "+mario/", "matches": 42, "decides": { "files": 40, "bytes": 2_000_000 } },
                 { "line": 2, "rule": "free *.iso", "pattern": "*.iso", "matches": 3, "decides": { "files": 3, "bytes": 900_000 } },
                 { "line": 3, "rule": "frozen 2026-10-01T12:00:00Z /old/", "pattern": "/old/", "matches": 2, "decides": { "files": 0, "bytes": 0 } },
                 { "line": 4, "error": "\"keep\" is not a mode" },
                 { "line": 5, "rule": "follow /none/", "pattern": "/none/", "matches": 0, "decides": { "files": 0, "bytes": 0 } },
             ],
             "deltas": [
-                { "delta": "download", "total": { "files": 1, "bytes": 180_000_000 }, "largest": [{ "path": "_mario/a b.txt", "size": 180_000_000, "rule": 0 }] },
+                { "delta": "download", "total": { "files": 1, "bytes": 180_000_000 }, "largest": [{ "path": "+mario/a b.txt", "size": 180_000_000, "rule": 0 }] },
                 { "delta": "free", "total": { "files": 134, "bytes": 890_000_000 }, "largest": listed },
                 { "delta": "freeze", "total": { "files": 0, "bytes": 0 }, "largest": [] },
             ],
@@ -352,8 +352,7 @@ mod tests {
         assert!(panel.contains("… and 34 more (889.9 MB)"), "{panel}");
         assert!(panel.contains("href=\"/g/g/files?under=big\""), "{panel}");
         assert!(
-            panel.contains("href=\"/g/g/file?path=%40mario/a%20b.txt\"")
-                || panel.contains("href=\"/g/g/file?path=_mario/a%20b.txt\""),
+            panel.contains("href=\"/g/g/file?path=%2Bmario/a%20b.txt\""),
             "{panel}"
         );
         assert!(

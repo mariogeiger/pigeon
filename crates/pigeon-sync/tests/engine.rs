@@ -31,53 +31,53 @@ async fn a_personal_file_reaches_the_machines_that_hold_it() {
     let [alice, bob] = &machines[..] else {
         unreachable!()
     };
-    alice.edit("_alice/notes.txt", "one");
+    alice.edit("+alice/notes.txt", "one");
     eventually("bob sees alice's file in the ledger", || async {
         bob.engine
-            .history(&GroupPath::parse("_alice/notes.txt").unwrap())
+            .history(&GroupPath::parse("+alice/notes.txt").unwrap())
             .len()
             == 1
     })
     .await;
     assert_eq!(
-        bob.read("_alice/notes.txt"),
+        bob.read("+alice/notes.txt"),
         None,
-        "bob does not hold _alice yet"
+        "bob does not hold +alice yet"
     );
     bob.engine
-        .set_rule(rule("_alice/", Cutoff::PlusInfinity))
+        .set_rule(rule("+alice/", Cutoff::PlusInfinity))
         .await
         .unwrap();
     eventually("bob holds alice's file", || async {
-        bob.read("_alice/notes.txt").as_deref() == Some("one")
+        bob.read("+alice/notes.txt").as_deref() == Some("one")
     })
     .await;
-    assert!(is_read_only(&bob.file("_alice/notes.txt")));
-    assert!(!is_read_only(&alice.file("_alice/notes.txt")));
+    assert!(is_read_only(&bob.file("+alice/notes.txt")));
+    assert!(!is_read_only(&alice.file("+alice/notes.txt")));
     assert!(bob.read(".pigeon/members/alice").is_some());
 
-    alice.edit("_alice/notes.txt", "two");
+    alice.edit("+alice/notes.txt", "two");
     eventually("bob follows alice's edit", || async {
-        bob.read("_alice/notes.txt").as_deref() == Some("two")
+        bob.read("+alice/notes.txt").as_deref() == Some("two")
     })
     .await;
-    std::fs::remove_file(alice.file("_alice/notes.txt")).unwrap();
+    std::fs::remove_file(alice.file("+alice/notes.txt")).unwrap();
     eventually("bob follows alice's deletion", || async {
-        bob.read("_alice/notes.txt").is_none()
+        bob.read("+alice/notes.txt").is_none()
     })
     .await;
 
-    alice.edit("_alice/kept.txt", "kept");
+    alice.edit("+alice/kept.txt", "kept");
     eventually("bob holds the new file", || async {
-        bob.read("_alice/kept.txt").is_some()
+        bob.read("+alice/kept.txt").is_some()
     })
     .await;
     bob.engine
-        .set_rule(rule("_alice/", Cutoff::MinusInfinity))
+        .set_rule(rule("+alice/", Cutoff::MinusInfinity))
         .await
         .unwrap();
     assert_eq!(
-        bob.read("_alice/kept.txt"),
+        bob.read("+alice/kept.txt"),
         None,
         "a released file leaves the disk"
     );
@@ -95,24 +95,24 @@ async fn an_edit_that_may_not_be_published_is_set_aside_then_forced() {
         unreachable!()
     };
     bob.engine
-        .set_rule(rule("_alice/", Cutoff::PlusInfinity))
+        .set_rule(rule("+alice/", Cutoff::PlusInfinity))
         .await
         .unwrap();
-    alice.edit("_alice/plan.txt", "alice's plan");
+    alice.edit("+alice/plan.txt", "alice's plan");
     eventually("bob holds the plan", || async {
-        bob.read("_alice/plan.txt").is_some()
+        bob.read("+alice/plan.txt").is_some()
     })
     .await;
-    bob.edit("_alice/plan.txt", "bob's plan");
+    bob.edit("+alice/plan.txt", "bob's plan");
     eventually("bob's edit is set aside and undone", || async {
-        bob.read("_alice/plan.txt").as_deref() == Some("alice's plan")
+        bob.read("+alice/plan.txt").as_deref() == Some("alice's plan")
             && !bob.engine.aside().unwrap().is_empty()
     })
     .await;
     let aside = bob.engine.aside().unwrap();
     assert_eq!(aside.len(), 1);
     assert_eq!(aside[0].item.reason, Reason::NotWritable);
-    assert_eq!(aside[0].item.path, "_alice/plan.txt");
+    assert_eq!(aside[0].item.path, "+alice/plan.txt");
     bob.engine
         .request_aside(aside[0].id, Mode::Force, "my version")
         .await
@@ -120,7 +120,7 @@ async fn an_edit_that_may_not_be_published_is_set_aside_then_forced() {
     assert!(bob.engine.aside().unwrap().is_empty());
     for machine in [alice, bob] {
         eventually("the forced request lands everywhere", || async {
-            machine.read("_alice/plan.txt").as_deref() == Some("bob's plan")
+            machine.read("+alice/plan.txt").as_deref() == Some("bob's plan")
         })
         .await;
     }
@@ -198,17 +198,17 @@ async fn concurrent_edits_of_one_member_keep_the_later_and_set_aside_the_other()
     let [laptop, desktop] = &machines[..] else {
         unreachable!()
     };
-    laptop.edit("_alice/todo.txt", "base");
+    laptop.edit("+alice/todo.txt", "base");
     eventually("the desktop holds the file", || async {
-        desktop.read("_alice/todo.txt").as_deref() == Some("base")
+        desktop.read("+alice/todo.txt").as_deref() == Some("base")
     })
     .await;
-    laptop.edit("_alice/todo.txt", "laptop");
-    desktop.edit("_alice/todo.txt", "desktop");
+    laptop.edit("+alice/todo.txt", "laptop");
+    desktop.edit("+alice/todo.txt", "desktop");
     eventually("both machines agree and the loser is set aside", || async {
         let (one, two) = (
-            laptop.read("_alice/todo.txt"),
-            desktop.read("_alice/todo.txt"),
+            laptop.read("+alice/todo.txt"),
+            desktop.read("+alice/todo.txt"),
         );
         let set_aside =
             laptop.engine.aside().unwrap().len() + desktop.engine.aside().unwrap().len();
@@ -262,11 +262,11 @@ async fn a_restarted_machine_resumes_without_publishing_again() {
     let mut machines = group(&[("alice", "a")]).await;
     joined(&machines).await;
     let alice = machines.remove(0);
-    alice.edit("_alice/a.txt", "a");
+    alice.edit("+alice/a.txt", "a");
     eventually("the file is published", || async {
         alice
             .engine
-            .history(&GroupPath::parse("_alice/a.txt").unwrap())
+            .history(&GroupPath::parse("+alice/a.txt").unwrap())
             .len()
             == 1
     })
@@ -276,12 +276,12 @@ async fn a_restarted_machine_resumes_without_publishing_again() {
     assert_eq!(alice.engine.status().await.join, JoinState::Joined);
     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
     assert_eq!(alice.engine.status().await.patches, patches);
-    assert_eq!(alice.read("_alice/a.txt").as_deref(), Some("a"));
-    alice.edit("_alice/a.txt", "b");
+    assert_eq!(alice.read("+alice/a.txt").as_deref(), Some("a"));
+    alice.edit("+alice/a.txt", "b");
     eventually("an edit after the restart is published", || async {
         alice
             .engine
-            .history(&GroupPath::parse("_alice/a.txt").unwrap())
+            .history(&GroupPath::parse("+alice/a.txt").unwrap())
             .len()
             == 2
     })
@@ -308,8 +308,8 @@ async fn edits_publish_what_the_member_writes_and_request_the_rest() {
         .engine
         .edit(
             vec![
-                write("_alice/docs/a.txt", "a"),
-                write("_alice/docs/b.txt", "b"),
+                write("+alice/docs/a.txt", "a"),
+                write("+alice/docs/b.txt", "b"),
             ],
             Mode::Propose,
             "",
@@ -321,8 +321,8 @@ async fn edits_publish_what_the_member_writes_and_request_the_rest() {
         .engine
         .edit(
             vec![Edit::Rename {
-                from: path("_alice/docs"),
-                to: path("_alice/papers"),
+                from: path("+alice/docs"),
+                to: path("+alice/papers"),
             }],
             Mode::Propose,
             "",
@@ -331,12 +331,12 @@ async fn edits_publish_what_the_member_writes_and_request_the_rest() {
         .unwrap();
     assert_eq!(renamed.published.len(), 4);
     assert!(renamed.requests.is_empty());
-    assert_eq!(alice.read("_alice/papers/a.txt").as_deref(), Some("a"));
-    assert!(alice.read("_alice/docs/a.txt").is_none());
+    assert_eq!(alice.read("+alice/papers/a.txt").as_deref(), Some("a"));
+    assert!(alice.read("+alice/docs/a.txt").is_none());
 
     eventually("bob sees the renamed folder", || async {
         bob.engine
-            .list(Some(&path("_alice/papers")))
+            .list(Some(&path("+alice/papers")))
             .await
             .unwrap()
             .len()
@@ -347,7 +347,7 @@ async fn edits_publish_what_the_member_writes_and_request_the_rest() {
         .engine
         .edit(
             vec![Edit::Delete {
-                path: path("_alice/papers"),
+                path: path("+alice/papers"),
             }],
             Mode::Force,
             "tidying",
@@ -357,21 +357,21 @@ async fn edits_publish_what_the_member_writes_and_request_the_rest() {
     assert!(deleted.published.is_empty());
     assert_eq!(deleted.requests.len(), 1);
     eventually("alice applies the forced deletion", || async {
-        alice.read("_alice/papers/a.txt").is_none() && alice.read("_alice/papers/b.txt").is_none()
+        alice.read("+alice/papers/a.txt").is_none() && alice.read("+alice/papers/b.txt").is_none()
     })
     .await;
     let missing = alice
         .engine
         .edit(
             vec![Edit::Delete {
-                path: path("_alice/papers"),
+                path: path("+alice/papers"),
             }],
             Mode::Propose,
             "",
         )
         .await
         .unwrap_err();
-    assert_eq!(missing.to_string(), "no file at _alice/papers");
+    assert_eq!(missing.to_string(), "no file at +alice/papers");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -381,7 +381,7 @@ async fn the_quota_drops_past_versions_and_keeps_current_ones() {
     let alice = &machines[0];
     for text in ["one", "two"] {
         let edit = Edit::Write {
-            path: path("_alice/a.txt"),
+            path: path("+alice/a.txt"),
             bytes: text.as_bytes().to_vec(),
         };
         alice
@@ -390,7 +390,7 @@ async fn the_quota_drops_past_versions_and_keeps_current_ones() {
             .await
             .unwrap();
     }
-    let history = alice.engine.history(&path("_alice/a.txt"));
+    let history = alice.engine.history(&path("+alice/a.txt"));
     let [old, current] = &history[..] else {
         panic!("two versions: {history:?}")
     };
@@ -420,7 +420,7 @@ async fn keeping_history_keeps_past_versions_of_others_files() {
         unreachable!()
     };
     bob.engine
-        .set_rule(rule("_alice/", Cutoff::PlusInfinity))
+        .set_rule(rule("+alice/", Cutoff::PlusInfinity))
         .await
         .unwrap();
     let keep = |everything| Retention {
@@ -429,13 +429,13 @@ async fn keeping_history_keeps_past_versions_of_others_files() {
     };
     bob.engine.set_retention(&keep(true)).await.unwrap();
     for text in ["one", "two"] {
-        alice.edit("_alice/a.txt", text);
+        alice.edit("+alice/a.txt", text);
         eventually("bob follows alice", || async {
-            bob.read("_alice/a.txt").as_deref() == Some(text)
+            bob.read("+alice/a.txt").as_deref() == Some(text)
         })
         .await;
     }
-    let history = bob.engine.history(&path("_alice/a.txt"));
+    let history = bob.engine.history(&path("+alice/a.txt"));
     let old = history[0].content.unwrap();
     bob.engine.set_retention(&keep(true)).await.unwrap();
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -485,21 +485,21 @@ async fn a_root_reached_through_a_link_syncs_both_ways() {
         .join_through_link(&alice.engine.group_key(), "bob", "b")
         .await;
     joined(std::slice::from_ref(&bob)).await;
-    for (machine, folder) in [(alice, "_bob/"), (&bob, "_alice/")] {
+    for (machine, folder) in [(alice, "+bob/"), (&bob, "+alice/")] {
         machine
             .engine
             .set_rule(rule(folder, Cutoff::PlusInfinity))
             .await
             .unwrap();
     }
-    alice.edit("_alice/notes.txt", "from alice");
+    alice.edit("+alice/notes.txt", "from alice");
     eventually("bob receives through his link", || async {
-        bob.read("_alice/notes.txt").as_deref() == Some("from alice")
+        bob.read("+alice/notes.txt").as_deref() == Some("from alice")
     })
     .await;
-    bob.edit("_bob/notes.txt", "from bob");
+    bob.edit("+bob/notes.txt", "from bob");
     eventually("bob's edit through his link is published", || async {
-        alice.read("_bob/notes.txt").as_deref() == Some("from bob")
+        alice.read("+bob/notes.txt").as_deref() == Some("from bob")
     })
     .await;
     assert!(bob.engine.status().await.errors.is_empty());

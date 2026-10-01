@@ -111,11 +111,11 @@ To manage members:
 
 ## 5. Organize the files
 
-- A folder named `_` and a member's name, such as `/cheapmo/src/_mario`,
+- A folder named `+` and a member's name, such as `/cheapmo/src/+mario`,
   belongs to that member. Only their machines write it, and everyone reads
   it. A member can have as many such folders as they like, anywhere in the
-  tree. A folder such as `_build` whose name no member holds stays an
-  ordinary folder, but while it exists nobody can join as `build`.
+  tree. A folder `+<name>` whose name no member holds stays an ordinary
+  folder, but while it exists nobody can join under that name.
 - Every other folder is a drop folder, where anyone adds files. A new file
   is published once it has not changed for five minutes. After that it is
   frozen, and only a request changes it. `pigeon file pending` lists the
@@ -155,7 +155,7 @@ rule winning, and preview them before saving:
 ```sh
 pigeon selection list > rules.txt
 cat rules.txt
-# follow _mario/
+# follow +mario/
 # frozen 2026-10-01T12:00:00Z /report/
 # free *.iso
 pigeon selection preview --rules rules.txt

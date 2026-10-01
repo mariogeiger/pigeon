@@ -179,10 +179,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         write(root, ".pigeon/members/mario", "{}");
-        write(root, "src/_mario/.pigeonignore", "target/\n*.log\n");
-        write(root, "src/_mario/main.rs", "fn main() {}");
-        write(root, "src/_mario/target/debug/app", "bin");
-        write(root, "src/_mario/run.log", "log");
+        write(root, "src/+mario/.pigeonignore", "target/\n*.log\n");
+        write(root, "src/+mario/main.rs", "fn main() {}");
+        write(root, "src/+mario/target/debug/app", "bin");
+        write(root, "src/+mario/run.log", "log");
         write(root, "run.log", "not ignored here");
         write(root, ".gitignore", "*.rs\n");
         write(root, "src/.~pigeon-main.rs", "partial");
@@ -193,8 +193,8 @@ mod tests {
                 ".gitignore",
                 ".pigeon/members/mario",
                 "run.log",
-                "src/_mario/.pigeonignore",
-                "src/_mario/main.rs",
+                "src/+mario/.pigeonignore",
+                "src/+mario/main.rs",
             ]
         );
         assert!(scan.skipped.is_empty());

@@ -100,13 +100,13 @@ mod tests {
         let write = find("file", "write").unwrap();
         let fill = Fill {
             group: Some("cheapmo"),
-            fixed: &[("path", "_alice/a.txt")],
+            fixed: &[("path", "+alice/a.txt")],
             defaults: &[("mode", "force")],
         };
         let markup = form(write, "/g/cheapmo", fill).into_string();
         assert!(markup.contains(r#"action="/act/file/write""#));
         assert!(markup.contains(r#"<input type="hidden" name="group" value="cheapmo">"#));
-        assert!(markup.contains(r#"<input type="hidden" name="path" value="_alice/a.txt">"#));
+        assert!(markup.contains(r#"<input type="hidden" name="path" value="+alice/a.txt">"#));
         assert!(markup.contains(r#"<input type="file" name="content" required>"#));
         assert!(markup.contains(r#"<option value="force" selected>"#));
         let accept = find("request", "accept").unwrap();

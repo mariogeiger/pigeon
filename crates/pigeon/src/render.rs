@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn lists_read_as_tables_of_their_columns() {
         let files = json!([
-            {"path": "_alice/a.txt", "owner": "alice", "content": {"size": 2048}, "time": "t", "held": true, "outdated": false, "writable": true},
+            {"path": "+alice/a.txt", "owner": "alice", "content": {"size": 2048}, "time": "t", "held": true, "outdated": false, "writable": true},
         ]);
         let text = text(find("file", "list").unwrap(), &files);
         let lines: Vec<&str> = text.lines().collect();
@@ -186,7 +186,7 @@ mod tests {
         );
         assert_eq!(
             lines[1],
-            "_alice/a.txt  alice  2.0 KB  t     yes             yes"
+            "+alice/a.txt  alice  2.0 KB  t     yes             yes"
         );
         let key = json!({"key": "cheapmo-abc"});
         assert_eq!(

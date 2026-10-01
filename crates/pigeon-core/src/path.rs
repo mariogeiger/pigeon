@@ -7,7 +7,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 
-/// A portable path inside a group, such as `src/_mario/notes.txt`.
+/// A portable path inside a group, such as `src/+mario/notes.txt`.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct GroupPath(String);
@@ -225,15 +225,15 @@ mod tests {
 
     #[test]
     fn folders_are_prefixes_of_whole_names() {
-        let path = GroupPath::parse("src/_mario/a.txt").unwrap();
+        let path = GroupPath::parse("src/+mario/a.txt").unwrap();
         assert!(path.is_inside("src"));
-        assert!(path.is_inside("src/_mario"));
+        assert!(path.is_inside("src/+mario"));
         assert!(path.is_inside(""));
         assert!(!path.is_inside("sr"));
         assert_eq!(
             path.moved("src", "lib").unwrap().as_str(),
-            "lib/_mario/a.txt"
+            "lib/+mario/a.txt"
         );
-        assert_eq!(path.moved("src", "").unwrap().as_str(), "_mario/a.txt");
+        assert_eq!(path.moved("src", "").unwrap().as_str(), "+mario/a.txt");
     }
 }

@@ -25,7 +25,7 @@ async fn waiting_edits_are_listed_and_published_at_once_under_a_path() {
     let mut changes = alice.engine.changes();
     changes.mark_unchanged();
     alice.edit("shared/drop.txt", "draft");
-    alice.edit("_alice/notes.txt", "mine");
+    alice.edit("+alice/notes.txt", "mine");
     eventually("both edits wait", || async {
         alice.engine.pending(None).await.len() == 2
     })
@@ -38,7 +38,7 @@ async fn waiting_edits_are_listed_and_published_at_once_under_a_path() {
     let [notes, drop] = &pending[..] else {
         unreachable!()
     };
-    assert_eq!(notes.path, path("_alice/notes.txt"));
+    assert_eq!(notes.path, path("+alice/notes.txt"));
     assert!(!notes.freezes && !notes.deleted && notes.due_in <= 60);
     assert_eq!(drop.path, path("shared/drop.txt"));
     assert!(drop.freezes && (60..=600).contains(&drop.due_in));
@@ -52,7 +52,7 @@ async fn waiting_edits_are_listed_and_published_at_once_under_a_path() {
     assert!(is_read_only(&alice.file("shared/drop.txt")));
     let left = alice.engine.pending(None).await;
     assert_eq!(left.len(), 1);
-    assert_eq!(left[0].path, path("_alice/notes.txt"));
+    assert_eq!(left[0].path, path("+alice/notes.txt"));
     eventually("the publication is signalled", || async {
         changes.has_changed().unwrap()
     })
@@ -60,7 +60,7 @@ async fn waiting_edits_are_listed_and_published_at_once_under_a_path() {
 
     alice.engine.publish(None).await.unwrap();
     assert!(alice.engine.pending(None).await.is_empty());
-    std::fs::remove_file(alice.file("_alice/notes.txt")).unwrap();
+    std::fs::remove_file(alice.file("+alice/notes.txt")).unwrap();
     eventually("the deletion waits", || async {
         alice
             .engine
@@ -71,5 +71,5 @@ async fn waiting_edits_are_listed_and_published_at_once_under_a_path() {
     })
     .await;
     assert!(alice.engine.publish(None).await.is_ok());
-    assert_eq!(alice.engine.history(&path("_alice/notes.txt")).len(), 2);
+    assert_eq!(alice.engine.history(&path("+alice/notes.txt")).len(), 2);
 }
