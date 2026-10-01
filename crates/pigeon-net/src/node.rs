@@ -4,17 +4,16 @@
 //! latest group secret to recognized machines, and serves and fetches blobs
 //! among admitted machines, each from several machines at once, through the
 //! relays it is told to use when no direct connection works, and tells
-//! which machines speak no protocol of its own.
+//! which machines speak no protocol of its own and which pigeon they run,
+//! as it tells any machine that asks which pigeon it runs.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-use iroh::endpoint::{
-    ConnectError, ConnectingError, Connection, ConnectionError, TransportErrorCode,
-};
+use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, RelayMap, RelayUrl};
 use iroh_blobs::api::Store;
@@ -29,6 +28,7 @@ use pigeon_core::clock::{MachineId, Stamp};
 use pigeon_core::identity::{GroupId, MachineCert, RenewedSecret};
 use tokio::sync::{broadcast, mpsc, watch};
 
+use crate::hello::{self, Announcement, Announcing, HELLO_ALPN, Heard};
 use crate::swarm;
 use crate::wire::{self, Hello, Message, Patches, SYNC_ALPN, Vector};
 
@@ -65,7 +65,7 @@ struct Shared {
     connected: Counts,
     admitted: Mutex<HashSet<MachineId>>,
     wanted: Mutex<BTreeSet<MachineId>>,
-    incompatible: Mutex<BTreeSet<MachineId>>,
+    incompatible: Mutex<BTreeMap<MachineId, Heard>>,
     relays: tokio::sync::Mutex<Vec<RelayUrl>>,
 }
 
@@ -225,9 +225,10 @@ impl Shared {
         let shared = self.clone();
         tokio::spawn(async move {
             let dialed = shared.endpoint.connect(machine, SYNC_ALPN).await;
-            let incompatible = dialed.as_ref().is_err_and(speaks_no_protocol_of_ours);
+            let incompatible = dialed.as_ref().is_err_and(hello::refuses_every_protocol);
             if incompatible {
-                lock(&shared.incompatible).insert(machine);
+                let heard = hello::ask(&shared.endpoint, machine).await;
+                lock(&shared.incompatible).insert(machine, heard);
             } else {
                 lock(&shared.incompatible).remove(&machine);
             }
@@ -237,28 +238,6 @@ impl Shared {
             count(&shared.attempts, machine, false);
         });
     }
-}
-
-/// The TLS alert by which a machine refuses every protocol offered, as
-/// RFC 7301 numbers it.
-const NO_APPLICATION_PROTOCOL: u8 = 120;
-
-/// Whether the machine dialed refused the connection for speaking none of
-/// the protocols offered, as one running another version of pigeon does.
-fn speaks_no_protocol_of_ours(error: &ConnectError) -> bool {
-    let (ConnectError::Connection { source: closed, .. }
-    | ConnectError::Connecting {
-        source: ConnectingError::ConnectionError { source: closed, .. },
-        ..
-    }) = error
-    else {
-        return false;
-    };
-    matches!(
-        closed,
-        ConnectionError::ConnectionClosed(close)
-            if close.error_code == TransportErrorCode::crypto(NO_APPLICATION_PROTOCOL)
-    )
 }
 
 #[derive(Clone)]
@@ -328,11 +307,12 @@ pub struct Node {
 impl Node {
     /// Starts serving sync and blobs on `endpoint` for the machine `cert`
     /// vouches for, or for a machine with no member name yet that only
-    /// listens, and returns the node with the stream of patches its
-    /// peers send.
+    /// listens, and `announcement` to any machine that asks, and returns
+    /// the node with the stream of patches its peers send.
     #[must_use]
     pub fn spawn(
         endpoint: Endpoint,
+        announcement: Announcement,
         group: GroupId,
         cert: Option<MachineCert>,
         secret: RenewedSecret,
@@ -366,6 +346,7 @@ impl Node {
         );
         let router = Router::builder(endpoint)
             .accept(SYNC_ALPN, SyncProtocol(shared.clone()))
+            .accept(HELLO_ALPN, Announcing(announcement))
             .accept(
                 iroh_blobs::ALPN,
                 BlobsProtocol::new(blobs, Some(blob_gate(&shared))),
@@ -497,10 +478,14 @@ impl Node {
     }
 
     /// The machines that refused the last dial for speaking no protocol of
-    /// this machine's: they run another version of pigeon.
+    /// this machine's, as they run another version of pigeon, each with
+    /// what asking it which one told.
     #[must_use]
-    pub fn incompatible(&self) -> Vec<MachineId> {
-        lock(&self.shared.incompatible).iter().copied().collect()
+    pub fn incompatible(&self) -> Vec<(MachineId, Heard)> {
+        lock(&self.shared.incompatible)
+            .iter()
+            .map(|(machine, heard)| (*machine, heard.clone()))
+            .collect()
     }
 
     /// Fetches a blob from `providers` at once, resuming what is held.

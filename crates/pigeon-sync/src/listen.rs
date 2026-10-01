@@ -130,7 +130,15 @@ impl Listener {
             secret: key.secret.clone(),
             renewal: None,
         };
-        let (node, received) = Node::spawn(endpoint, group, None, secret, ledger.clone(), &blobs);
+        let (node, received) = Node::spawn(
+            endpoint,
+            options.announcement.clone(),
+            group,
+            None,
+            secret,
+            ledger.clone(),
+            &blobs,
+        );
         if let Some(mdns) = &mdns {
             node.follow(mdns);
         }

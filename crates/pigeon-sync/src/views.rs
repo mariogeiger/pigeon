@@ -1,7 +1,8 @@
-//! What the engine shows: its status, the group's files as this machine
-//! holds them, a file's history, the members, the requests, the set-aside
-//! list, the selection, the times a pin can choose and the retention, each
-//! as plain data for the command line and the API.
+//! What the engine shows: its status, with which member owns each machine
+//! that runs another version of pigeon and which version, the group's
+//! files as this machine holds them, a file's history, the members, the
+//! requests, the set-aside list, the selection, the times a pin can choose
+//! and the retention, each as plain data for the command line and the API.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -14,6 +15,7 @@ use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::retention::Retention;
 use pigeon_core::selection::{Cutoff, Rule, compile, matches};
 use pigeon_core::statement::{Decision, RequestStatement, STATEMENTS};
+use pigeon_net::hello::{Heard, Standing};
 use pigeon_store::aside::AsideItem;
 use pigeon_store::index::IndexEntry;
 use serde::Serialize;
@@ -30,7 +32,7 @@ pub struct Status {
     pub peers: Vec<MachineId>,
     /// The machines that run another version of pigeon, whose protocol
     /// this one does not speak.
-    pub incompatible: Vec<MachineId>,
+    pub incompatible: Vec<IncompatibleMachine>,
     /// The relay that carries what no direct connection can, once reached.
     pub relay: Option<String>,
     /// Edits waiting to settle.
@@ -40,6 +42,36 @@ pub struct Status {
     pub patches: usize,
     /// The latest errors, oldest first.
     pub errors: Vec<String>,
+}
+
+/// A machine that runs another version of pigeon, the member whose
+/// patches it signed, if any reached this one, and which version it runs,
+/// as far as it told.
+#[derive(Clone, Debug, Serialize)]
+pub struct IncompatibleMachine {
+    pub machine: MachineId,
+    pub member: Option<MemberName>,
+    pub standing: Standing,
+    pub version: Option<String>,
+    pub commit: Option<String>,
+    pub protocol: Option<String>,
+}
+
+impl IncompatibleMachine {
+    fn new(machine: MachineId, member: Option<MemberName>, heard: &Heard) -> Self {
+        let announced = match heard {
+            Heard::Announced(announcement) => Some(announcement),
+            Heard::PreHello | Heard::Unheard => None,
+        };
+        Self {
+            machine,
+            member,
+            standing: Standing::of(heard),
+            version: announced.map(|told| told.version.clone()),
+            commit: announced.map(|told| told.commit.clone()),
+            protocol: announced.map(|told| told.protocol.clone()),
+        }
+    }
 }
 
 /// One file of the group as this machine sees it.
@@ -180,7 +212,22 @@ impl Engine {
             root: inner.config.root.clone(),
             join: work.join.clone(),
             peers: inner.node.peers(),
-            incompatible: inner.node.incompatible(),
+            incompatible: {
+                let ledger = inner.ledger.lock();
+                let owners: HashMap<MachineId, &MemberName> = ledger
+                    .patches()
+                    .map(|patch| (patch.cert.machine, &patch.cert.name))
+                    .collect();
+                inner
+                    .node
+                    .incompatible()
+                    .into_iter()
+                    .map(|(machine, heard)| {
+                        let member = owners.get(&machine).map(|name| (*name).clone());
+                        IncompatibleMachine::new(machine, member, &heard)
+                    })
+                    .collect()
+            },
             relay: inner.node.home_relay().map(|url| url.to_string()),
             pending: work.pending.len(),
             fetching: work.fetching.len(),

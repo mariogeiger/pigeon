@@ -3149,6 +3149,7 @@ dependencies = [
  "postcard",
  "rustls",
  "serde",
+ "serde_json",
  "tempfile",
  "tokio",
 ]

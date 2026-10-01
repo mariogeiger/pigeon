@@ -49,7 +49,11 @@ pub async fn run(home: Home, port: u16) -> Result<Option<Program>> {
             format!("listening on localhost port {port}: if another program holds it, pass another with --port")
         })?;
     let address = listener.local_addr()?;
-    let daemon = Daemon::start(home.clone(), Options::default()).await?;
+    let options = Options {
+        announcement: crate::announcement(),
+        ..Options::default()
+    };
+    let daemon = Daemon::start(home.clone(), options).await?;
     home.save_address(address)?;
     eprintln!(
         "pigeon {}: listening on {address}; open the web UI at {}",

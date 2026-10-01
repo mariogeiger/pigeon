@@ -201,31 +201,75 @@ pub fn fields(value: &Value) -> Markup {
     }
 }
 
+/// How a machine that runs another version of pigeon compares with this
+/// one, as its standing says.
+fn standing_text(standing: &Value) -> &'static str {
+    match standing.as_str() {
+        Some("older") => "older",
+        Some("newer") => "newer",
+        Some("pre-hello") => "older, from before hello",
+        _ => "unknown",
+    }
+}
+
+/// The machines that run a version of pigeon this one cannot talk to, each
+/// with its member, whether it is older or newer, and its version.
+fn incompatible_section(machines: &[Value]) -> Markup {
+    let told = |machine: &Value, column: &str| cell(column, &machine[column]);
+    html! {
+        section {
+            h2 { "Incompatible machines" }
+            p class="mark" {
+                "These machines run a version of pigeon whose protocol this one does not speak, so they cannot sync with it. Run "
+                code { "pigeon update" }
+                " on each machine that is older, or on this one if one is newer."
+            }
+            table {
+                tr { th { "member" } th { "machine" } th { "is" } th { "version" } th { "commit" } th { "protocol" } }
+                @for machine in machines {
+                    tr {
+                        td { (told(machine, "member")) }
+                        td { (told(machine, "machine")) }
+                        td { (standing_text(&machine["standing"])) }
+                        td { (told(machine, "version")) }
+                        td { (told(machine, "commit")) }
+                        td { (told(machine, "protocol")) }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// How a group stands here, its key, the form that names the group's
-/// relay, whether some machine runs a version of pigeon this one cannot
-/// talk to, and, unless the member belongs, why and the form to claim a
-/// name.
+/// relay, which machines run a version of pigeon this one cannot talk to,
+/// and, unless the member belongs, why and the form to claim a name.
 #[must_use]
 pub fn overview(group: &str, status: &Value, key: &str) -> Markup {
+    let mut shown = status.clone();
+    let incompatible = shown
+        .as_object_mut()
+        .and_then(|fields| fields.remove("incompatible"));
+    let incompatible = incompatible
+        .as_ref()
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
     let back = format!("/g/{group}");
     let fill = Fill {
         group: Some(group),
         ..Fill::default()
     };
     let body = html! {
-        (fields(status))
+        (fields(&shown))
         @if status["join"]["state"] != "joined" {
             p class="mark" {
                 (status["join"]["reason"].as_str().unwrap_or("This machine has not joined yet."))
             }
             (form(action("member", "claim"), &back, fill))
         }
-        @if status["incompatible"].as_array().is_some_and(|machines| !machines.is_empty()) {
-            p class="mark" {
-                "The incompatible machines run a version of pigeon whose protocol this one does not speak, so they cannot sync with it. Run "
-                code { "pigeon update" }
-                " on each machine of the group."
-            }
+        @if !incompatible.is_empty() {
+            (incompatible_section(incompatible))
         }
         section {
             h2 { "Group key" }

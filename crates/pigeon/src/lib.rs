@@ -29,3 +29,9 @@ mod web;
 
 /// pigeon's version and the commit it was built from.
 pub const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("PIGEON_COMMIT"), ")");
+
+/// What this pigeon tells any machine that asks which pigeon it runs.
+#[must_use]
+pub fn announcement() -> pigeon_net::hello::Announcement {
+    pigeon_net::hello::Announcement::speaking_ours(env!("CARGO_PKG_VERSION"), env!("PIGEON_COMMIT"))
+}

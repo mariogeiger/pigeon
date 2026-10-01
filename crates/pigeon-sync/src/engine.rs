@@ -26,6 +26,7 @@ use pigeon_core::places::Places;
 use pigeon_core::selection::{Cutoff, Rule, Selection};
 use pigeon_core::statement::{MemberStatement, STATEMENTS, is_relay_path, member_path};
 use pigeon_net::bind::{bind_internet, bind_local};
+use pigeon_net::hello::Announcement;
 use pigeon_net::wire::{Patches, Vector};
 use pigeon_net::{Log, Node, Received};
 use pigeon_store::blobs::Blobs;
@@ -63,10 +64,12 @@ pub(crate) async fn bind(
     })
 }
 
-/// The engine's timings.
+/// The engine's network, what it tells machines that ask which pigeon it
+/// runs, and its timings.
 #[derive(Clone, Debug)]
 pub struct Options {
     pub network: Network,
+    pub announcement: Announcement,
     /// How long an edit in a personal folder must stay unchanged before it
     /// is published.
     pub settle_personal: Duration,
@@ -88,6 +91,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             network: Network::Internet,
+            announcement: Announcement::speaking_ours(env!("CARGO_PKG_VERSION"), "unknown"),
             settle_personal: Duration::from_secs(3),
             settle_drop: Duration::from_secs(300),
             rescan: Duration::from_secs(600),
@@ -530,6 +534,7 @@ impl Engine {
         let (endpoint, mdns) = bind(&machine, &group, &options.network).await?;
         let (node, received) = Node::spawn(
             endpoint,
+            options.announcement.clone(),
             group,
             Some(config.cert.clone()),
             config.secret(),

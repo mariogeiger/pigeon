@@ -4,7 +4,8 @@
 //! receive the latest secret, and blobs move only between admitted machines,
 //! each from several machines at once, which serve what they hold while
 //! still downloading, and reach each other through the group's relay; a
-//! machine speaking another version of the protocol is reported.
+//! machine speaking another version of the protocol is reported with the
+//! pigeon it says it runs, or as predating the hello protocol.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -27,6 +28,7 @@ use pigeon_core::name::MemberName;
 use pigeon_core::patch::{Change, Content, ContentHash, Patch, SignedPatch};
 use pigeon_core::statement::member_path;
 use pigeon_net::bind::bind_local;
+use pigeon_net::hello::{Announcement, Announcing, HELLO_ALPN, Heard, Standing};
 use pigeon_net::relay::{relay_url, serve_relay};
 use pigeon_net::wire::{Patches, Vector};
 use pigeon_net::{Log, Node, Received};
@@ -132,6 +134,7 @@ impl Machine {
         let cert = MachineCert::issue(&group(), name, &member, key.public());
         let (node, received) = Node::spawn(
             endpoint,
+            Announcement::speaking_ours("0.1.0", "test"),
             group(),
             Some(cert.clone()),
             secret,
@@ -492,19 +495,54 @@ async fn a_machine_speaking_another_version_of_the_protocol_is_reported() {
     let a = Machine::start(first(5), &lookup).await;
     let b = Machine::start(first(5), &lookup).await;
     let older = bind_local(SecretKey::generate(), &lookup).await.unwrap();
-    let router = Router::builder(older.clone())
+    let older_router = Router::builder(older.clone())
         .accept(b"pigeon/sync/1", Silent)
         .spawn();
+    let newer = bind_local(SecretKey::generate(), &lookup).await.unwrap();
+    let announcement = Announcement {
+        version: "9.0.0".to_owned(),
+        commit: "abc".to_owned(),
+        protocol: "pigeon/sync/999".to_owned(),
+    };
+    let newer_router = Router::builder(newer.clone())
+        .accept(b"pigeon/sync/999", Silent)
+        .accept(HELLO_ALPN, Announcing(announcement.clone()))
+        .spawn();
     a.node.dial(older.id());
+    a.node.dial(newer.id());
     a.meet(&b).await;
+    let mut expected = vec![
+        (older.id(), Heard::PreHello),
+        (newer.id(), Heard::Announced(announcement)),
+    ];
+    expected.sort_by_key(|(machine, _)| *machine);
     timeout(Duration::from_secs(10), async {
-        while a.node.incompatible() != [older.id()] {
+        while a.node.incompatible() != expected {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
-    .expect("the refusal is reported, and only for that machine");
-    router.shutdown().await.unwrap();
+    .expect("each refusal is reported with what the machine told, and only for those machines");
+    assert_eq!(Standing::of(&Heard::PreHello), Standing::PreHello);
+    for (_, heard) in &expected {
+        if let Heard::Announced(_) = heard {
+            assert_eq!(Standing::of(heard), Standing::Newer);
+        }
+    }
+    let ours = Announcement::speaking_ours("0.1.0", "test");
+    let behind = Announcement {
+        protocol: "pigeon/sync/1".to_owned(),
+        ..ours.clone()
+    };
+    assert_eq!(Standing::of(&Heard::Announced(behind)), Standing::Older);
+    assert_eq!(Standing::of(&Heard::Announced(ours)), Standing::Unknown);
+    let tolerant: Announcement =
+        serde_json::from_str(r#"{"version":"10.0.0","later":true}"#).unwrap();
+    assert_eq!(tolerant.version, "10.0.0");
+    assert!(tolerant.protocol.is_empty());
+    for router in [older_router, newer_router] {
+        router.shutdown().await.unwrap();
+    }
     for machine in [a, b] {
         machine.node.shutdown().await.unwrap();
     }

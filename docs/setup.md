@@ -31,7 +31,11 @@ what moved recompiles. `--path <clone>` builds a
 local clone of the repository instead. The daemon then restarts onto the
 new program, unless the build left it unchanged, and web pages left open
 offer to reload. Machines whose versions of pigeon cannot talk to each
-other show as incompatible in `pigeon group status`: update them all.
+other show as incompatible in `pigeon group status` and on the group's web
+page, each with its member, its version and commit, and whether it is
+older or newer than this one: each machine asks the others over
+`pigeon/hello`, a protocol that never changes, and one that does not
+answer predates it, so it is older. Update the older ones.
 
 ## 2. Keep the daemon running
 
