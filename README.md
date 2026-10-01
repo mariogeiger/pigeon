@@ -1,110 +1,32 @@
 # pigeon
 
-pigeon keeps a group's files in sync, peer to peer: every member owns folders
-the whole group can see, and changes to someone else's files go through
-requests.
+pigeon keeps a group's files in sync, peer to peer. Each member owns
+folders that the whole group sees, and changes to someone else's files go
+through requests.
 
-Syncthing and similar tools sync folders that several machines write, so two
-people editing the same file end up with a conflict copy. pigeon gives every
-file exactly one owner instead: only the owner's machines write it, so people
-never conflict, and anyone else proposes or forces a change from the web
-interface or the command line. It is our own tool, written in Rust on top of
-existing libraries, so that the group can adapt it at will.
+## Join a group
 
-## Status
-
-The first version is taking shape: [REQUIREMENTS.md](REQUIREMENTS.md)
-describes what it must do, and [SOUL.md](SOUL.md) holds the rules that never
-change.
-
-## Usage
-
-Build and install the single `pigeon` program, then run its daemon, which
-syncs every group of the machine and serves the web UI on localhost:
+Ask a member for the group key, install [Rust](https://rustup.rs), then:
 
 ```sh
-cargo install --path crates/pigeon
+cargo install --git https://github.com/mariogeiger/pigeon pigeon
 pigeon daemon
 ```
 
-From another terminal, found a group, or join one with the key a member
-shared:
+Leave the daemon running. In another terminal:
 
 ```sh
-pigeon group create --name cheapmo --member mario
-pigeon group key
-pigeon group join --key cheapmo-… --member alice
+pigeon group join --key <the key> --member <your name>
+pigeon ui
 ```
 
-Every command reads `pigeon <noun> <verb>`, asks for a missing argument when
-a terminal is attached, and prints JSON with `--json`:
+Choose a password when asked, and use the same one on your other machines.
+If pigeon says only an administrator can create the group's folder, run the
+command it prints and join again. `pigeon ui` prints the link to the web
+interface, where you choose the folders to follow.
 
-```sh
-pigeon file list --under docs
-pigeon file write --path @mario/notes.txt --content notes.txt
-pigeon selection follow --pattern /docs/
-pigeon request list
-pigeon request accept --request .pigeon/requests/….json
-pigeon --help
-```
-
-`pigeon ui` prints the link that opens the web UI, which offers the same
-actions. `pigeon completions bash`, or `zsh`, `fish` and `powershell`, prints
-the shell's completion script. The daemon keeps its state in
-`$PIGEON_HOME`, by default `pigeon` in the user's data folder.
-
-## How it works
-
-- **Personal folders.** A folder named `@` followed by a member's name, such
-  as `/cheapmo/src/@mario`, belongs to that member: only their machines write
-  it, and everyone can read it. A member can have as many as they like.
-- **Drop folders.** Every other folder is a drop folder: anyone can add files
-  to it, and a file freezes once published, after which only a request
-  changes it.
-- **Requests.** To change a file you do not own, you propose or force the
-  change from the web interface or the command line, and the owner's machine
-  applies it.
-- **Members.** A name and password make a member on any machine. A member
-  changes their password with `pigeon member password`, after which their
-  other machines log in with `pigeon member claim`; any member resets
-  someone's password with `pigeon member reset` or excludes them with
-  `pigeon member exclude`, and `pigeon group leave` excludes oneself. The
-  name stays taken, and excluding renews the group key: machines the member
-  list recognizes keep working, while the old key admits no new machine.
-- **Subscriptions.** Everyone sees the whole tree, in the web interface or the
-  command line; each machine downloads only the folders it subscribes to, and
-  single files on demand.
-- **One path everywhere.** A group's root is `/cheapmo` on Linux and macOS
-  and `C:\cheapmo` on Windows, where programs on drive C: also resolve
-  `/cheapmo`, so paths written in files hold on every machine. When only an
-  administrator may create it, pigeon prints the command to run once: on
-  macOS, a line in `/etc/synthetic.conf` links `/cheapmo` to a folder of your
-  home. `--root` picks another folder.
-- **Places.** `pigeon selection place --folder videos --destination
-  /mnt/big/videos` keeps a folder on another disk and leaves a link at its
-  place, a junction on Windows, so its files keep their paths. While the
-  destination is missing, such as an unplugged disk, the folder waits:
-  nothing in it syncs, and nothing is taken for deleted.
-- **History.** Each machine keeps past versions of the files it writes:
-  every version for a day, then one a day for a month and one a week for a
-  year, within 20% of the disk. `pigeon retention set --everything on`
-  extends this to every file it downloads.
-- **A server.** An always-on machine joins as a member of its own, such as
-  `server`, follows everything with `pigeon selection follow --pattern '*'`,
-  and keeps history. Owning no folder, it writes nobody's files, and it
-  serves them while their owners' machines are off. The CLI manages it over
-  SSH.
-- **Peer to peer.** Machines connect directly, end-to-end encrypted, over the
-  local network or the internet. When no direct connection works, a relay
-  that sees only ciphertext carries the traffic: iroh's public relays, or
-  the group's own. `pigeon relay --hostname relay.example.org --contact
-  you@example.org` serves one, with a Let's Encrypt certificate, on a
-  machine reachable on ports 80 and 443, such as the server; `pigeon group
-  relay --url https://relay.example.org` then has every machine of the
-  group use it.
-- **Many sources at once.** A file arrives in pieces from every machine that
-  holds it, even one still downloading it, so the fastest machines deliver the
-  most and machines downloading together trade pieces.
+To found a group, run its server, or manage members, see
+[docs/setup.md](docs/setup.md).
 
 ## License
 
