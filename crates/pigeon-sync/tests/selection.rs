@@ -1,7 +1,9 @@
 //! Replacing the whole selection: the preview counts what the draft rules
 //! would download, free and freeze, and which rule decides each file; the
 //! replacement keeps the rules as given, refuses a stale version when given
-//! one, and frees only the copies nobody modified.
+//! one, and frees only the copies nobody modified. A configuration edited
+//! by hand applies when the engine starts, and nothing writes over it
+//! before.
 
 mod common;
 
@@ -203,4 +205,39 @@ async fn a_saved_draft_frees_untouched_copies_and_previews_freezes() {
             vec![changed("+alice/big.iso", 10, 0)],
         )
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_configuration_edited_by_hand_applies_at_restart_and_survives_until_then() {
+    let mut machines = alice_and_bob().await;
+    let bob = machines.remove(1);
+    let alice_text = vec![rule("/+alice/a.txt", Cutoff::PlusInfinity)];
+    bob.engine.set_selection(alice_text, None).await.unwrap();
+    eventually("bob holds alice's text", || async {
+        bob.read("+alice/a.txt").as_deref() == Some("aaaa")
+    })
+    .await;
+    let config = bob.data.config_path();
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert!(text.contains("\"follow /+alice/a.txt\""), "{text}");
+    let edited = text
+        .replace("follow /+alice/a.txt", "follow /+alice/big.iso")
+        .replace("quota = 20", "quota = 3");
+    std::fs::write(&config, &edited).unwrap();
+    let refused = bob
+        .engine
+        .set_rule(rule("/+bob/", Cutoff::PlusInfinity))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("pigeon daemon reload"), "{refused}");
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), edited);
+    let bob = bob.restart().await;
+    eventually("bob holds the iso", || async {
+        bob.read("+alice/big.iso").is_some()
+    })
+    .await;
+    assert!(bob.read("+alice/a.txt").is_none());
+    assert_eq!(bob.engine.retention().await.quota_percent, 3);
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), edited);
 }

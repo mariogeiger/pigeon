@@ -1,6 +1,7 @@
 //! The state database of one group on one machine: every patch received,
-//! the disk index, the set-aside list, and the machine's settings, in one
-//! redb file whose transactions keep them consistent across crashes.
+//! the disk index, the set-aside list, and the folders the disk holds at
+//! other destinations, in one redb file whose transactions keep them
+//! consistent across crashes.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -11,11 +12,7 @@ use pigeon_core::ledger::Ledger;
 use pigeon_core::patch::SignedPatch;
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::places::{Place, Places};
-use pigeon_core::retention::Retention;
-use pigeon_core::selection::{Rule, Selection};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
-use serde::Serialize;
-use serde::de::DeserializeOwned;
 
 use crate::aside::AsideItem;
 use crate::error::{Result, StoreError};
@@ -24,12 +21,7 @@ use crate::index::IndexEntry;
 const PATCHES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("patches");
 const INDEX: TableDefinition<&str, &[u8]> = TableDefinition::new("index");
 const ASIDE: TableDefinition<u64, &[u8]> = TableDefinition::new("aside");
-const SETTINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("settings");
-
-const SELECTION: &str = "selection";
-const RETENTION: &str = "retention";
-const PLACES: &str = "places";
-const PLACED: &str = "placed";
+const PLACED: TableDefinition<&str, &str> = TableDefinition::new("placed");
 
 /// A patch's key, which sorts patches in stamp order.
 fn stamp_key(stamp: &Stamp) -> [u8; 40] {
@@ -60,12 +52,17 @@ impl State {
         transaction.open_table(PATCHES)?;
         transaction.open_table(INDEX)?;
         transaction.open_table(ASIDE)?;
-        transaction.open_table(SETTINGS)?;
+        transaction.open_table(PLACED)?;
         transaction.commit()?;
         Ok(Self {
             database,
             revision: AtomicU64::new(0),
         })
+    }
+
+    /// The database itself, where older versions of pigeon kept more.
+    pub(crate) fn database(&self) -> &Database {
+        &self.database
     }
 
     /// How many writes this handle committed: a new value means the state
@@ -250,95 +247,27 @@ impl State {
         Ok(item)
     }
 
-    fn setting<T: DeserializeOwned>(&self, name: &str) -> Result<Option<T>> {
-        let transaction = self.database.begin_read()?;
-        let table = transaction.open_table(SETTINGS)?;
-        let value = table.get(name)?;
-        value
-            .map(|value| {
-                serde_json::from_slice(value.value()).map_err(|source| StoreError::Json {
-                    path: name.into(),
-                    source,
-                })
-            })
-            .transpose()
-    }
-
-    fn set_setting<T: Serialize>(&self, name: &str, value: &T) -> Result<()> {
-        let bytes = serde_json::to_vec(value).expect("a setting serializes");
-        let transaction = self.database.begin_write()?;
-        transaction
-            .open_table(SETTINGS)?
-            .insert(name, bytes.as_slice())?;
-        transaction.commit()?;
-        self.revision.fetch_add(1, Ordering::Relaxed);
-        Ok(())
-    }
-
-    /// The machine's selection, empty until first set.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the database cannot be read or holds an invalid rule.
-    pub fn selection(&self) -> Result<Selection> {
-        let rules: Vec<Rule> = self.setting(SELECTION)?.unwrap_or_default();
-        Selection::new(rules).map_err(|error| StoreError::Invalid(error.to_string()))
-    }
-
-    /// Stores the machine's selection.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the database cannot be written.
-    pub fn set_selection(&self, selection: &Selection) -> Result<()> {
-        let rules: Vec<&Rule> = selection.rules().collect();
-        self.set_setting(SELECTION, &rules)
-    }
-
-    /// The machine's retention, the default until first set.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the database cannot be read.
-    pub fn retention(&self) -> Result<Retention> {
-        Ok(self.setting(RETENTION)?.unwrap_or_default())
-    }
-
-    /// Stores the machine's retention.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the database cannot be written.
-    pub fn set_retention(&self, retention: &Retention) -> Result<()> {
-        self.set_setting(RETENTION, retention)
-    }
-
-    /// The folders the machine wants at other destinations.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the database cannot be read.
-    pub fn places(&self) -> Result<Places> {
-        let list: Vec<Place> = self.setting(PLACES)?.unwrap_or_default();
-        Ok(Places::new(list))
-    }
-
-    /// Stores the folders the machine wants at other destinations.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the database cannot be written.
-    pub fn set_places(&self, places: &Places) -> Result<()> {
-        self.set_setting(PLACES, &places.iter().collect::<Vec<_>>())
-    }
-
     /// The folders the disk holds at other destinations, as last moved.
     ///
     /// # Errors
     ///
-    /// Fails if the database cannot be read.
+    /// Fails if the database cannot be read or names an invalid folder.
     pub fn placed(&self) -> Result<Places> {
-        let list: Vec<Place> = self.setting(PLACED)?.unwrap_or_default();
+        let transaction = self.database.begin_read()?;
+        let table = transaction.open_table(PLACED)?;
+        let mut list = Vec::new();
+        for entry in table.iter()? {
+            let (folder, destination) = entry?;
+            let folder = GroupPath::parse(folder.value()).map_err(|error| {
+                StoreError::Invalid(format!(
+                    "the state database holds a placed folder that is no path: {error}"
+                ))
+            })?;
+            list.push(Place {
+                folder,
+                destination: destination.value().into(),
+            });
+        }
         Ok(Places::new(list))
     }
 
@@ -346,9 +275,26 @@ impl State {
     ///
     /// # Errors
     ///
-    /// Fails if the database cannot be written.
+    /// Fails if a destination is not valid Unicode or the database cannot
+    /// be written.
     pub fn set_placed(&self, placed: &Places) -> Result<()> {
-        self.set_setting(PLACED, &placed.iter().collect::<Vec<_>>())
+        let transaction = self.database.begin_write()?;
+        transaction.delete_table(PLACED)?;
+        {
+            let mut table = transaction.open_table(PLACED)?;
+            for place in placed.iter() {
+                let destination = place.destination.to_str().ok_or_else(|| {
+                    StoreError::Invalid(format!(
+                        "{} is not valid Unicode",
+                        place.destination.display()
+                    ))
+                })?;
+                table.insert(place.folder.as_str(), destination)?;
+            }
+        }
+        transaction.commit()?;
+        self.revision.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     }
 }
 

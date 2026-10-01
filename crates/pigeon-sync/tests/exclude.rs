@@ -21,7 +21,7 @@ async fn state(machine: &Machine) -> JoinState {
 }
 
 fn secret(machine: &Machine) -> GroupSecret {
-    machine.data.load_config().unwrap().key.secret
+    machine.data.secrets().unwrap().key.unwrap().secret
 }
 
 fn secret_of(key: &str) -> GroupSecret {

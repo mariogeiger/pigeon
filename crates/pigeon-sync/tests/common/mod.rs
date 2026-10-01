@@ -10,7 +10,8 @@ use std::time::Duration;
 use iroh::address_lookup::MemoryLookup;
 use pigeon_core::clock::MachineId;
 use pigeon_core::name::MemberName;
-use pigeon_store::config::{DataDir, GroupConfig};
+use pigeon_store::config::{Config, ConfigFile};
+use pigeon_store::data_dir::DataDir;
 use pigeon_store::group_key::GroupKey;
 use pigeon_sync::{Engine, JoinState, Network, Options};
 use tempfile::TempDir;
@@ -89,13 +90,11 @@ async fn start(
     options: Options,
 ) -> Machine {
     let data = DataDir::new(dir.path().join("data"));
-    let config = GroupConfig::join(
-        key,
-        MemberName::parse(member).unwrap(),
-        root.clone(),
-        &data.machine_key().unwrap(),
-    );
-    data.save_config(&config).unwrap();
+    let mut secrets = data.secrets().unwrap();
+    secrets.key = Some(key);
+    data.save_secrets(&secrets).unwrap();
+    let config = Config::new(MemberName::parse(member).unwrap(), root.clone());
+    ConfigFile::create(&data, config).unwrap();
     let engine = Engine::start(&data, options.clone()).await.unwrap();
     Machine {
         engine,
@@ -147,8 +146,9 @@ pub async fn group_with(members: &[&str], tune: impl Fn(&mut Options)) -> Vec<Ma
         .map(|_| tempfile::tempdir().unwrap())
         .collect();
     let first: MachineId = DataDir::new(dirs[0].path().join("data"))
-        .machine_key()
+        .secrets()
         .unwrap()
+        .machine
         .public();
     let key = GroupKey::generate(MemberName::parse("friends").unwrap(), vec![first]);
     let mut machines = Vec::new();

@@ -10,7 +10,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use iroh::Endpoint;
 use iroh::address_lookup::MemoryLookup;
 use iroh_base::SecretKey;
@@ -23,16 +23,16 @@ use pigeon_core::name::MemberName;
 use pigeon_core::patch::{Change, Content, ContentHash, Patch, SignedPatch};
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::places::Places;
-use pigeon_core::selection::{Cutoff, Rule, Selection};
 use pigeon_core::statement::{MemberStatement, STATEMENTS, is_relay_path, member_path};
 use pigeon_net::bind::{bind_internet, bind_local};
 use pigeon_net::hello::Announcement;
 use pigeon_net::wire::{Patches, Vector};
 use pigeon_net::{Log, Node, Received};
 use pigeon_store::blobs::Blobs;
-use pigeon_store::config::{DataDir, GroupConfig};
+use pigeon_store::config::ConfigFile;
+use pigeon_store::data_dir::DataDir;
 use pigeon_store::disk::Stat;
-use pigeon_store::group_key::random_secret;
+use pigeon_store::group_key::{GroupKey, random_secret};
 use pigeon_store::state::State;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -173,15 +173,14 @@ pub(crate) struct Pending {
 /// a time writes the root.
 pub(crate) struct Work {
     pub pending: HashMap<PathKey, Pending>,
-    pub selection: Selection,
+    /// The selection, retention and places, as `config.toml` holds them.
+    pub config: ConfigFile,
     /// Blobs being fetched, with the keys waiting for each.
     pub fetching: HashMap<ContentHash, BTreeSet<PathKey>>,
     /// Blobs added since the protected set was last computed.
     pub tags: Vec<TempTag>,
     pub join: JoinState,
     pub protect_due: bool,
-    /// The folders wanted at other destinations.
-    pub places: Places,
     /// The folders the disk holds at other destinations.
     pub placed: Places,
     /// The folders out of place, with why; nothing under them syncs.
@@ -199,7 +198,13 @@ pub(crate) enum Wake {
 
 pub(crate) struct Inner {
     pub data: DataDir,
-    pub config: GroupConfig,
+    /// The member this machine speaks for.
+    pub member: MemberName,
+    pub root: std::path::PathBuf,
+    /// The member's certificate of this machine.
+    pub cert: MachineCert,
+    /// The group key the machine started with.
+    pub key: GroupKey,
     pub group: GroupId,
     pub machine: SecretKey,
     pub clock: Clock,
@@ -242,12 +247,13 @@ impl Inner {
     }
 
     /// A hash of everything the views read: the state's writes, the
-    /// pending edits, the fetches, the errors, the member's standing, the
-    /// folders out of place, the drafts other machines announced, the peers
-    /// and the relay.
+    /// configuration, the pending edits, the fetches, the errors, the
+    /// member's standing, the folders out of place, the drafts other
+    /// machines announced, the peers and the relay.
     fn fingerprint(&self, work: &Work) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.state.revision().hash(&mut hasher);
+        work.config.text().hash(&mut hasher);
         let mut pending: Vec<(&PathKey, &Instant)> = work
             .pending
             .iter()
@@ -296,7 +302,7 @@ impl Inner {
             changes,
             applies,
         };
-        let signed = SignedPatch::sign(&self.group, patch, self.config.cert.clone(), &self.machine);
+        let signed = SignedPatch::sign(&self.group, patch, self.cert.clone(), &self.machine);
         self.state.add_patch(&signed)?;
         self.ledger.lock().insert(signed.clone())?;
         self.node.publish(vec![signed]);
@@ -320,11 +326,11 @@ impl Inner {
     /// Where the member stands, from the ledger.
     pub(crate) fn join_state(&self) -> JoinState {
         let ledger = self.ledger.lock();
-        let name = &self.config.member;
+        let name = &self.member;
         if let Some(member) = ledger.members().get(name) {
             let by = member.rebound.as_ref().map(|rebinding| &rebinding.by);
             return match (member.key, by) {
-                (Some(key), _) if key == self.config.cert.member => JoinState::Joined,
+                (Some(key), _) if key == self.cert.member => JoinState::Joined,
                 (Some(_), _) => {
                     JoinState::Taken(format!("the name {name} is taken by another key"))
                 }
@@ -359,13 +365,13 @@ impl Inner {
             return Ok(());
         }
         let statement = MemberStatement {
-            name: self.config.member.clone(),
-            key: self.config.cert.member,
+            name: self.member.clone(),
+            key: self.cert.member,
         };
         let content = self
             .add_content(work, serde_json::to_vec_pretty(&statement)?)
             .await?;
-        let path = member_path(&self.config.member);
+        let path = member_path(&self.member);
         let change = Change {
             path: path.clone(),
             content: Some(content),
@@ -445,12 +451,15 @@ impl Inner {
         }
     }
 
-    /// Keeps the group secret the node holds in the configuration.
+    /// Keeps the group secret the node holds in the group's secrets.
     fn save_secret(&self, secret: RenewedSecret) -> Result<()> {
-        let mut config = self.data.load_config()?;
-        if secret.supersedes(&config.secret()) {
-            config.renew(secret);
-            self.data.save_config(&config)?;
+        let mut secrets = self.data.secrets()?;
+        if secrets
+            .secret()
+            .is_some_and(|held| secret.supersedes(&held))
+        {
+            secrets.renew(secret);
+            self.data.save_secrets(&secrets)?;
         }
         Ok(())
     }
@@ -461,7 +470,7 @@ impl Inner {
         let vector = self.ledger.lock().vector();
         let machines: HashSet<MachineId> = vector
             .into_keys()
-            .chain(self.config.key.bootstrap.iter().copied())
+            .chain(self.key.bootstrap.iter().copied())
             .filter(|machine| *machine != me)
             .collect();
         self.node.want(machines);
@@ -504,19 +513,24 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Opens the group kept in `data` and starts syncing its root.
+    /// Opens the group kept in `data` and starts syncing its root as its
+    /// configuration says.
     ///
     /// # Errors
     ///
-    /// Fails if the state cannot be opened, the root created, or the
-    /// endpoint bound.
+    /// Fails if the configuration or the secrets are invalid, the state
+    /// cannot be opened, the root created, or the endpoint bound.
     pub async fn start(data: &DataDir, options: Options) -> Result<Self> {
-        let config = data.load_config()?;
-        let machine = data.machine_key()?;
-        std::fs::create_dir_all(&config.root)
-            .with_context(|| format!("creating {}", config.root.display()))?;
+        let secrets = data.secrets()?;
+        let (Some(key), Some(secret)) = (secrets.key.clone(), secrets.secret()) else {
+            bail!(
+                "{} holds no group key: join the group with `pigeon group join`",
+                data.secrets_path().display()
+            );
+        };
+        let machine = secrets.machine;
         let state = State::open(&data.state_path())?;
-        let group = config.key.group;
+        let group = key.group;
         let ledger = state.ledger(group)?;
         let clock = Clock::new(machine.public(), options.max_drift);
         if let Some(time) = ledger.vector().get(&machine.public()) {
@@ -525,14 +539,10 @@ impl Engine {
                 machine: machine.public(),
             });
         }
-        let mut selection = state.selection()?;
-        if selection.rules().next().is_none() {
-            selection.set(Rule {
-                pattern: format!("{}/", config.member.tag()),
-                cutoff: Cutoff::PlusInfinity,
-            })?;
-            state.set_selection(&selection)?;
-        }
+        let config = ConfigFile::open(data, clock.stamp().time)?;
+        std::fs::create_dir_all(&config.root)
+            .with_context(|| format!("creating {}", config.root.display()))?;
+        let cert = MachineCert::derive(&group, config.member.clone(), machine.public());
         let ledger = Arc::new(SharedLedger::new(ledger));
         let blobs = Blobs::open(&data.blobs_path(), options.gc).await?;
         let (endpoint, mdns) = bind(&machine, &group, &options.network).await?;
@@ -540,8 +550,8 @@ impl Engine {
             endpoint,
             options.announcement.clone(),
             group,
-            Some(config.cert.clone()),
-            config.secret(),
+            Some(cert.clone()),
+            secret,
             ledger.clone(),
             blobs.store(),
         );
@@ -550,11 +560,13 @@ impl Engine {
         }
         let (wake, wakes) = mpsc::unbounded_channel();
         let (rescans, rescan_events) = mpsc::unbounded_channel();
-        let wanted = state.places()?;
         let laid_out = state.placed()?;
         let inner = Arc::new(Inner {
             data: data.clone(),
-            config,
+            member: config.member.clone(),
+            root: config.root.clone(),
+            cert,
+            key,
             group,
             machine,
             clock,
@@ -565,12 +577,11 @@ impl Engine {
             options,
             work: tokio::sync::Mutex::new(Work {
                 pending: HashMap::new(),
-                selection,
+                config,
                 fetching: HashMap::new(),
                 tags: Vec::new(),
                 join: JoinState::Pending,
                 protect_due: true,
-                places: wanted,
                 placed: laid_out,
                 out_of_place: Vec::new(),
                 watcher: None,
@@ -669,6 +680,11 @@ async fn run(
         inner.follow_relay().await;
         let mut work = inner.work.lock().await;
         inner.lay_out(&mut work);
+        if let Err(error) = inner.free_unselected(&work) {
+            inner.report(format!(
+                "freeing what the selection no longer holds: {error}"
+            ));
+        }
         inner.refresh(&mut work, &Rescan::All).await;
         inner.apply_requests(&mut work).await;
     }

@@ -15,7 +15,7 @@ use pigeon_core::identity::{RenewedSecret, member_key};
 use pigeon_core::ledger::Ledger;
 use pigeon_core::name::MemberName;
 use pigeon_net::{Node, Received};
-use pigeon_store::config::DataDir;
+use pigeon_store::data_dir::DataDir;
 use pigeon_store::group_key::GroupKey;
 use pigeon_store::state::State;
 use serde::Serialize;
@@ -117,10 +117,10 @@ impl Listener {
     ///
     /// # Errors
     ///
-    /// Fails if the data directory, its machine key or its state cannot be
+    /// Fails if the data directory, its secrets or its state cannot be
     /// opened, or the endpoint bound.
     pub async fn start(data: &DataDir, key: GroupKey, options: &Options) -> Result<Self> {
-        let machine = data.machine_key()?;
+        let machine = data.secrets()?.machine;
         let state = State::open(&data.state_path())?;
         let group = key.group;
         let ledger = Arc::new(SharedLedger::new(state.ledger(group)?));

@@ -210,7 +210,7 @@ pub const NOUNS: &[(&str, &str)] = &[
     ("retention", "Which past versions this machine keeps"),
     (
         "daemon",
-        "Run pigeon, which syncs every group, answers the API and serves the web UI, or stop or restart it",
+        "Run pigeon, which syncs every group, answers the API and serves the web UI, or stop, restart or reload it",
     ),
 ];
 
@@ -559,6 +559,12 @@ pub const ACTIONS: &[Action] = &[
             ),
         ],
     ),
+    on_machine(action(
+        "daemon",
+        "reload",
+        "Restart every group from its files, applying the edits of each group's config.toml, unless one does not read",
+        &[],
+    )),
     on_machine(action("daemon", "stop", "Stop the daemon", &[])),
     on_machine(action(
         "daemon",

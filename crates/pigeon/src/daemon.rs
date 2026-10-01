@@ -1,19 +1,23 @@
 //! The groups running on this machine: one engine per group, started from
-//! the data directories in the pigeon folder, and created when the user
-//! founds or joins a group, which then waits for the group's verdict on
-//! the member's name; the groups heard before joining, to show the names
-//! one may join under; and why the daemon stops, which a restart onto a
-//! newly installed program is one reason for.
+//! the data directories in the pigeon folder, restarted from them when the
+//! user reloads their configurations, and created when the user founds or
+//! joins a group, which then waits for the group's verdict on the member's
+//! name; the groups heard before joining, to show the names one may join
+//! under; and why the daemon stops, which a restart onto a newly installed
+//! program is one reason for.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, anyhow, bail};
+use pigeon_core::clock::ntp_time;
 use pigeon_core::name::MemberName;
 use pigeon_core::selection::{Cutoff, Rule};
-use pigeon_store::config::GroupConfig;
+use pigeon_store::config::{Config, ConfigFile};
+use pigeon_store::data_dir::DataDir;
 use pigeon_store::group_key::GroupKey;
+use pigeon_store::legacy;
 use pigeon_sync::{Engine, JoinState, Listener, Names, Options};
 use tokio::sync::{Mutex, RwLock, RwLockReadGuard, watch};
 
@@ -28,6 +32,18 @@ const VERDICT: Duration = Duration::from_secs(30);
 /// How long hearing a group before joining it waits for one of its
 /// machines.
 const HEARING: Duration = Duration::from_secs(30);
+
+/// The configuration of `data` once `member` claims it, following their
+/// personal folder.
+fn claimed(data: &DataDir, member: MemberName) -> Result<Config> {
+    let mut config = data.load_config(ntp_time(SystemTime::now()))?;
+    config.selection.set(Rule {
+        pattern: format!("{}/", member.tag()),
+        cutoff: Cutoff::PlusInfinity,
+    })?;
+    config.member = member;
+    Ok(config)
+}
 
 /// Why the daemon stops.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,14 +64,20 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    /// Starts every group of `home`. A group that fails to start is
-    /// reported and skipped, so that it never stops the others.
+    /// Starts every group of `home`, upgrading first those an older pigeon
+    /// wrote. A group that fails to upgrade or start is reported and
+    /// skipped, so that it never stops the others.
     ///
     /// # Errors
     ///
     /// Fails if the groups folder or the running program cannot be read.
     pub async fn start(home: Home, options: Options) -> Result<Self> {
         let program = Program::running()?;
+        for name in home.folder_names()? {
+            if let Err(error) = legacy::upgrade(&home.group(&name)) {
+                eprintln!("pigeon: group {name} does not upgrade: {error:#}");
+            }
+        }
         let mut groups = BTreeMap::new();
         for name in home.group_names()? {
             match Engine::start(&home.group(&name), options.clone()).await {
@@ -133,7 +155,7 @@ impl Daemon {
     pub async fn create(&self, name: &str, member: &str, root: Option<PathBuf>) -> Result<String> {
         let name = MemberName::parse(name).context("the group name")?;
         let data = self.home.group(name.as_str());
-        let machine = data.machine_key()?;
+        let machine = data.secrets()?.machine;
         let key = GroupKey::generate(name, vec![machine.public()]);
         self.add(key, member, root).await
     }
@@ -204,8 +226,11 @@ impl Daemon {
         let root = root.unwrap_or_else(|| shared_root(&name));
         create_root(&root)?;
         let data = self.home.group(&name);
-        let machine = data.machine_key()?;
-        data.save_config(&GroupConfig::join(key, member, root, &machine))?;
+        let mut secrets = data.secrets()?;
+        secrets.key = Some(key);
+        secrets.renewal = None;
+        data.save_secrets(&secrets)?;
+        ConfigFile::create(&data, Config::new(member, root))?;
         let key = match Engine::start(&data, self.options.clone()).await {
             Ok(engine) => {
                 let key = engine.group_key();
@@ -253,8 +278,8 @@ impl Daemon {
     /// # Errors
     ///
     /// Fails if the group is unknown, the member has already joined, the
-    /// name is invalid, the group does not restart, or it refuses the
-    /// name.
+    /// name or the configuration is invalid, the group does not restart,
+    /// or it refuses the name.
     pub async fn claim(&self, group: &str, member: &str) -> Result<()> {
         let member = MemberName::parse(member).context("the member name")?;
         let mut groups = self.groups.write().await;
@@ -262,30 +287,61 @@ impl Daemon {
             .remove(group)
             .ok_or_else(|| anyhow!("no group {group} on this machine: see `pigeon group list`"))?;
         let status = engine.status().await;
-        if status.join == JoinState::Joined {
-            groups.insert(group.to_owned(), engine);
-            bail!("{} has already joined {group}", status.member);
-        }
-        engine.shutdown().await?;
         let data = self.home.group(group);
-        let config = data.load_config()?;
-        let machine = data.machine_key()?;
-        data.save_config(&GroupConfig::join(
-            config.key,
-            member.clone(),
-            config.root,
-            &machine,
-        ))?;
+        let claimed = if status.join == JoinState::Joined {
+            Err(anyhow!("{} has already joined {group}", status.member))
+        } else {
+            claimed(&data, member)
+        };
+        let config = match claimed {
+            Ok(config) => config,
+            Err(error) => {
+                groups.insert(group.to_owned(), engine);
+                return Err(error);
+            }
+        };
+        engine.shutdown().await?;
+        ConfigFile::create(&data, config)?;
         let engine = Engine::start(&data, self.options.clone()).await?;
-        engine
-            .set_rule(Rule {
-                pattern: format!("{}/", member.tag()),
-                cutoff: Cutoff::PlusInfinity,
-            })
-            .await?;
         groups.insert(group.to_owned(), engine);
         drop(groups);
         self.verdict(group).await
+    }
+
+    /// Restarts every group from its data directory, so that the edits of
+    /// its `config.toml` apply; starts the groups added there and stops
+    /// those gone. Changes nothing unless every configuration reads.
+    /// Returns the groups running.
+    ///
+    /// # Errors
+    ///
+    /// Fails, naming the file and what in it is wrong, if a configuration
+    /// is invalid, or naming the groups that do not start again.
+    pub async fn reload(&self) -> Result<Vec<String>> {
+        let mut groups = self.groups.write().await;
+        let names = self.home.group_names()?;
+        let now = ntp_time(SystemTime::now());
+        for name in &names {
+            self.home.group(name).load_config(now)?;
+        }
+        for (name, engine) in std::mem::take(&mut *groups) {
+            if let Err(error) = engine.shutdown().await {
+                eprintln!("pigeon: group {name} did not stop cleanly: {error:#}");
+            }
+        }
+        let mut failed = Vec::new();
+        for name in names {
+            match Engine::start(&self.home.group(&name), self.options.clone()).await {
+                Ok(engine) => {
+                    groups.insert(name, engine);
+                }
+                Err(error) => failed.push(format!("{name} does not start: {error:#}")),
+            }
+        }
+        if !failed.is_empty() {
+            bail!("{}", failed.join("; "));
+        }
+        Ok(groups.keys().cloned().collect())
     }
 
     /// Stops every group.

@@ -8,6 +8,7 @@ use anyhow::{Result, bail};
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::selection::{Cutoff, Rule, Selection};
 use pigeon_core::statement::STATEMENTS;
+use pigeon_store::config::Config;
 use pigeon_store::disk::{self, fs_path};
 use pigeon_store::index::IndexEntry;
 use serde::Serialize;
@@ -116,7 +117,7 @@ impl Inner {
     ) -> HashSet<PathKey> {
         entries
             .filter(|entry| {
-                let stat = file_stat(&fs_path(&self.config.root, &entry.path));
+                let stat = file_stat(&fs_path(&self.root, &entry.path));
                 entry.seen.map(|seen| seen.stat) != stat
                     || work.pending.contains_key(&entry.path.key())
             })
@@ -126,18 +127,18 @@ impl Inner {
 
     /// Removes the held copies nobody modified whose cutoff is now
     /// $-\infty$.
-    fn free_unselected(&self, work: &Work) -> Result<()> {
+    pub(crate) fn free_unselected(&self, work: &Work) -> Result<()> {
         let mut entries = self.state.index(None)?;
-        entries.retain(|entry| work.selection.cutoff(&entry.path) == Cutoff::MinusInfinity);
+        entries.retain(|entry| work.config.selection.cutoff(&entry.path) == Cutoff::MinusInfinity);
         let modified = self.modified(work, entries.iter());
         for entry in entries {
             let key = entry.path.key();
             if modified.contains(&key) {
                 continue;
             }
-            let location = fs_path(&self.config.root, &entry.path);
+            let location = fs_path(&self.root, &entry.path);
             if file_stat(&location).is_some() {
-                disk::remove(&self.config.root, &location)?;
+                disk::remove(&self.root, &location)?;
             }
             self.state.update_index([(&key, None)])?;
         }
@@ -158,12 +159,14 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Fails if the pattern is invalid or the state cannot be written.
+    /// Fails if the pattern is invalid or the configuration or the state
+    /// cannot be written.
     pub async fn set_rule(&self, rule: Rule) -> Result<()> {
         let inner = &self.inner;
         let mut work = inner.work.lock().await;
-        work.selection.set(rule)?;
-        inner.state.set_selection(&work.selection)?;
+        let mut config = Config::clone(&work.config);
+        config.selection.set(rule)?;
+        work.config.save(config)?;
         inner.free_unselected(&work)?;
         inner.refresh(&mut work, &Rescan::All).await;
         Ok(())
@@ -176,16 +179,17 @@ impl Engine {
     /// # Errors
     ///
     /// Fails if the selection changed since `version`, a pattern is
-    /// invalid, or the state cannot be written.
+    /// invalid, or the configuration or the state cannot be written.
     pub async fn set_selection(&self, rules: Vec<Rule>, version: Option<&str>) -> Result<()> {
         let inner = &self.inner;
         let mut work = inner.work.lock().await;
-        let current = work.selection.version();
+        let current = work.config.selection.version();
         if let Some(version) = version.filter(|version| *version != current) {
             bail!("the selection changed since version {version}: it is now at {current}");
         }
-        work.selection = Selection::exactly(rules)?;
-        inner.state.set_selection(&work.selection)?;
+        let mut config = Config::clone(&work.config);
+        config.selection = Selection::exactly(rules)?;
+        work.config.save(config)?;
         inner.free_unselected(&work)?;
         inner.refresh(&mut work, &Rescan::All).await;
         Ok(())
@@ -207,8 +211,8 @@ impl Engine {
             .filter(|entry| draft.cutoff(&entry.path) == Cutoff::MinusInfinity);
         let modified = inner.modified(&work, freed);
         let indexed: HashSet<PathKey> = entries.iter().map(|entry| entry.path.key()).collect();
-        let own = inner.config.member.tag();
-        let mut tally = Tally::new(work.selection.version(), draft.rules().count());
+        let own = inner.member.tag();
+        let mut tally = Tally::new(work.config.selection.version(), draft.rules().count());
         let ledger = inner.ledger.lock();
         for key in ledger.keys() {
             let Some(head) = ledger.head(key) else {
@@ -223,7 +227,7 @@ impl Engine {
             if let Some(content) = head.content {
                 tally.rule_effects(draft.matching(path), rule, content.size);
             }
-            let current = work.selection.cutoff(path);
+            let current = work.config.selection.cutoff(path);
             let now = target(&ledger, key, current, indexed.contains(key))
                 .and_then(|version| version.content);
             let after = target(&ledger, key, cutoff, modified.contains(key))

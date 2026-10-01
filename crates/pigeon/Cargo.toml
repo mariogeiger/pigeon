@@ -27,6 +27,7 @@ serde.workspace = true
 serde_json.workspace = true
 similar.workspace = true
 tokio.workspace = true
+toml.workspace = true
 ureq.workspace = true
 
 [dev-dependencies]

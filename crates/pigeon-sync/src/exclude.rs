@@ -12,7 +12,7 @@ use crate::engine::{Engine, Inner, JoinState, Wake, Work};
 impl Inner {
     async fn exclude(&self, work: &mut Work, name: &MemberName) -> Result<()> {
         if work.join != JoinState::Joined {
-            bail!("{} does not belong to the group now", self.config.member);
+            bail!("{} does not belong to the group now", self.member);
         }
         let statement = RebindStatement {
             name: name.clone(),
@@ -28,12 +28,9 @@ impl Inner {
             content: Some(content),
             replaces: None,
         }];
-        self.ledger.lock().check(
-            &self.config.member,
-            &self.config.cert.member,
-            &changes,
-            false,
-        )?;
+        self.ledger
+            .lock()
+            .check(&self.member, &self.cert.member, &changes, false)?;
         self.publish_at(stamp, changes, None)?;
         work.join = self.join_state();
         self.renew_secret(work);

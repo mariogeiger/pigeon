@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow, bail};
 use pigeon_core::path::GroupPath;
 use pigeon_core::places::Place;
+use pigeon_store::config::Config;
 use pigeon_store::disk::fs_path;
 use pigeon_store::layout;
 use serde::Serialize;
@@ -47,10 +48,9 @@ fn resolve(destination: &Path) -> Result<PathBuf> {
 impl Inner {
     /// The root as the system resolves it.
     fn resolved_root(&self) -> PathBuf {
-        self.config
-            .root
+        self.root
             .canonicalize()
-            .unwrap_or_else(|_| self.config.root.clone())
+            .unwrap_or_else(|_| self.root.clone())
     }
 
     /// Moves back the folders no longer wanted elsewhere, then moves the
@@ -58,11 +58,11 @@ impl Inner {
     /// allows; the folders left out of place freeze, and the watcher
     /// follows the destinations reached.
     pub(crate) fn lay_out(&self, work: &mut Work) {
-        let root = &self.config.root;
+        let root = &self.root;
         let mut problems: Vec<(GroupPath, String)> = Vec::new();
         let placed: Vec<Place> = work.placed.iter().collect();
         for place in placed {
-            if work.places.get(&place.folder) == Some(place.destination.as_path()) {
+            if work.config.places.get(&place.folder) == Some(place.destination.as_path()) {
                 continue;
             }
             match layout::unplace(&fs_path(root, &place.folder), &place.destination) {
@@ -73,7 +73,7 @@ impl Inner {
                 Err(error) => problems.push((place.folder, error.to_string())),
             }
         }
-        let wanted: Vec<Place> = work.places.iter().collect();
+        let wanted: Vec<Place> = work.config.places.iter().collect();
         for place in wanted {
             let location = fs_path(root, &place.folder);
             let applied = work.placed.get(&place.folder) == Some(place.destination.as_path());
@@ -131,7 +131,7 @@ impl Inner {
 
     /// Watches the root and every destination reached, when they changed.
     fn follow_destinations(&self, work: &mut Work) {
-        let watched = Watched::all(&self.config.root, &work.in_place());
+        let watched = Watched::all(&self.root, &work.in_place());
         if watched == work.watched && work.watcher.is_some() {
             return;
         }
@@ -185,10 +185,11 @@ impl Engine {
         let inner = &self.inner;
         let destination = resolve(destination)?;
         let mut work = inner.work.lock().await;
-        let mut places = work.places.clone();
-        places.set(&inner.resolved_root(), folder.clone(), destination)?;
-        inner.state.set_places(&places)?;
-        work.places = places;
+        let mut config = Config::clone(&work.config);
+        config
+            .places
+            .set(&inner.resolved_root(), folder.clone(), destination)?;
+        work.config.save(config)?;
         self.settle_layout(&mut work, &folder).await
     }
 
@@ -201,12 +202,11 @@ impl Engine {
     pub async fn unplace(&self, folder: &GroupPath) -> Result<()> {
         let inner = &self.inner;
         let mut work = inner.work.lock().await;
-        let mut places = work.places.clone();
-        if !places.remove(folder) {
+        let mut config = Config::clone(&work.config);
+        if !config.places.remove(folder) {
             bail!("{folder} has no destination: see `pigeon selection places`");
         }
-        inner.state.set_places(&places)?;
-        work.places = places;
+        work.config.save(config)?;
         self.settle_layout(&mut work, folder).await
     }
 
@@ -224,12 +224,13 @@ impl Engine {
     pub async fn places(&self) -> Vec<PlaceView> {
         let work = self.inner.work.lock().await;
         let mut views: Vec<PlaceView> = work
+            .config
             .places
             .iter()
             .chain(
                 work.placed
                     .iter()
-                    .filter(|place| work.places.get(&place.folder).is_none()),
+                    .filter(|place| work.config.places.get(&place.folder).is_none()),
             )
             .map(|place| PlaceView {
                 problem: work.problem(&place.folder).map(str::to_owned),

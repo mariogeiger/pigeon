@@ -9,6 +9,7 @@ use pigeon_core::patch::Change;
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::retention::Retention;
 use pigeon_core::statement::{Decision, Mode};
+use pigeon_store::config::Config;
 use pigeon_store::disk::fs_path;
 
 use crate::disk_sync::{Probe, file_stat};
@@ -20,7 +21,7 @@ impl Inner {
         if !self.writable(&ledger, work, path) {
             bail!(
                 "{path} is not writable by {}: propose a request",
-                self.config.member
+                self.member
             );
         }
         Ok(())
@@ -34,7 +35,7 @@ impl Inner {
     ) -> Result<()> {
         let keys: Vec<PathKey> = paths.iter().map(GroupPath::key).collect();
         for path in paths {
-            let probe = Probe::at(&self.config.root, path.clone());
+            let probe = Probe::at(&self.root, path.clone());
             self.sync_key(work, &path.key(), Some(probe)).await?;
         }
         self.publish_settled(work, &keys).await;
@@ -54,7 +55,7 @@ impl Engine {
         let inner = &self.inner;
         let mut work = inner.work.lock().await;
         if work.join != JoinState::Joined {
-            bail!("{} has not joined the group yet", inner.config.member);
+            bail!("{} has not joined the group yet", inner.member);
         }
         let keys: Vec<PathKey> = work
             .pending
@@ -128,10 +129,12 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Fails if the state cannot be written.
+    /// Fails if the configuration cannot be written.
     pub async fn set_retention(&self, retention: &Retention) -> Result<()> {
         let mut work = self.inner.work.lock().await;
-        self.inner.state.set_retention(retention)?;
+        let mut config = Config::clone(&work.config);
+        config.retention = *retention;
+        work.config.save(config)?;
         work.protect_due = true;
         Ok(())
     }
@@ -158,7 +161,7 @@ impl Engine {
             bail!("set-aside item {id} is a deletion");
         };
         inner.ensure_writable(&work, to)?;
-        let location = fs_path(&inner.config.root, to);
+        let location = fs_path(&inner.root, to);
         if file_stat(&location).is_some()
             || inner
                 .ledger

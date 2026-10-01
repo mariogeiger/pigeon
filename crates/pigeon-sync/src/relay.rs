@@ -72,10 +72,7 @@ impl Engine {
             .transpose()?;
         let mut work = self.inner.work.lock().await;
         if work.join != JoinState::Joined {
-            bail!(
-                "{} does not belong to the group now",
-                self.inner.config.member
-            );
+            bail!("{} does not belong to the group now", self.inner.member);
         }
         let statement = RelayStatement {
             url: url.map(|url| url.to_string()),

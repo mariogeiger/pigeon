@@ -103,6 +103,7 @@ pub async fn perform(daemon: &Daemon, args: &Args) -> Result<Value> {
             Ok(Value::Null)
         }
         ("daemon", "restart") => Ok(json!({ "restarts": daemon.restart()? })),
+        ("daemon", "reload") => Ok(json!({ "groups": daemon.reload().await? })),
         _ if action.scope == Scope::Group => {
             let groups = daemon.groups().await;
             let (_, engine) = choose(&groups, args.text(GROUP.name))?;
@@ -112,15 +113,13 @@ pub async fn perform(daemon: &Daemon, args: &Args) -> Result<Value> {
     }
 }
 
-const DAY: u64 = 86_400;
-
 /// A retention as the `retention set` arguments read it.
 fn retention_in_days(retention: &Retention) -> Value {
     json!({
-        "every": retention.every / DAY,
-        "daily": retention.daily / DAY,
-        "weekly": retention.weekly / DAY,
-        "deletion": retention.before_deletion / DAY,
+        "every": retention.every,
+        "daily": retention.daily,
+        "weekly": retention.weekly,
+        "deletion": retention.before_deletion,
         "quota": retention.quota_percent,
         "everything": if retention.everything { "on" } else { "off" },
     })
@@ -207,7 +206,7 @@ async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
                 .await?;
             Ok(json!({ "requests": requests }))
         }
-        ("retention", "show") => to_json(retention_in_days(&engine.retention()?)),
+        ("retention", "show") => to_json(retention_in_days(&engine.retention().await)),
         ("retention", "set") => set_retention(engine, args).await,
         _ => bail!("{} is not implemented", action.command()),
     }
@@ -273,11 +272,8 @@ async fn place(engine: &Engine, args: &Args, verb: &str) -> Result<Value> {
 
 /// Changes the retention by the arguments given, keeping the others.
 async fn set_retention(engine: &Engine, args: &Args) -> Result<Value> {
-    let mut retention = engine.retention()?;
-    let days = |name: &str, current: u64| {
-        args.optional_number(name)
-            .map_or(current, |days| days.saturating_mul(DAY))
-    };
+    let mut retention = engine.retention().await;
+    let days = |name: &str, current: u64| args.optional_number(name).unwrap_or(current);
     retention.every = days("every", retention.every);
     retention.daily = days("daily", retention.daily);
     retention.weekly = days("weekly", retention.weekly);

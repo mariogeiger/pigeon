@@ -13,6 +13,7 @@ use crate::statement::STATEMENTS;
 
 /// One folder kept at a destination.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Place {
     pub folder: GroupPath,
     pub destination: PathBuf,

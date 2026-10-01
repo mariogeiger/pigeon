@@ -138,7 +138,7 @@ impl Inner {
     /// Makes the disk at `path` hold `target`, for a path the member may
     /// write.
     async fn edit_disk(&self, work: &Work, path: &GroupPath, target: Target) -> Result<()> {
-        let root = &self.config.root;
+        let root = &self.root;
         let location = fs_path(root, path);
         if let Some(parent) = location.parent() {
             std::fs::create_dir_all(parent)

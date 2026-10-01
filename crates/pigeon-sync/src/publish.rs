@@ -61,7 +61,7 @@ impl Inner {
                 .iter()
                 .filter(|(_, entry)| ledger.freezes(&entry.path))
                 .filter_map(|(_, entry)| {
-                    let location = fs_path(&self.config.root, &entry.path);
+                    let location = fs_path(&self.root, &entry.path);
                     entry.seen.map(|seen| (location, seen.content.executable))
                 })
                 .collect()
@@ -137,9 +137,9 @@ impl Inner {
     ) -> (Vec<Change>, Vec<(PathKey, IndexEntry)>) {
         let ledger = self.ledger.lock();
         let accepts = |changes: &[Change]| {
-            let member = &self.config.member;
+            let member = &self.member;
             ledger
-                .check(member, &self.config.cert.member, changes, false)
+                .check(member, &self.cert.member, changes, false)
                 .is_ok()
         };
         let all: Vec<Change> = settled.iter().map(|(change, _)| change.clone()).collect();

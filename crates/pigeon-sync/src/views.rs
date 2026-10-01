@@ -169,9 +169,9 @@ impl Engine {
         let inner = &self.inner;
         let work = inner.work.lock().await;
         Status {
-            member: inner.config.member.clone(),
+            member: inner.member.clone(),
             machine: inner.me(),
-            root: inner.config.root.clone(),
+            root: inner.root.clone(),
             join: work.join.clone(),
             peers: inner.node.peers(),
             incompatible: {
@@ -208,7 +208,7 @@ impl Engine {
     /// this machine among the machines to dial first.
     #[must_use]
     pub fn group_key(&self) -> String {
-        let mut key = self.inner.config.key.clone();
+        let mut key = self.inner.key.clone();
         key.secret = self.inner.node.secret().borrow().secret.clone();
         if !key.bootstrap.contains(&self.inner.me()) {
             key.bootstrap.insert(0, self.inner.me());
@@ -273,7 +273,7 @@ impl Engine {
                     content,
                     stamp: version.stamp,
                     time: version.stamp.rfc3339(),
-                    cutoff: work.selection.cutoff(&version.path),
+                    cutoff: work.config.selection.cutoff(&version.path),
                     held,
                     outdated: held && entry.and_then(|entry| entry.synced) != Some(version.stamp),
                     writable: inner.writable(&ledger, &work, &version.path),
@@ -403,12 +403,8 @@ impl Engine {
     }
 
     /// This machine's retention.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the state cannot be read.
-    pub fn retention(&self) -> Result<Retention> {
-        Ok(self.inner.state.retention()?)
+    pub async fn retention(&self) -> Retention {
+        self.inner.work.lock().await.config.retention
     }
 
     /// The selection's rules, the last matching one winning.
@@ -417,6 +413,7 @@ impl Engine {
             .work
             .lock()
             .await
+            .config
             .selection
             .rules()
             .cloned()

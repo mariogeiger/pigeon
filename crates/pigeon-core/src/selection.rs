@@ -2,13 +2,16 @@
 //! matching rule winning, which say which version of each file a machine
 //! holds. The statements folder is always followed. Exact patterns name one
 //! path literally, and a new exact rule drops the exact rules it masks,
-//! while a selection replaced whole keeps its rules as given.
+//! while a selection replaced whole keeps its rules as given. A rule reads
+//! and prints as one line: `follow /docs/`, `pin <RFC 3339 time> /report/`
+//! or `pin now /report/`, and `free *.iso`.
 
 use std::fmt;
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use serde::{Deserialize, Serialize};
 
+use crate::clock::{parse_rfc3339, rfc3339};
 use crate::path::GroupPath;
 use crate::statement::STATEMENTS;
 
@@ -40,6 +43,56 @@ impl Cutoff {
 pub struct Rule {
     pub pattern: String,
     pub cutoff: Cutoff,
+}
+
+/// The first word of `text` and what follows it.
+fn word(text: &str) -> (&str, &str) {
+    let text = text.trim_start();
+    text.split_once(char::is_whitespace)
+        .map_or((text, ""), |(first, rest)| (first, rest.trim_start()))
+}
+
+impl Rule {
+    /// Reads the rule `line` prints, `now` giving the time of `pin now`;
+    /// it is called only then.
+    ///
+    /// # Errors
+    /// Returns why the line is no rule.
+    pub fn parse(line: &str, now: impl FnOnce() -> u64) -> Result<Self, String> {
+        let (mode, rest) = word(line);
+        let (cutoff, pattern) = match mode {
+            "follow" => (Cutoff::PlusInfinity, rest),
+            "free" => (Cutoff::MinusInfinity, rest),
+            "pin" => {
+                let (when, pattern) = word(rest);
+                let time = match when {
+                    "now" => now(),
+                    "" => return Err("pin needs a time: now or an RFC 3339 time".to_owned()),
+                    time => parse_rfc3339(time)?,
+                };
+                (Cutoff::At(time), pattern)
+            }
+            _ => return Err(format!("{mode:?} is not a mode: write follow, pin or free")),
+        };
+        if pattern.is_empty() {
+            return Err(format!("{mode} needs a pattern, such as /docs/ or *.pdf"));
+        }
+        compile(pattern).map_err(|error| error.to_string())?;
+        Ok(Self {
+            pattern: pattern.to_owned(),
+            cutoff,
+        })
+    }
+}
+
+impl fmt::Display for Rule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.cutoff {
+            Cutoff::PlusInfinity => write!(f, "follow {}", self.pattern),
+            Cutoff::At(time) => write!(f, "pin {} {}", rfc3339(time), self.pattern),
+            Cutoff::MinusInfinity => write!(f, "free {}", self.pattern),
+        }
+    }
 }
 
 /// Why a pattern cannot be a rule.
@@ -297,6 +350,40 @@ mod tests {
             Selection::new(other.rules().cloned()).unwrap().version()
         );
         assert_eq!(other.version(), version(other.rules()));
+    }
+
+    #[test]
+    fn a_rule_reads_back_as_it_prints() {
+        for cutoff in [
+            Cutoff::PlusInfinity,
+            Cutoff::At((1_790_856_000 << 32) + 3),
+            Cutoff::MinusInfinity,
+        ] {
+            let rule = Rule {
+                pattern: "/my report/".into(),
+                cutoff,
+            };
+            let line = rule.to_string();
+            assert_eq!(Rule::parse(&line, || unreachable!()), Ok(rule), "{line}");
+        }
+        assert_eq!(
+            Rule::parse("  pin   now  /report/", || 42),
+            Ok(Rule {
+                pattern: "/report/".into(),
+                cutoff: Cutoff::At(42),
+            })
+        );
+        for (line, error) in [
+            ("keep /a/", "not a mode"),
+            ("follow", "needs a pattern"),
+            ("pin", "needs a time"),
+            ("pin yesterday /a/", "RFC 3339"),
+            ("free !a", "negated"),
+            ("follow /a{b/", "gitignore"),
+        ] {
+            let reason = Rule::parse(line, || 0).unwrap_err();
+            assert!(reason.contains(error), "{line}: {reason}");
+        }
     }
 
     #[test]

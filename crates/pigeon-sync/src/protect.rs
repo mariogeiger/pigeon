@@ -28,7 +28,7 @@ impl Inner {
     /// Recomputes the protected set and lets go of the blobs' temporary
     /// tags, which it covers.
     pub(crate) async fn protect(&self, work: &mut Work) -> Result<()> {
-        let retention = self.state.retention()?;
+        let retention = work.config.retention;
         let now = seconds(SystemTime::now());
         let entries = self.state.index(None)?;
         let mut anyway: HashSet<ContentHash> = HashSet::new();
@@ -47,7 +47,7 @@ impl Inner {
                 let Some((head, past)) = versions.split_last() else {
                     continue;
                 };
-                let own = head.owner == self.config.member;
+                let own = head.owner == self.member;
                 if own {
                     keep(head.content);
                 }

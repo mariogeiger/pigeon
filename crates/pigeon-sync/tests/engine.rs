@@ -380,7 +380,7 @@ async fn the_quota_drops_past_versions_and_keeps_current_ones() {
     assert!(alice.engine.read(&old).await.unwrap().is_some());
     let retention = Retention {
         quota_percent: 0,
-        ..alice.engine.retention().unwrap()
+        ..alice.engine.retention().await
     };
     alice.engine.set_retention(&retention).await.unwrap();
     eventually("the past version goes", || async {
@@ -404,9 +404,10 @@ async fn keeping_history_keeps_past_versions_of_others_files() {
         .set_rule(rule("+alice/", Cutoff::PlusInfinity))
         .await
         .unwrap();
+    let current = bob.engine.retention().await;
     let keep = |everything| Retention {
         everything,
-        ..bob.engine.retention().unwrap()
+        ..current
     };
     bob.engine.set_retention(&keep(true)).await.unwrap();
     for text in ["one", "two"] {

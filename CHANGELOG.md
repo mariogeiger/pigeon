@@ -4,6 +4,28 @@ All notable user-visible changes to pigeon are documented here. While the
 version is 0.x, a change that breaks compatibility increments the second
 number, and any other change the third.
 
+## 0.2.3 — 2026-10-01
+
+### Changed
+
+- Everything lives in one pigeon folder, by default in the local data
+  folder, which on Windows is `%LOCALAPPDATA%` rather than `%APPDATA%`: the
+  older folder moves there.
+- `daemon.toml` holds the API token and the daemon's address, in place of
+  the files `token` and `address`.
+- Each group keeps its member, root, selection, retention and places in
+  `config.toml`, readable and editable by hand, and its group key and
+  machine key in `secrets.toml`, in place of `config.json`, `machine.key`
+  and the settings of the state database. The daemon upgrades the older
+  files once, at start.
+
+### Added
+
+- `pigeon daemon reload` restarts every group from its files, applying the
+  edits of each `config.toml`, and changes nothing if one does not read.
+  pigeon rewrites the file whole, without comments, when it changes a
+  setting, and refuses to while it holds edits not yet reloaded.
+
 ## 0.2.2 — 2026-10-01
 
 ### Changed

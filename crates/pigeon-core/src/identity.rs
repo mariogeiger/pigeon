@@ -116,6 +116,15 @@ impl MachineCert {
         }
     }
 
+    /// The certificate by which the member `name`, with the key the name
+    /// derives, vouches for `machine`; the same each time, since signing is
+    /// deterministic.
+    #[must_use]
+    pub fn derive(group: &GroupId, name: MemberName, machine: MachineId) -> Self {
+        let member = member_key(group, &name);
+        Self::issue(group, name, &member, machine)
+    }
+
     /// Whether the member key really signed this certificate.
     #[must_use]
     pub fn is_valid(&self, group: &GroupId) -> bool {
@@ -142,6 +151,20 @@ mod tests {
         assert_eq!(key, member_key(&group, &mario).public());
         assert_ne!(key, member_key(&group, &laurent).public());
         assert_ne!(key, member_key(&other, &mario).public());
+    }
+
+    #[test]
+    fn a_derived_certificate_is_valid_and_the_same_on_each_run() {
+        let group = GroupSecret([1; 32]).id();
+        let machine = |seed| SecretKey::from_bytes(&[seed; 32]).public();
+        let cert = |name, seed| {
+            MachineCert::derive(&group, MemberName::parse(name).unwrap(), machine(seed))
+        };
+        let mario = cert("mario", 1);
+        assert!(mario.is_valid(&group));
+        assert_eq!(mario, cert("mario", 1));
+        assert_eq!(mario.member, cert("mario", 2).member);
+        assert_ne!(mario.member, cert("laurent", 1).member);
     }
 
     #[test]

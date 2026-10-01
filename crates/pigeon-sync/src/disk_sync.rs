@@ -16,6 +16,7 @@ use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::selection::{Cutoff, Rule, exact_pattern};
 use pigeon_core::statement::{STATEMENTS, member_path};
 use pigeon_store::aside::AsideItem;
+use pigeon_store::config::Config;
 use pigeon_store::disk::{self, Stat, fs_path};
 use pigeon_store::index::{IndexEntry, Seen, observe};
 use pigeon_store::scan::scan;
@@ -141,11 +142,11 @@ impl Inner {
     pub(crate) fn writable(&self, ledger: &Ledger, work: &Work, path: &GroupPath) -> bool {
         if !work.join.syncs()
             || path.is_inside(STATEMENTS)
-            || matches!(work.selection.cutoff(path), Cutoff::At(_))
+            || matches!(work.config.selection.cutoff(path), Cutoff::At(_))
         {
             return false;
         }
-        let name = &self.config.member;
+        let name = &self.member;
         let mut changes = vec![Change {
             path: path.clone(),
             content: Some(ANY_CONTENT),
@@ -159,7 +160,7 @@ impl Inner {
             });
         }
         ledger
-            .check(name, &self.config.cert.member, &changes, false)
+            .check(name, &self.cert.member, &changes, false)
             .is_ok()
     }
 
@@ -171,7 +172,7 @@ impl Inner {
         entry: Option<&IndexEntry>,
     ) -> Look {
         let ledger = self.ledger.lock();
-        let cutoff = work.selection.cutoff(path);
+        let cutoff = work.config.selection.cutoff(path);
         let target = target(&ledger, key, cutoff, entry.is_some());
         let synced_stamp = entry.and_then(|entry| entry.synced);
         let synced = synced_stamp.and_then(|stamp| change_at(&ledger, &stamp, key));
@@ -205,7 +206,7 @@ impl Inner {
             return;
         }
         self.lay_out(work);
-        let root = self.config.root.clone();
+        let root = self.root.clone();
         let under = match rescan {
             Rescan::Under(path) => Some(path.clone()),
             Rescan::All => None,
@@ -287,7 +288,7 @@ impl Inner {
         probe: Option<Probe>,
     ) -> Result<()> {
         let entry = self.state.index_entry(key)?;
-        let root = self.config.root.clone();
+        let root = self.root.clone();
         let probe = if let Some(probe) = probe {
             probe
         } else {
@@ -402,11 +403,12 @@ impl Inner {
                     .await?;
             }
             Step::Exclude => {
-                work.selection.set(Rule {
+                let mut config = Config::clone(&work.config);
+                config.selection.set(Rule {
                     pattern: exact_pattern(&probe.path),
                     cutoff: Cutoff::MinusInfinity,
                 })?;
-                self.state.set_selection(&work.selection)?;
+                work.config.save(config)?;
                 self.state.update_index([(key, None)])?;
             }
         }
@@ -422,7 +424,7 @@ impl Inner {
         target: Option<&Version>,
         writable: bool,
     ) -> Result<()> {
-        let root = &self.config.root;
+        let root = &self.root;
         let Some((version, content)) =
             target.and_then(|version| version.content.map(|content| (version, content)))
         else {

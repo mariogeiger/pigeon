@@ -66,7 +66,7 @@ impl Inner {
         {
             let ledger = self.ledger.lock();
             for change in changes {
-                let owner = ledger.owner_of(&change.path, &self.config.member);
+                let owner = ledger.owner_of(&change.path, &self.member);
                 by_owner.entry(owner).or_default().push(change);
             }
         }
@@ -97,7 +97,7 @@ impl Inner {
         decision: Decision,
     ) -> Result<()> {
         let statement = self.request_statement(request).await?;
-        if statement.owner != self.config.member {
+        if statement.owner != self.member {
             bail!("{request} is addressed to {}", statement.owner);
         }
         let body = serde_json::to_vec_pretty(&DecisionStatement {
@@ -180,7 +180,7 @@ impl Inner {
             return Ok(());
         }
         let statement: RequestStatement = self.read_statement(&content).await?;
-        let me = &self.config.member;
+        let me = &self.member;
         if statement.owner != *me {
             return Ok(());
         }
@@ -219,7 +219,7 @@ impl Inner {
         };
         self.ledger
             .lock()
-            .check(me, &self.config.cert.member, &changes, true)?;
+            .check(me, &self.cert.member, &changes, true)?;
         let keys: Vec<PathKey> = changes.iter().map(|change| change.path.key()).collect();
         self.publish_at(self.clock.stamp(), changes, Some(request.path.clone()))?;
         self.refresh_keys(work, &keys).await;

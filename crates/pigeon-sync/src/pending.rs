@@ -125,8 +125,7 @@ impl Inner {
                 })
                 .collect(),
         };
-        let signed =
-            SignedDrafts::sign(&self.group, drafts, self.config.cert.clone(), &self.machine);
+        let signed = SignedDrafts::sign(&self.group, drafts, self.cert.clone(), &self.machine);
         self.node.announce(signed);
         work.announced = Some(announced);
     }
@@ -146,13 +145,13 @@ impl Engine {
             .values()
             .map(|pending| PendingView {
                 path: pending.path.clone(),
-                author: inner.config.member.clone(),
+                author: inner.member.clone(),
                 here: true,
                 deleted: pending.stat.is_none(),
                 size: pending.stat.as_ref().map_or(0, |stat| stat.size),
                 due_in: left(inner.settle_time(&pending.path), pending.since.elapsed()),
                 freezes: inner.ledger.lock().freezes(&pending.path),
-                cutoff: work.selection.cutoff(&pending.path),
+                cutoff: work.config.selection.cutoff(&pending.path),
                 rivals: Vec::new(),
             })
             .collect();
@@ -164,7 +163,7 @@ impl Engine {
                     continue;
                 }
                 views.push(PendingView {
-                    cutoff: work.selection.cutoff(&draft.path),
+                    cutoff: work.config.selection.cutoff(&draft.path),
                     path: draft.path,
                     author: announced.author.clone(),
                     here: false,

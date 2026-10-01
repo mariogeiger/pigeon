@@ -761,3 +761,45 @@ async fn the_selection_editor_previews_a_draft_and_saves_it_whole() {
         json!("")
     );
 }
+
+#[tokio::test]
+async fn reloading_applies_the_configurations_edited_by_hand_unless_one_is_invalid() {
+    let lookup = MemoryLookup::new();
+    let peer = Peer::start(&lookup).await;
+    peer.call(
+        "group",
+        "create",
+        json!({"name": "cheapmo", "member": "alice", "root": peer.root("cheapmo")}),
+    )
+    .await
+    .unwrap();
+    let home = Home::new(peer.dir.path().join("home"));
+    let config = home.group("cheapmo").config_path();
+    let text = std::fs::read_to_string(&config).unwrap();
+    let edited = text
+        .replace("member = \"alice\"", "member = \"carol\"")
+        .replace("\"follow +alice/\"", "\"follow +alice/\", \"free *.iso\"")
+        .replace("quota = 20", "quota = 7");
+    assert_ne!(edited, text);
+    std::fs::write(&config, &edited).unwrap();
+    let invalid = home.group("other").config_path();
+    std::fs::create_dir_all(invalid.parent().unwrap()).unwrap();
+    std::fs::write(&invalid, "member = 1\n").unwrap();
+    let error = peer.call("daemon", "reload", json!({})).await.unwrap_err();
+    assert!(error.contains(&invalid.display().to_string()), "{error}");
+    let quota = |retention: Value| retention["quota"].clone();
+    let retention = peer.call("retention", "show", json!({})).await.unwrap();
+    assert_eq!(quota(retention), 20, "a refused reload changes nothing");
+    std::fs::remove_dir_all(invalid.parent().unwrap()).unwrap();
+    assert_eq!(
+        peer.call("daemon", "reload", json!({})).await,
+        Ok(json!({"groups": ["cheapmo"]}))
+    );
+    let retention = peer.call("retention", "show", json!({})).await.unwrap();
+    assert_eq!(quota(retention), 7);
+    let rules = peer.call("selection", "list", json!({})).await.unwrap();
+    assert_eq!(rules, json!("follow +alice/\nfree *.iso\n"));
+    let status = peer.call("group", "status", json!({})).await.unwrap();
+    assert_eq!(status["member"], "carol");
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), edited);
+}

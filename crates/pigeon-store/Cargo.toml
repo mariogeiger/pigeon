@@ -1,6 +1,6 @@
 [package]
 name = "pigeon-store"
-description = "pigeon's local state: group configuration, the patch log, the disk index, the set-aside list, and blobs"
+description = "pigeon's local state: group configuration and secrets, the patch log, the disk index, the set-aside list, and blobs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -22,6 +22,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+toml.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 junction.workspace = true

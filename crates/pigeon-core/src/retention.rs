@@ -8,31 +8,34 @@ use std::hash::BuildHasher;
 
 use crate::patch::{Content, ContentHash};
 
-/// How long each tier lasts, in seconds, the share of the disk history may
-/// fill, and whose files it covers; adjustable on each machine.
+/// How many days each tier lasts, the share of the disk history may fill,
+/// and whose files it covers; adjustable on each machine.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Retention {
     pub every: u64,
     pub daily: u64,
     pub weekly: u64,
+    #[serde(rename = "deletion")]
     pub before_deletion: u64,
     /// The percentage of the disk that past versions may fill.
+    #[serde(rename = "quota")]
     pub quota_percent: u8,
     /// Whether history covers every file the machine downloads, not only
     /// the member's own.
     pub everything: bool,
 }
 
-const DAY: u64 = 86_400;
+/// The seconds of a day.
+pub const DAY: u64 = 86_400;
 
 impl Default for Retention {
     fn default() -> Self {
         Self {
-            every: DAY,
-            daily: 30 * DAY,
-            weekly: 365 * DAY,
-            before_deletion: 365 * DAY,
+            every: 1,
+            daily: 30,
+            weekly: 365,
+            before_deletion: 365,
             quota_percent: 20,
             everything: false,
         }
@@ -61,16 +64,17 @@ impl Retention {
                 }
             }
         }
+        let lasts = |days: u64, age: u64| age < days.saturating_mul(DAY);
         history
             .iter()
             .enumerate()
             .map(|(index, version)| {
                 let age = now.saturating_sub(version.seconds);
                 index + 1 == history.len()
-                    || age < self.every
-                    || (age < self.daily && last_of_bucket.contains(&(0, index as u64)))
-                    || (age < self.weekly && last_of_bucket.contains(&(1, index as u64)))
-                    || (age < self.before_deletion && version.deleted_next)
+                    || lasts(self.every, age)
+                    || (lasts(self.daily, age) && last_of_bucket.contains(&(0, index as u64)))
+                    || (lasts(self.weekly, age) && last_of_bucket.contains(&(1, index as u64)))
+                    || (lasts(self.before_deletion, age) && version.deleted_next)
             })
             .collect()
     }
@@ -125,12 +129,19 @@ mod tests {
     }
 
     #[test]
-    fn a_stored_retention_without_the_newer_settings_reads_with_defaults() {
-        let stored = r#"{"every":1,"daily":2,"weekly":3,"before_deletion":4}"#;
-        let retention: Retention = serde_json::from_str(stored).unwrap();
-        assert_eq!(retention.every, 1);
-        assert_eq!(retention.quota_percent, 20);
-        assert!(!retention.everything);
+    fn a_retention_given_in_part_takes_the_defaults_and_refuses_unknown_names() {
+        let given = r#"{"every":2,"deletion":4,"quota":5}"#;
+        let retention: Retention = serde_json::from_str(given).unwrap();
+        assert_eq!(
+            retention,
+            Retention {
+                every: 2,
+                before_deletion: 4,
+                quota_percent: 5,
+                ..Retention::default()
+            }
+        );
+        assert!(serde_json::from_str::<Retention>(r#"{"evry":2}"#).is_err());
     }
 
     #[test]

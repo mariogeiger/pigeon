@@ -53,7 +53,7 @@ impl Inner {
         reason: String,
     ) -> Result<()> {
         let path = location
-            .strip_prefix(&self.config.root)
+            .strip_prefix(&self.root)
             .unwrap_or(location)
             .to_string_lossy()
             .replace('\\', "/");

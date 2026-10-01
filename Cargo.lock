@@ -3092,7 +3092,7 @@ dependencies = [
 
 [[package]]
 name = "pigeon"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -3115,12 +3115,13 @@ dependencies = [
  "similar",
  "tempfile",
  "tokio",
+ "toml",
  "ureq",
 ]
 
 [[package]]
 name = "pigeon-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "blake3",
  "ignore",
@@ -3135,7 +3136,7 @@ dependencies = [
 
 [[package]]
 name = "pigeon-net"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "bao-tree",
@@ -3156,7 +3157,7 @@ dependencies = [
 
 [[package]]
 name = "pigeon-store"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "blake3",
  "data-encoding",
@@ -3174,11 +3175,12 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "toml",
 ]
 
 [[package]]
 name = "pigeon-sync"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "iroh",

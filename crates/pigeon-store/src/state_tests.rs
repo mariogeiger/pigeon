@@ -1,5 +1,5 @@
 //! Tests of the state database: patches survive reopening and fold back
-//! into the same ledger, and the index, set-aside list, and settings
+//! into the same ledger, and the index, set-aside list, and placed folders
 //! round-trip, every write counted.
 
 use iroh_base::SecretKey;
@@ -9,7 +9,6 @@ use pigeon_core::name::MemberName;
 use pigeon_core::patch::{Change, Content, ContentHash, Patch};
 use pigeon_core::path::GroupPath;
 use pigeon_core::places::Places;
-use pigeon_core::selection::Cutoff;
 use pigeon_core::statement::member_path;
 
 use super::*;
@@ -166,45 +165,23 @@ fn aside_items_are_numbered_and_taken_each_write_counted() {
 }
 
 #[test]
-fn settings_default_until_set() {
+fn placed_folders_round_trip() {
     let dir = tempfile::tempdir().unwrap();
     let state = State::open(&dir.path().join("s")).unwrap();
-    assert_eq!(state.retention().unwrap(), Retention::default());
-    let doc = GroupPath::parse("doc/a").unwrap();
-    assert_eq!(
-        state.selection().unwrap().cutoff(&doc),
-        Cutoff::MinusInfinity
-    );
-    let mut selection = state.selection().unwrap();
-    selection
-        .set(Rule {
-            pattern: "doc/".into(),
-            cutoff: Cutoff::PlusInfinity,
-        })
-        .unwrap();
-    state.set_selection(&selection).unwrap();
-    assert_eq!(
-        state.selection().unwrap().cutoff(&doc),
-        Cutoff::PlusInfinity
-    );
-    let retention = Retention {
-        every: 1,
-        quota_percent: 5,
-        everything: true,
-        ..Retention::default()
-    };
-    state.set_retention(&retention).unwrap();
-    assert_eq!(state.retention().unwrap(), retention);
-    assert_eq!(state.places().unwrap(), Places::default());
+    assert_eq!(state.placed().unwrap(), Places::default());
     let mut places = Places::default();
     let root = std::env::temp_dir().join("root");
-    let destination = std::env::temp_dir().join("disk");
-    places
-        .set(&root, GroupPath::parse("videos").unwrap(), destination)
-        .unwrap();
-    state.set_places(&places).unwrap();
-    assert_eq!(state.places().unwrap(), places);
-    assert_eq!(state.placed().unwrap(), Places::default());
+    for folder in ["videos", "Photos 2026"] {
+        let destination = std::env::temp_dir().join("disk").join(folder);
+        places
+            .set(&root, GroupPath::parse(folder).unwrap(), destination)
+            .unwrap();
+    }
     state.set_placed(&places).unwrap();
+    assert_eq!(state.placed().unwrap(), places);
+    assert!(places.remove(&GroupPath::parse("videos").unwrap()));
+    state.set_placed(&places).unwrap();
+    drop(state);
+    let state = State::open(&dir.path().join("s")).unwrap();
     assert_eq!(state.placed().unwrap(), places);
 }

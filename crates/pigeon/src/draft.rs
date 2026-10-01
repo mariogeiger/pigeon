@@ -1,12 +1,10 @@
-//! A draft selection as text, one rule per line: `follow /docs/`, `pin now
-//! /report/` or `pin <RFC 3339 time> /report/`, and `free *.iso`; blank
-//! lines and lines starting with `#` say nothing. Reads and writes the
-//! rules, and previews what saving a draft would change, with the times
-//! each pin can choose.
+//! A draft selection as text, one rule per line as the rule prints, such as
+//! `follow /docs/` or `pin now /report/`; blank lines and lines starting
+//! with `#` say nothing. Reads and writes the rules, and previews what
+//! saving a draft would change, with the times each pin can choose.
 
 use anyhow::{Result, anyhow};
-use pigeon_core::clock::{parse_rfc3339, rfc3339};
-use pigeon_core::selection::{Cutoff, Rule, compile};
+use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_sync::views::PinTime;
 use pigeon_sync::{Engine, Preview};
 use serde_json::{Value, json};
@@ -20,57 +18,10 @@ pub struct Line {
     pub rule: Result<Rule, String>,
 }
 
-/// `rule` as one line of a draft.
-#[must_use]
-pub fn format_rule(rule: &Rule) -> String {
-    let mode = match rule.cutoff {
-        Cutoff::PlusInfinity => "follow".to_owned(),
-        Cutoff::At(time) => format!("pin {}", rfc3339(time)),
-        Cutoff::MinusInfinity => "free".to_owned(),
-    };
-    format!("{mode} {}", rule.pattern)
-}
-
 /// `rules` as a draft, one line each.
 #[must_use]
 pub fn format(rules: &[Rule]) -> String {
-    rules.iter().map(|rule| format_rule(rule) + "\n").collect()
-}
-
-/// The first word of `text` and what follows it.
-fn word(text: &str) -> (&str, &str) {
-    let text = text.trim_start();
-    text.split_once(char::is_whitespace)
-        .map_or((text, ""), |(first, rest)| (first, rest.trim_start()))
-}
-
-/// Reads one rule, `now` standing for the time of `pin now`.
-fn rule(line: &str, now: u64) -> Result<Rule, String> {
-    let (mode, rest) = word(line);
-    let (cutoff, pattern) = match mode {
-        "follow" => (Cutoff::PlusInfinity, rest),
-        "free" => (Cutoff::MinusInfinity, rest),
-        "pin" => {
-            let (when, pattern) = word(rest);
-            let time = match when {
-                "now" => now,
-                "" => return Err("pin needs a time: now or an RFC 3339 time".to_owned()),
-                time => parse_rfc3339(time)?,
-            };
-            (Cutoff::At(time), pattern)
-        }
-        _ => {
-            return Err(format!("{mode:?} is not a mode: write follow, pin or free"));
-        }
-    };
-    if pattern.is_empty() {
-        return Err(format!("{mode} needs a pattern, such as /docs/ or *.pdf"));
-    }
-    compile(pattern).map_err(|error| error.to_string())?;
-    Ok(Rule {
-        pattern: pattern.to_owned(),
-        cutoff,
-    })
+    rules.iter().map(|rule| rule.to_string() + "\n").collect()
 }
 
 /// Reads every rule line of `text`, `now` standing for `pin now`.
@@ -82,7 +33,7 @@ pub fn parse(text: &str, now: u64) -> Vec<Line> {
         .filter(|(_, line)| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
         .map(|(number, line)| Line {
             number,
-            rule: rule(line, now),
+            rule: Rule::parse(line, || now),
         })
         .collect()
 }
@@ -159,7 +110,7 @@ fn preview_json(
             match &line.rule {
                 Ok(rule) => json!({
                     "line": line.number,
-                    "rule": format_rule(rule),
+                    "rule": rule.to_string(),
                     "pattern": rule.pattern,
                     "matches": effect.map(|effect| effect.matches),
                     "decides": effect.map(|effect| effect.decides),
@@ -250,21 +201,14 @@ mod tests {
 
     #[test]
     fn each_line_that_is_no_rule_says_why() {
-        let text = "keep /a/\nfollow\npin\npin yesterday /a/\nfree !a\nfollow /a{b/\nfollow /ok/\n";
+        let text = "keep /a/\nfollow /ok/\n\nfree !a\n";
         let lines = parse(text, 0);
-        let errors: Vec<&str> = lines
-            .iter()
-            .filter_map(|line| line.rule.as_ref().err().map(String::as_str))
-            .collect();
-        assert_eq!(errors.len(), 6, "{errors:?}");
-        assert!(errors[0].contains("not a mode"));
-        assert!(errors[1].contains("needs a pattern"));
-        assert!(errors[2].contains("needs a time"));
-        assert!(errors[3].contains("RFC 3339"));
-        assert!(errors[4].contains("negated"));
-        assert!(errors[5].contains("gitignore"));
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].rule.as_ref().unwrap_err().contains("not a mode"));
+        assert!(lines[1].rule.is_ok());
+        assert_eq!(lines[2].number, 4);
         let error = rules(text, 0).unwrap_err().to_string();
         assert!(error.starts_with("line 1: "), "{error}");
-        assert!(error.contains("; line 6: "), "{error}");
+        assert!(error.contains("; line 4: "), "{error}");
     }
 }
