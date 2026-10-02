@@ -8,8 +8,9 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use pigeon_core::selection::{Cutoff, Rule};
+use pigeon_store::config::Config;
 use pigeon_sync::{Edit, Engine};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -174,6 +175,27 @@ pub(crate) fn set_config<'a>(daemon: &'a Daemon, args: &'a Args) -> Reply<'a> {
         daemon
             .apply_config(&group, text, args.text("version"), args.flag("yes"))
             .await?;
+        Ok(Value::Null)
+    })
+}
+
+pub(crate) fn serve_group<'a>(daemon: &'a Daemon, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
+        let group = chosen_group(daemon, args).await?;
+        {
+            let groups = daemon.groups().await;
+            let (_, engine) = groups.choose(Some(&group))?;
+            let rule = Rule {
+                pattern: "*".to_owned(),
+                cutoff: Cutoff::PlusInfinity,
+            };
+            engine.set_rule(rule).await?;
+        }
+        let (_, text) = read_config(daemon, &group)?;
+        let (mut config, _) = Config::parse(&text).map_err(|reason| anyhow!("{reason}"))?;
+        config.retention.everything = true;
+        let text = config.render().map_err(|reason| anyhow!("{reason}"))?;
+        daemon.apply_config(&group, &text, None, true).await?;
         Ok(Value::Null)
     })
 }

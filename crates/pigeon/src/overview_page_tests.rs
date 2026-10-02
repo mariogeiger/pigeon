@@ -126,6 +126,7 @@ fn the_page_holds_the_file_and_offers_to_leave() {
         page.contains("alice · /cheapmo · joined · 2 other machines online"),
         "{page}"
     );
+    assert!(page.contains(r#"action="/act/group/serve""#), "{page}");
     assert!(page.contains(r#"<p class="error">disk full</p>"#), "{page}");
     assert!(page.contains("Unreached machines"), "{page}");
     assert!(

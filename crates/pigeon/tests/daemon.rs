@@ -402,3 +402,20 @@ async fn a_group_that_does_not_start_is_mended_by_showing_and_setting_its_config
     assert_eq!(std::fs::read_to_string(&config).unwrap(), text);
     assert!(notes.exists());
 }
+
+#[tokio::test]
+async fn serving_follows_every_file_and_keeps_every_history() {
+    let lookup = MemoryLookup::new();
+    let (peer, _) = alice_with_notes(&lookup).await;
+    peer.run("group", "serve", json!({})).await;
+    assert_eq!(peer.selection().await.last().unwrap(), "follow *");
+    let shown = peer.run("config", "show", json!({})).await;
+    assert!(
+        shown["text"]
+            .as_str()
+            .unwrap()
+            .contains("everything = true"),
+        "{shown}"
+    );
+    assert!(peer.joined().await);
+}

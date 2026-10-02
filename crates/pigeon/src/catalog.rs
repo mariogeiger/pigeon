@@ -307,6 +307,13 @@ pub const ACTIONS: &[Action] = &[
         &[YES],
         Handler::Daemon(perform::leave_group),
     ),
+    action(
+        "group",
+        "serve",
+        "Make this machine a server of the group: it follows every file and keeps the history of every file it downloads, so that the files stay available while their owners' machines are off",
+        &[],
+        Handler::Daemon(perform::serve_group),
+    ),
     view(
         "member",
         "list",

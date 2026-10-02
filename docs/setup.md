@@ -315,11 +315,13 @@ their owners' machines are off. It joins as a member of its own:
 
 ```sh
 pigeon group join --key <the key> --member server
-pigeon selection follow --pattern '*'
+pigeon group serve
 ```
 
-then set `everything = true` under `[retention]` in its `config.toml`, and
-run `pigeon daemon reload`.
+`pigeon group serve` makes the machine follow every file and keep the
+history of every file it downloads (`everything = true` under `[retention]`
+in its `config.toml`); the Overview page of the web interface has the same
+button, and `pigeon setup` and the install script below call it.
 
 It owns no folder and nobody edits its disk, so it only receives. Run its daemon with
 `pigeon service install --linger`, which starts it at boot. On Linux and

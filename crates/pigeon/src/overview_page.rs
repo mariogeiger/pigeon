@@ -168,6 +168,18 @@ fn places_section(group: &str, places: &Value) -> Markup {
     }
 }
 
+/// The one button that makes this machine a server of the group.
+fn server_section(group: &str) -> Markup {
+    let back = format!("/g/{group}/overview");
+    html! {
+        section {
+            h2 { "Server" }
+            p class="quiet" { "An always-on machine keeps the group's files available while their owners' machines are off." }
+            (form(action("group", "serve"), &back, fill(group, &[], &[])))
+        }
+    }
+}
+
 /// The Overview page of `bar`'s group.
 #[must_use]
 pub fn overview(bar: &Bar<'_>, shown: &Overview<'_>) -> Markup {
@@ -210,6 +222,7 @@ pub fn overview(bar: &Bar<'_>, shown: &Overview<'_>) -> Markup {
         }
         (editor(shown.config))
         (places_section(group, shown.places))
+        (server_section(group))
         details {
             summary { "Details" }
             (fields(&ids))

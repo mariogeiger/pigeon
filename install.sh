@@ -109,12 +109,7 @@ main() {
     if [ "$mode" = server ]; then
         "$pigeon" service install --linger </dev/null
         "$pigeon" group join --key "$key" --member "$member" </dev/null
-        "$pigeon" selection follow --pattern '*' </dev/null
-        config=$("$pigeon" config show --json </dev/null | sed -n 's/^  "path": "\(.*\)",$/\1/p')
-        [ -f "$config" ] || fail "pigeon did not name the group's config.toml"
-        everything=$(sed 's/^everything = false$/everything = true/' "$config")
-        printf '%s\n' "$everything" >"$config"
-        "$pigeon" daemon reload --yes </dev/null
+        "$pigeon" group serve </dev/null
         echo "✓ server of the group, as $member"
     else
         exec "$pigeon" setup </dev/tty
