@@ -92,9 +92,12 @@ base directories put configuration, data and state. On macOS one folder,
 - The configuration, in `~/.config/pigeon`: for each group,
   `groups/<group>/config.toml` holds the member, the root, the selection,
   the retention and the places. Edit it by hand, then apply it with
-  `pigeon daemon reload`, which changes nothing if a group's file does not
-  read, tells what the edits download, free and pin on this machine,
-  and asks first when they free space; `--yes` skips the question. The
+  `pigeon daemon reload`, which leaves as it is a group whose file does not
+  read, and reloads the others, tells what the edits download, free and
+  pin on this machine, and asks first when they free space; `--yes` skips
+  the question. A group that does not start is mended like any other:
+  `pigeon config show` gives its file, and `pigeon config set` writes a
+  file it starts from, or keeps the one it had. The
   Overview page of the web interface edits the same file. pigeon rewrites the file whole, without your comments, whenever it
   changes a setting, and refuses to while the file holds edits it has not
   read.

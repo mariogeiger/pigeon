@@ -335,6 +335,12 @@ impl Inner {
         hasher.finish()
     }
 
+    /// Keeps the join state the ledger tells as the one the status view
+    /// reads, until the first signal.
+    pub(crate) fn glance_join(&self) {
+        self.glance.lock().expect("no panic holds the glance").join = self.join_state();
+    }
+
     /// Sends the fingerprint when it changed, and keeps what the status
     /// view reads of `work`.
     pub(crate) fn signal(&self, work: &Work) {
@@ -591,6 +597,7 @@ impl Engine {
             ));
         }
         inner.work.lock().await.join = inner.join_state();
+        inner.glance_join();
         inner.want_peers();
         let (stop, stopped) = oneshot::channel();
         let task = tokio::spawn(run(inner.clone(), received, rescan_events, wakes, stopped));

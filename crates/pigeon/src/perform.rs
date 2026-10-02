@@ -57,10 +57,11 @@ fn root(args: &Args) -> Option<PathBuf> {
     args.text("root").map(PathBuf::from)
 }
 
-/// The group the call names, or the machine's single group.
+/// The group the call names, or the machine's single group, running or
+/// not.
 async fn chosen_group(daemon: &Daemon, args: &Args) -> Result<String> {
     let groups = daemon.groups().await;
-    Ok(groups.choose(args.text(GROUP.name))?.0.to_owned())
+    Ok(groups.known(args.text(GROUP.name))?.to_owned())
 }
 
 pub(crate) fn list_groups<'a>(daemon: &'a Daemon, _: &'a Args) -> Reply<'a> {

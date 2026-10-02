@@ -17,7 +17,7 @@ use pigeon_core::selection::Rule;
 use pigeon_store::config::{Config, ConfigFile};
 use pigeon_store::group_dirs::{GroupDirs, write_private};
 use pigeon_store::group_key::GroupKey;
-use pigeon_sync::{Delta, Engine, JoinState, Listener, Names, Options};
+use pigeon_sync::{Amount, Delta, Engine, JoinState, Listener, Names, Options};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, RwLock, RwLockReadGuard, watch};
 
@@ -125,6 +125,22 @@ impl Groups {
                 names.into_iter().collect::<Vec<_>>().join(", ")
             ),
         }
+    }
+
+    /// The group a call names, or the machine's only group, running or
+    /// not, if it is on this machine.
+    ///
+    /// # Errors
+    ///
+    /// Fails, naming the command to run, if the group is not on this
+    /// machine, or the call names none on a machine with no group or
+    /// several.
+    pub fn known<'a>(&'a self, name: Option<&'a str>) -> Result<&'a str> {
+        let name = self.name(name)?;
+        if self.running.contains_key(name) || self.failed.contains_key(name) {
+            return Ok(name);
+        }
+        Err(absent(name))
     }
 
     /// The running group a call names, or the machine's only group.
@@ -447,52 +463,81 @@ impl Daemon {
 
     /// Restarts every group from its folders, so that the edits of its
     /// `config.toml` apply; starts the groups added there and stops those
-    /// gone. Changes nothing unless every configuration reads, nor, unless
-    /// `yes`, if the edits free space on this machine. Returns, for each
-    /// group running before, what its edits download, free and pin.
+    /// gone. A group whose configuration does not read is left as it is,
+    /// running or not, and the rest restart. Unless `yes`, changes nothing
+    /// if the edits free space on this machine. Returns, for each group
+    /// running before, what its edits download, free and pin.
     ///
     /// # Errors
     ///
-    /// Fails, naming the file and what in it is wrong, if a configuration
-    /// is invalid, naming what the edits free unless `yes`, or naming the
-    /// groups that do not start again.
+    /// Fails, naming the file and what in it is wrong, for each
+    /// configuration that is invalid, naming what the edits free unless
+    /// `yes`, or naming the groups that do not start again.
     pub async fn reload(&self, yes: bool) -> Result<Vec<Value>> {
         let mut groups = self.groups.write().await;
         let names = self.home.group_names()?;
         let mut changes = Vec::new();
         let mut freed = Vec::new();
+        let mut left = BTreeSet::new();
+        let mut problems = Vec::new();
         for name in &names {
-            let dirs = self.home.group(name);
-            dirs.load_config()?;
-            let Some(engine) = groups.running.get(name) else {
-                continue;
-            };
-            let path = dirs.config_path();
-            let text = std::fs::read_to_string(&path)
-                .with_context(|| format!("reading {}", path.display()))?;
-            let (_, preview) = config_preview::plan(engine, &text)
-                .await
-                .with_context(|| path.display().to_string())?;
-            freed.push((name.clone(), config_preview::total(&preview, Delta::Free)));
-            let mut change = config_preview::summary(&preview);
-            change["group"] = json!(name);
-            changes.push(change);
-        }
-        Freed::new(freed).refuse_unless(yes)?;
-        for (name, engine) in std::mem::take(&mut *groups).running {
-            shut_down(&name, engine).await;
-        }
-        let mut failed = Vec::new();
-        for name in names {
-            let started = Engine::start(&self.home.group(&name), self.options.clone()).await;
-            if let Err(error) = groups.keep(name.clone(), started) {
-                failed.push(format!("{name} does not start: {error:#}"));
+            match self.reading(&groups, name).await {
+                Ok(Some((amount, change))) => {
+                    freed.push((name.clone(), amount));
+                    changes.push(change);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    problems.push(format!("{name} is left as it is: {error:#}"));
+                    left.insert(name.clone());
+                }
             }
         }
-        if !failed.is_empty() {
-            bail!("{}", failed.join("; "));
+        Freed::new(freed).refuse_unless(yes)?;
+        let stopping: Vec<String> = groups
+            .running
+            .keys()
+            .filter(|name| !left.contains(*name))
+            .cloned()
+            .collect();
+        for name in stopping {
+            if let Some(engine) = groups.running.remove(&name) {
+                shut_down(&name, engine).await;
+            }
+        }
+        for name in names.into_iter().filter(|name| !left.contains(name)) {
+            let started = Engine::start(&self.home.group(&name), self.options.clone()).await;
+            if let Err(error) = groups.keep(name.clone(), started) {
+                problems.push(format!("{name} does not start: {error:#}"));
+            }
+        }
+        if !problems.is_empty() {
+            bail!("{}", problems.join("; "));
         }
         Ok(changes)
+    }
+
+    /// What reloading would do to the group `name` if it runs, as what its
+    /// edits free and, as a result, what they download, free and pin.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the configuration of the group does not read.
+    async fn reading(&self, groups: &Groups, name: &str) -> Result<Option<(Amount, Value)>> {
+        let dirs = self.home.group(name);
+        dirs.load_config()?;
+        let Some(engine) = groups.running.get(name) else {
+            return Ok(None);
+        };
+        let path = dirs.config_path();
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let (_, preview) = config_preview::plan(engine, &text)
+            .await
+            .with_context(|| path.display().to_string())?;
+        let mut change = config_preview::summary(&preview);
+        change["group"] = json!(name);
+        Ok(Some((config_preview::total(&preview, Delta::Free), change)))
     }
 
     /// Writes `text` as the `config.toml` of `group` and restarts the
@@ -512,7 +557,6 @@ impl Daemon {
         yes: bool,
     ) -> Result<()> {
         let mut groups = self.groups.write().await;
-        let (_, engine) = groups.choose(Some(group))?;
         let path = self.home.group(group).config_path();
         let current = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
@@ -522,34 +566,42 @@ impl Daemon {
                 path.display()
             );
         }
-        let (_, preview) = config_preview::plan(engine, text).await?;
-        Freed::by(group, &preview).refuse_unless(yes)?;
+        if !groups.failed.contains_key(group) {
+            let (_, engine) = groups.choose(Some(group))?;
+            let (_, preview) = config_preview::plan(engine, text).await?;
+            Freed::by(group, &preview).refuse_unless(yes)?;
+        }
         self.restart_from(&mut groups, group, text).await
     }
 
-    /// Restarts the running group `group` from `text`, written as its
-    /// `config.toml`. A group that does not start from it gets back the
-    /// configuration it ran with and starts from that, so that it keeps
-    /// running.
+    /// Restarts the group `group`, running or failing to start, from
+    /// `text`, written as its `config.toml`. A group that does not start
+    /// from it gets back the configuration it had and starts from that,
+    /// so that a running group keeps running.
     ///
     /// # Errors
     ///
     /// Fails, telling why, if the group does not start from `text`, or
-    /// does not even start again from the configuration it ran with.
+    /// does not even start again from the configuration it had.
     async fn restart_from(&self, groups: &mut Groups, group: &str, text: &str) -> Result<()> {
         let dirs = self.home.group(group);
         let path = dirs.config_path();
         let previous = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
-        let engine = groups.running.remove(group).ok_or_else(|| absent(group))?;
-        shut_down(group, engine).await;
+        let engine = groups.running.remove(group);
+        let was_running = engine.is_some();
+        if let Some(engine) = engine {
+            shut_down(group, engine).await;
+        } else if !groups.failed.contains_key(group) {
+            return Err(absent(group));
+        }
         let started = match write_private(&path, text.as_bytes()) {
             Ok(()) => Engine::start(&dirs, self.options.clone()).await,
             Err(error) => Err(error.into()),
         };
         let error = match started {
             Ok(engine) => {
-                groups.running.insert(group.to_owned(), engine);
+                groups.keep(group.to_owned(), Ok(engine))?;
                 return Ok(());
             }
             Err(error) => error,
@@ -559,9 +611,17 @@ impl Daemon {
             Ok(()) => Engine::start(&dirs, self.options.clone()).await,
             Err(error) => Err(error),
         };
-        groups.keep(group.to_owned(), started)?;
+        let kept = groups.keep(group.to_owned(), started);
+        if was_running {
+            kept?;
+        }
+        let outcome = if was_running {
+            "so it runs on with the one it had"
+        } else {
+            "so its file stays as it was"
+        };
         Err(error.context(format!(
-            "{group} does not start from this configuration, so it runs on with the one it had"
+            "{group} does not start from this configuration, {outcome}"
         )))
     }
 

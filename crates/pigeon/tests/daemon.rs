@@ -315,7 +315,7 @@ async fn a_group_that_does_not_start_from_a_configuration_runs_on_as_it_was() {
 }
 
 #[tokio::test]
-async fn reloading_applies_the_configurations_edited_by_hand_unless_one_is_invalid() {
+async fn reloading_applies_the_configurations_edited_by_hand_and_leaves_an_invalid_one_as_it_is() {
     let lookup = MemoryLookup::new();
     let (peer, notes) = alice_with_notes(&lookup).await;
     let home = peer.home();
@@ -335,10 +335,6 @@ async fn reloading_applies_the_configurations_edited_by_hand_unless_one_is_inval
         status["member"].clone()
     };
     let error = peer.call("daemon", "reload", json!({})).await.unwrap_err();
-    assert!(error.contains(&invalid.display().to_string()), "{error}");
-    assert_eq!(member().await, "alice", "a refused reload changes nothing");
-    std::fs::remove_dir_all(invalid.parent().unwrap()).unwrap();
-    let error = peer.call("daemon", "reload", json!({})).await.unwrap_err();
     assert!(
         error.contains("family frees 1 file, 6 B") && error.contains("--yes"),
         "{error}"
@@ -347,12 +343,62 @@ async fn reloading_applies_the_configurations_edited_by_hand_unless_one_is_inval
     assert!(question.contains("family frees 1 file, 6 B"), "{question}");
     assert_eq!(member().await, "alice");
     assert!(notes.exists());
-    assert_eq!(
-        peer.call("daemon", "reload", json!({"yes": true})).await,
-        Ok(json!([{"group": GROUP, "download": "", "free": "1 file, 6 B", "pin": ""}]))
-    );
-    assert_eq!(member().await, "carol");
+    let error = peer
+        .call("daemon", "reload", json!({"yes": true}))
+        .await
+        .unwrap_err();
+    assert!(error.contains(&invalid.display().to_string()), "{error}");
+    assert!(error.contains("other is left as it is"), "{error}");
+    assert_eq!(member().await, "carol", "the other groups reload");
     assert_eq!(peer.selection().await, ["free +alice/", "free *.iso"]);
     assert_eq!(std::fs::read_to_string(&config).unwrap(), edited);
+    assert_eq!(std::fs::read_to_string(&invalid).unwrap(), "member = 1\n");
     eventually("the notes are freed", &[], async || !notes.exists()).await;
+}
+
+#[tokio::test]
+async fn a_group_that_does_not_start_is_mended_by_showing_and_setting_its_configuration() {
+    let lookup = MemoryLookup::new();
+    let (mut peer, notes) = alice_with_notes(&lookup).await;
+    let config = peer.home().group(GROUP).config_path();
+    let text = std::fs::read_to_string(&config).unwrap();
+    let blocker = peer.outside("blocker");
+    std::fs::write(&blocker, "").unwrap();
+    let unrooted: String = text
+        .lines()
+        .map(|line| {
+            if line.starts_with("root = ") {
+                format!("root = {:?}\n", blocker.join("root"))
+            } else {
+                format!("{line}\n")
+            }
+        })
+        .collect();
+    assert_ne!(unrooted, text);
+    std::fs::write(&config, &unrooted).unwrap();
+    peer.switch_off().await;
+    peer.switch_on().await;
+    let error = peer.call("file", "list", json!({})).await.unwrap_err();
+    assert!(error.contains("does not start"), "{error}");
+    let shown = peer.call("config", "show", json!({})).await.unwrap();
+    assert_eq!(shown["text"], json!(unrooted));
+    let error = peer
+        .call(
+            "config",
+            "set",
+            json!({"text": unrooted, "version": shown["version"]}),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.contains("so its file stays as it was"), "{error}");
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), unrooted);
+    peer.run(
+        "config",
+        "set",
+        json!({"text": text, "version": shown["version"]}),
+    )
+    .await;
+    assert!(peer.joined().await, "the mended group runs");
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), text);
+    assert!(notes.exists());
 }

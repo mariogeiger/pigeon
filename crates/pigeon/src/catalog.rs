@@ -558,7 +558,7 @@ pub const ACTIONS: &[Action] = &[
         ..action(
             "daemon",
             "reload",
-            "Restart every group from its files, applying the edits of each group's config.toml, unless one does not read; tell what they download, free and pin here",
+            "Restart every group from its files, applying the edits of each group's config.toml and leaving as it is a group whose config.toml does not read; tell what they download, free and pin here",
             &[YES],
             Handler::Daemon(perform::reload),
         )
