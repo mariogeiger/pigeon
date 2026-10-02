@@ -34,6 +34,10 @@ number, and any other change the third.
   machine's pigeon stands read the same on the command line as on the
   web, as sentences, and `pigeon suggestion list` names a suggestion by
   its `id` alone.
+- A group that does not start is no longer taken for absent: `pigeon
+  group list` and the web's list of groups show it with why, and every
+  call naming it tells why, then how to mend it or take it off the
+  machine.
 - `pigeon daemon reload` and `pigeon config set` ask the web's question
   before edits free space on this machine, and apply them on yes;
   without a terminal they refuse unless given `--yes`.

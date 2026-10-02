@@ -79,13 +79,9 @@ async fn with_engine<T>(
     use_engine: impl AsyncFnOnce(&Engine) -> T,
 ) -> Result<T, Failure> {
     let groups = app.daemon.groups().await;
-    let engine = groups.get(group).ok_or_else(|| {
-        Failure::new(
-            StatusCode::NOT_FOUND,
-            format!("No group {group} on this machine."),
-            "/",
-        )
-    })?;
+    let (_, engine) = groups
+        .choose(Some(group))
+        .map_err(|error| Failure::new(StatusCode::NOT_FOUND, format!("{error:#}"), "/"))?;
     Ok(use_engine(engine).await)
 }
 

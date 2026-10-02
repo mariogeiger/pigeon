@@ -180,9 +180,9 @@ async fn a_machine_hears_the_group_before_choosing_its_name() {
 }
 
 #[tokio::test]
-async fn leaving_forgets_the_group_here_and_keeps_its_files_even_when_it_does_not_start() {
+async fn a_group_that_does_not_start_says_why_and_leaving_forgets_any_keeping_its_files() {
     let lookup = MemoryLookup::new();
-    let (peer, notes) = alice_with_notes(&lookup).await;
+    let (mut peer, notes) = alice_with_notes(&lookup).await;
     let page = peer.page("/g/family").await;
     assert!(page.contains(r#"action="/act/group/leave""#), "{page}");
     assert!(
@@ -195,6 +195,40 @@ async fn leaving_forgets_the_group_here_and_keeps_its_files_even_when_it_does_no
     std::fs::copy(home.group(GROUP).config_path(), broken.config_path()).unwrap();
     std::fs::create_dir_all(broken.data()).unwrap();
     std::fs::write(broken.secrets_path(), "machine = \"00\"\n[cert]\n").unwrap();
+    peer.switch_off().await;
+    peer.switch_on().await;
+    let groups = peer.call("group", "list", json!({})).await.unwrap();
+    let state = groups[0]["join"]["state"].as_str().unwrap();
+    assert!(
+        groups[0]["name"] == "broken"
+            && state.starts_with("does not start: ")
+            && state.contains("cert"),
+        "{groups}"
+    );
+    assert_eq!(groups[1]["name"], GROUP, "{groups}");
+    let error = peer
+        .call("file", "list", json!({"group": "broken"}))
+        .await
+        .unwrap_err();
+    assert!(
+        error.contains("the group broken does not start: ") && error.contains("cert"),
+        "{error}"
+    );
+    assert!(
+        error.contains("`pigeon group leave --group broken`"),
+        "{error}"
+    );
+    let error = peer.call("file", "list", json!({})).await.unwrap_err();
+    assert!(error.contains("one of broken, family"), "{error}");
+    let page = peer
+        .send("GET", "/g/broken", vec![peer.cookie()], None)
+        .await;
+    assert_eq!(page.status, 400);
+    assert!(
+        page.body.contains("the group broken does not start"),
+        "{}",
+        page.body
+    );
     peer.call("group", "leave", json!({"group": "broken"}))
         .await
         .unwrap();

@@ -3,6 +3,7 @@
 //! group's engine and its result into JSON, and the dispatch of a call to
 //! its action's handler.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -16,7 +17,7 @@ use serde_json::{Value, json};
 use crate::args::Args;
 use crate::catalog::GROUP;
 use crate::config_preview;
-use crate::daemon::{Daemon, Stop, choose};
+use crate::daemon::{Daemon, Stop};
 
 /// The result of an action as JSON, once it is carried out.
 pub type Reply<'a> = Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>>;
@@ -41,7 +42,7 @@ pub async fn perform(daemon: &Daemon, args: &Args) -> Result<Value> {
         Handler::Daemon(handler) => handler(daemon, args).await,
         Handler::Engine(handler) => {
             let groups = daemon.groups().await;
-            let (_, engine) = choose(&groups, args.text(GROUP.name))?;
+            let (_, engine) = groups.choose(args.text(GROUP.name))?;
             handler(engine, args).await
         }
     }
@@ -58,24 +59,29 @@ fn root(args: &Args) -> Option<PathBuf> {
 /// The group the call names, or the machine's single group.
 async fn chosen_group(daemon: &Daemon, args: &Args) -> Result<String> {
     let groups = daemon.groups().await;
-    Ok(choose(&groups, args.text(GROUP.name))?.0.to_owned())
+    Ok(groups.choose(args.text(GROUP.name))?.0.to_owned())
 }
 
 pub(crate) fn list_groups<'a>(daemon: &'a Daemon, _: &'a Args) -> Reply<'a> {
     Box::pin(async move {
         let groups = daemon.groups().await;
-        let mut list = Vec::new();
-        for (name, engine) in groups.iter() {
+        let mut list = BTreeMap::new();
+        for (name, engine) in groups.running() {
             let status = engine.status().await;
-            list.push(json!({
+            let item = json!({
                 "name": name,
                 "member": status.member,
                 "join": status.join,
                 "peers": status.peers.len(),
                 "root": status.root,
-            }));
+            });
+            list.insert(name, item);
         }
-        Ok(Value::Array(list))
+        for (name, why) in groups.failed() {
+            let state = format!("does not start: {why}");
+            list.insert(name, json!({ "name": name, "join": { "state": state } }));
+        }
+        Ok(Value::Array(list.into_values().collect()))
     })
 }
 
@@ -105,7 +111,7 @@ pub(crate) fn leave_group<'a>(daemon: &'a Daemon, args: &'a Args) -> Reply<'a> {
     Box::pin(async move {
         let group = match args.text(GROUP.name) {
             Some(group) => group.to_owned(),
-            None => choose(&*daemon.groups().await, None)?.0.to_owned(),
+            None => daemon.groups().await.name(None)?.to_owned(),
         };
         daemon.leave(&group).await?;
         Ok(Value::Null)
@@ -139,7 +145,7 @@ pub(crate) fn show_config<'a>(daemon: &'a Daemon, args: &'a Args) -> Reply<'a> {
 pub(crate) fn preview_config<'a>(daemon: &'a Daemon, args: &'a Args) -> Reply<'a> {
     Box::pin(async move {
         let groups = daemon.groups().await;
-        let (group, engine) = choose(&groups, args.text(GROUP.name))?;
+        let (group, engine) = groups.choose(args.text(GROUP.name))?;
         let (_, current) = read_config(daemon, group)?;
         let text = args.text("text").unwrap_or(&current);
         let mut preview = config_preview::preview(engine, text).await?;
