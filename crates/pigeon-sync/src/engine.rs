@@ -6,7 +6,7 @@
 //! machine's drafts and signals whether what the engine shows may have
 //! changed.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
@@ -19,7 +19,7 @@ use iroh_blobs::api::TempTag;
 use iroh_mdns_address_lookup::MdnsAddressLookup;
 use pigeon_core::clock::{Clock, MachineId, Stamp, ntp_time};
 use pigeon_core::identity::{GroupId, MachineCert};
-use pigeon_core::ledger::Ledger;
+use pigeon_core::ledger::{Digests, Ledger};
 use pigeon_core::name::MemberName;
 use pigeon_core::patch::{Change, Content, ContentHash, Patch, SignedPatch};
 use pigeon_core::path::{GroupPath, PathKey};
@@ -27,8 +27,8 @@ use pigeon_core::places::Places;
 use pigeon_core::statement::{MemberStatement, is_relay_path, is_statement, member_path};
 use pigeon_net::bind::{bind_internet, bind_local};
 use pigeon_net::hello::Announcement;
-use pigeon_net::wire::{Patches, Vector};
-use pigeon_net::{Log, Node, Received};
+use pigeon_net::wire::Patches;
+use pigeon_net::{Log, Node, Received, Timings};
 use pigeon_store::blobs::Blobs;
 use pigeon_store::config::ConfigFile;
 use pigeon_store::disk::Stat;
@@ -38,6 +38,7 @@ use pigeon_store::state::State;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
+use crate::receive::{take, wanted};
 use crate::suggestions::Live;
 use crate::watch::{Rescan, Watched};
 
@@ -87,6 +88,9 @@ pub struct Options {
     pub gc: Duration,
     /// How far ahead of this machine's clock a patch may be dated.
     pub max_drift: Duration,
+    /// How often sessions compare what both sides hold, and how long a
+    /// fetch waits for its blob to grow.
+    pub node: Timings,
 }
 
 impl Default for Options {
@@ -101,6 +105,7 @@ impl Default for Options {
             join_delay: Duration::from_secs(5),
             gc: Duration::from_secs(3600),
             max_drift: Duration::from_secs(300),
+            node: Timings::default(),
         }
     }
 }
@@ -139,13 +144,13 @@ impl SharedLedger {
 }
 
 impl Log for SharedLedger {
-    fn vector(&self) -> Vector {
-        self.lock().vector()
+    fn digests(&self) -> Digests {
+        self.lock().digests()
     }
 
-    fn missing_from(&self, vector: &Vector) -> Patches {
+    fn missing_from(&self, theirs: &Digests) -> Patches {
         self.lock()
-            .missing_from(vector)
+            .missing_from(theirs)
             .into_iter()
             .cloned()
             .collect()
@@ -180,6 +185,9 @@ pub(crate) struct Work {
     pub config: ConfigFile,
     /// Blobs being fetched, with the keys waiting for each.
     pub fetching: HashMap<ContentHash, BTreeSet<PathKey>>,
+    /// How many fetches of each blob failed in a row, until one succeeds;
+    /// at most one entry per content the ledger names.
+    pub fetch_failures: HashMap<ContentHash, u32>,
     /// Blobs added since the protected set was last computed.
     pub tags: Vec<TempTag>,
     pub join: JoinState,
@@ -207,6 +215,9 @@ pub(crate) struct Inner {
     pub group: GroupId,
     pub machine: SecretKey,
     pub clock: Clock,
+    /// The first stamp of this run: every later patch signed with this
+    /// machine's key was made by this run, and is in the ledger.
+    pub first_stamp: Stamp,
     pub state: State,
     pub ledger: Arc<SharedLedger>,
     pub blobs: Blobs,
@@ -224,6 +235,9 @@ pub(crate) struct Inner {
 }
 
 const ERRORS_KEPT: usize = 100;
+/// How far the newest patch held may lie ahead of this machine's clock
+/// before the engine reports it.
+const LAG_REPORTED: Duration = Duration::from_secs(1);
 const PROTECT_EVERY: Duration = Duration::from_secs(60);
 const DEBOUNCE: Duration = Duration::from_millis(200);
 
@@ -237,19 +251,21 @@ impl Inner {
         self.machine.public()
     }
 
-    /// Keeps an error for the status view.
+    /// Keeps an error for the status view, as the latest one, once.
     pub(crate) fn report(&self, error: impl std::fmt::Display) {
+        let error = error.to_string();
         let mut errors = self.errors.lock().expect("no panic holds the errors");
+        errors.retain(|kept| *kept != error);
         if errors.len() == ERRORS_KEPT {
             errors.pop_front();
         }
-        errors.push_back(error.to_string());
+        errors.push_back(error);
     }
 
     /// A hash of everything the views read: the state's writes, the
     /// configuration, the pending edits, the fetches, the errors, the
     /// member's standing, the folders out of place, the drafts other
-    /// machines announced, the peers and the relay.
+    /// machines announced, the peers, why others failed, and the relay.
     fn fingerprint(&self, work: &Work) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.state.revision().hash(&mut hasher);
@@ -273,6 +289,7 @@ impl Inner {
         let mut peers = self.node.peers();
         peers.sort_unstable();
         peers.hash(&mut hasher);
+        self.node.failures().hash(&mut hasher);
         self.node
             .home_relay()
             .map(|url| url.to_string())
@@ -372,43 +389,23 @@ impl Inner {
     /// Takes patches from a peer: stores and folds the new ones, passes
     /// them on, and brings the paths they touch into agreement.
     async fn receive(self: &Arc<Self>, work: &mut Work, received: Received) {
-        let mut fresh = Vec::new();
-        let mut keys = BTreeSet::new();
-        for signed in received.patches {
-            let stamp = signed.stamp();
-            if self.ledger.lock().patch(&stamp).is_some() {
-                continue;
-            }
-            if let Err(error) = self.clock.observe(&stamp) {
-                self.report(format!("refused a patch from {}: {error}", received.from));
-                continue;
-            }
-            let folded = match self.ledger.lock().insert(signed.clone()) {
-                Ok(folded) => folded,
-                Err(error) => {
-                    self.report(format!("refused a patch from {}: {error}", received.from));
-                    continue;
-                }
-            };
-            if let Err(error) = self.state.add_patch(&signed) {
-                self.report(error);
-            }
-            let ledger = self.ledger.lock();
-            for stamp in folded {
-                if let Some(patch) = ledger.patch(&stamp) {
-                    keys.extend(patch.patch.changes.iter().map(|change| change.path.key()));
-                }
-            }
-            drop(ledger);
-            fresh.push(signed);
+        let taken = take(
+            &self.ledger,
+            |new| self.state.add_patches(new),
+            &self.clock,
+            &self.first_stamp,
+            received,
+        );
+        for refusal in taken.refusals {
+            self.report(refusal);
         }
-        if fresh.is_empty() {
+        if taken.fresh.is_empty() {
             return;
         }
-        self.node.publish(fresh);
+        self.node.publish(taken.fresh);
         self.want_peers();
         work.join = self.join_state();
-        let keys: Vec<PathKey> = keys.into_iter().collect();
+        let keys: Vec<PathKey> = taken.keys.into_iter().collect();
         self.refresh_keys(work, &keys).await;
         if keys.iter().any(is_statement) {
             self.follow_suggestions(work).await;
@@ -418,13 +415,7 @@ impl Inner {
 
     /// Keeps sessions open with every machine the ledger or the key names.
     fn want_peers(&self) {
-        let me = self.me();
-        let vector = self.ledger.lock().vector();
-        let machines: HashSet<MachineId> = vector
-            .into_keys()
-            .chain(self.key.bootstrap.iter().copied())
-            .filter(|machine| *machine != me)
-            .collect();
+        let machines = wanted(&self.ledger.lock(), &self.key, self.me());
         self.node.want(machines);
     }
 
@@ -485,12 +476,11 @@ impl Engine {
         let group = key.group;
         let ledger = state.ledger(group)?;
         let clock = Clock::new(machine.public(), options.max_drift);
-        if let Some(time) = ledger.vector().get(&machine.public()) {
-            let _ = clock.observe(&Stamp {
-                time: *time,
-                machine: machine.public(),
-            });
+        if let Some(newest) = ledger.newest() {
+            clock.observe(newest);
         }
+        let lead = clock.lead();
+        let first_stamp = clock.stamp();
         let config = ConfigFile::open(dirs)?;
         std::fs::create_dir_all(&config.root)
             .with_context(|| format!("creating {}", config.root.display()))?;
@@ -505,6 +495,7 @@ impl Engine {
             key.secret.clone(),
             ledger.clone(),
             blobs.store(),
+            options.node,
         );
         if let Some(mdns) = &mdns {
             node.dial_discovered(mdns);
@@ -520,6 +511,7 @@ impl Engine {
             group,
             machine,
             clock,
+            first_stamp,
             state,
             ledger,
             blobs,
@@ -529,6 +521,7 @@ impl Engine {
                 pending: HashMap::new(),
                 config,
                 fetching: HashMap::new(),
+                fetch_failures: HashMap::new(),
                 tags: Vec::new(),
                 join: JoinState::Pending,
                 protect_due: true,
@@ -546,6 +539,13 @@ impl Engine {
             changes: watch::Sender::new(0),
             _mdns: mdns,
         });
+        if lead > LAG_REPORTED {
+            inner.report(format!(
+                "the newest patch this machine holds is dated {}s after its clock: one of the \
+                 clocks is wrong; this machine dates its patches after that one meanwhile",
+                lead.as_secs()
+            ));
+        }
         inner.work.lock().await.join = inner.join_state();
         inner.want_peers();
         let (stop, stopped) = oneshot::channel();

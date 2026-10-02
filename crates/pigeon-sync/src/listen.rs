@@ -10,7 +10,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use iroh_blobs::store::mem::MemStore;
 use iroh_mdns_address_lookup::MdnsAddressLookup;
-use pigeon_core::clock::{Clock, MachineId};
+use pigeon_core::clock::{Clock, Stamp};
 use pigeon_core::identity::member_key;
 use pigeon_core::ledger::Ledger;
 use pigeon_core::name::MemberName;
@@ -23,6 +23,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::engine::{Options, SharedLedger, bind};
+use crate::receive::{take, wanted};
 
 /// The names of a group as a machine about to join it sees them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -68,6 +69,8 @@ struct Listening {
     state: State,
     ledger: Arc<SharedLedger>,
     clock: Clock,
+    /// The first stamp of this run's clock.
+    first_stamp: Stamp,
     node: Node,
     heard: watch::Sender<bool>,
     _mdns: Option<MdnsAddressLookup>,
@@ -76,31 +79,27 @@ struct Listening {
 impl Listening {
     /// Keeps sessions open with every machine the ledger or the key names.
     fn want_peers(&self) {
-        let me = self.node.id();
-        let vector = self.ledger.lock().vector();
-        let machines: BTreeSet<MachineId> = vector
-            .into_keys()
-            .chain(self.key.bootstrap.iter().copied())
-            .filter(|machine| *machine != me)
-            .collect();
+        let machines = wanted(&self.ledger.lock(), &self.key, self.node.id());
         self.node.want(machines);
     }
 
     /// Stores and folds the patches a peer sent that are new and not dated
-    /// too far ahead.
-    fn receive(&self, received: Received) -> Result<()> {
-        for signed in received.patches {
-            let known = self.ledger.lock().patch(&signed.stamp()).is_some();
-            if known || self.clock.observe(&signed.stamp()).is_err() {
-                continue;
-            }
-            if self.ledger.lock().insert(signed.clone()).is_ok() {
-                self.state.add_patch(&signed)?;
-            }
+    /// too far ahead, and tells why others were refused.
+    fn receive(&self, received: Received) {
+        let taken = take(
+            &self.ledger,
+            |new| self.state.add_patches(new),
+            &self.clock,
+            &self.first_stamp,
+            received,
+        );
+        for refusal in &taken.refusals {
+            eprintln!("pigeon: listening to {}: {refusal}", self.key.name);
         }
-        self.heard.send_replace(true);
+        if taken.stored {
+            self.heard.send_replace(true);
+        }
         self.want_peers();
-        Ok(())
     }
 }
 
@@ -123,7 +122,13 @@ impl Listener {
         let machine = dirs.secrets()?.machine;
         let state = State::open(&dirs.state_path())?;
         let group = key.group;
-        let ledger = Arc::new(SharedLedger::new(state.ledger(group)?));
+        let ledger = state.ledger(group)?;
+        let clock = Clock::new(machine.public(), options.max_drift);
+        if let Some(newest) = ledger.newest() {
+            clock.observe(newest);
+        }
+        let first_stamp = clock.stamp();
+        let ledger = Arc::new(SharedLedger::new(ledger));
         let (endpoint, mdns) = bind(&machine, &group, &options.network).await?;
         let blobs = MemStore::new();
         let (node, received) = Node::spawn(
@@ -133,6 +138,7 @@ impl Listener {
             key.secret.clone(),
             ledger.clone(),
             &blobs,
+            options.node,
         );
         if let Some(mdns) = &mdns {
             node.dial_discovered(mdns);
@@ -141,7 +147,8 @@ impl Listener {
             key,
             state,
             ledger,
-            clock: Clock::new(machine.public(), options.max_drift),
+            clock,
+            first_stamp,
             node,
             heard: watch::Sender::new(false),
             _mdns: mdns,
@@ -196,11 +203,7 @@ async fn run(
     loop {
         tokio::select! {
             _ = &mut stopped => return,
-            Some(patches) = received.recv() => {
-                if let Err(error) = inner.receive(patches) {
-                    eprintln!("pigeon: listening to {}: {error:#}", inner.key.name);
-                }
-            }
+            Some(patches) = received.recv() => inner.receive(patches),
         }
     }
 }

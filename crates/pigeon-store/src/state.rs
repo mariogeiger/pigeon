@@ -134,11 +134,25 @@ impl State {
     ///
     /// Fails if the database cannot be written.
     pub fn add_patch(&self, patch: &SignedPatch) -> Result<()> {
-        let bytes = postcard::to_stdvec(patch)?;
+        self.add_patches(std::slice::from_ref(patch))
+    }
+
+    /// Records patches in one transaction, all or none; recording one
+    /// twice changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the database cannot be written.
+    pub fn add_patches(&self, patches: &[SignedPatch]) -> Result<()> {
+        let encoded = patches
+            .iter()
+            .map(|patch| Ok((stamp_key(&patch.stamp()), postcard::to_stdvec(patch)?)))
+            .collect::<Result<Vec<_>>>()?;
         self.write(|transaction| {
-            transaction
-                .open_table(PATCHES)?
-                .insert(stamp_key(&patch.stamp()).as_slice(), bytes.as_slice())?;
+            let mut table = transaction.open_table(PATCHES)?;
+            for (key, bytes) in &encoded {
+                table.insert(key.as_slice(), bytes.as_slice())?;
+            }
             Ok(())
         })
     }
@@ -162,9 +176,7 @@ impl State {
     /// Fails if the database cannot be read.
     pub fn ledger(&self, group: GroupId) -> Result<Ledger> {
         let mut ledger = Ledger::new(group);
-        for patch in self.patches()? {
-            let _ = ledger.insert(patch);
-        }
+        ledger.extend(self.patches()?);
         Ok(ledger)
     }
 

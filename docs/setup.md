@@ -46,7 +46,12 @@ other show as incompatible in `pigeon group status` and on the group's web
 page, each with its member, its version and commit, and whether it is
 older or newer than this one: each machine asks the others over
 `pigeon/hello`, a protocol that never changes, and one that does not
-answer predates it, so it is older. Update the older ones.
+answer predates it, so it is older. Update the older ones. A machine this
+one failed to sync with shows too, with why, until a session with it
+opens. Patches dated more than five minutes ahead of this machine's clock
+wait, with an error saying so, until one of the two clocks is set right;
+every session compares what both sides hold each minute, so they then
+arrive by themselves, as does anything a session missed.
 
 ## 2. Keep the daemon running
 

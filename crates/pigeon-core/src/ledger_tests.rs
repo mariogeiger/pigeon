@@ -345,33 +345,109 @@ fn every_arrival_order_gives_the_same_tree() {
     assert!(reference.outcome(&patches[6].stamp()).unwrap().is_err());
 }
 
+fn holding(patches: &[&SignedPatch]) -> Ledger {
+    let mut ledger = Ledger::new(group());
+    for patch in patches {
+        ledger.insert((*patch).clone()).unwrap();
+    }
+    ledger
+}
+
+fn times(patches: &[&SignedPatch]) -> Vec<u64> {
+    patches.iter().map(|patch| patch.stamp().time).collect()
+}
+
 #[test]
-fn a_vector_names_exactly_the_missing_patches() {
+fn digests_name_exactly_the_patches_another_ledger_lacks() {
     let mario = machine("mario", 1);
     let bob = machine("bob", 2);
-    let mut ledger = Ledger::new(group());
-    for patch in [
+    let (m1, b2, m3, b4) = (
         mario.join(1),
         bob.join(2),
         mario.patch(3, vec![]),
         bob.patch(4, vec![]),
-    ] {
-        ledger.insert(patch).unwrap();
-    }
-    let mut vector = BTreeMap::new();
-    vector.insert(mario.key.public(), 1);
-    let missing: Vec<u64> = ledger
-        .missing_from(&vector)
-        .iter()
-        .map(|p| p.stamp().time)
-        .collect();
-    assert_eq!(missing, vec![2, 3, 4]);
-    assert_eq!(
-        ledger.vector(),
-        BTreeMap::from([(mario.key.public(), 3), (bob.key.public(), 4)])
     );
-    assert!(ledger.missing_from(&ledger.vector()).is_empty());
-    assert_eq!(ledger.missing_from(&BTreeMap::new()).len(), 4);
+    let ledger = holding(&[&m1, &b2, &m3, &b4]);
+    let behind = holding(&[&m1]);
+    assert_eq!(times(&ledger.missing_from(&behind.digests())), [2, 3, 4]);
+    assert!(behind.missing_from(&ledger.digests()).is_empty());
+    assert!(ledger.missing_from(&ledger.digests()).is_empty());
+    assert_eq!(ledger.missing_from(&Digests::new()).len(), 4);
+    assert_eq!(ledger.digests()[&mario.key.public()].count, 2);
+    assert_eq!(ledger.newest(), Some(4));
+}
+
+#[test]
+fn a_gap_in_another_ledger_brings_every_patch_of_its_machine() {
+    let mario = machine("mario", 1);
+    let bob = machine("bob", 2);
+    let (m1, m2, m3, b4) = (
+        mario.join(1),
+        mario.patch(2, vec![]),
+        mario.patch(3, vec![]),
+        bob.join(4),
+    );
+    let whole = holding(&[&m1, &m2, &m3, &b4]);
+    let gapped = holding(&[&m1, &m3, &b4]);
+    assert_ne!(whole.digests(), gapped.digests());
+    assert_eq!(times(&whole.missing_from(&gapped.digests())), [1, 2, 3]);
+    let mut repaired = holding(&[&m1, &m3, &b4]);
+    for patch in whole.missing_from(&repaired.digests()) {
+        repaired.insert(patch.clone()).unwrap();
+    }
+    assert_eq!(repaired.digests(), whole.digests());
+    let m5 = mario.patch(5, vec![]);
+    let ahead = holding(&[&m1, &m3, &b4, &m5]);
+    let mut behind = holding(&[&m1, &m2, &m3, &b4]);
+    assert!(behind.missing_from(&ahead.digests()).is_empty());
+    let sent = ahead.missing_from(&behind.digests());
+    assert_eq!(times(&sent), [1, 3, 5]);
+    for patch in sent {
+        behind.insert(patch.clone()).unwrap();
+    }
+    assert_eq!(times(&behind.missing_from(&ahead.digests())), [1, 2, 3, 5]);
+}
+
+#[test]
+fn patches_inserted_together_are_stored_first_and_folded_once() {
+    let mario = machine("mario", 1);
+    let bob = machine("bob", 2);
+    let patches = vec![
+        bob.join(4),
+        mario.patch(3, vec![change("x", Some(1), None)]),
+        mario.join(1),
+    ];
+    let mut ledger = Ledger::new(group());
+    let failed: Result<Inserted, &str> = ledger.insert_all(patches.clone(), |_| Err("disk full"));
+    assert_eq!(failed, Err("disk full"));
+    assert_eq!(ledger.patches().count(), 0);
+    assert!(ledger.digests().is_empty());
+    let mut forged = mario.patch(2, vec![]);
+    forged.patch.stamp.time = 5;
+    let mut stored = Vec::new();
+    let inserted = ledger
+        .insert_all(patches.into_iter().chain([forged]), |new| {
+            stored.extend(new.iter().map(|patch| patch.stamp().time));
+            Ok::<(), ()>(())
+        })
+        .unwrap();
+    assert_eq!(stored, [1, 3, 4]);
+    assert_eq!(
+        inserted.added,
+        [mario.stamp(1), mario.stamp(3), bob.stamp(4)]
+    );
+    assert_eq!(inserted.folded, inserted.added);
+    assert_eq!(inserted.refused, [(mario.stamp(5), SignatureError::Patch)]);
+    assert!(ledger.outcome(&mario.stamp(3)).unwrap().is_ok());
+    assert_eq!(ledger.head(&key("x")).unwrap().author.as_str(), "mario");
+    let again = ledger
+        .insert_all([mario.join(1), mario.patch(2, vec![])], |new| {
+            assert_eq!(new.len(), 1);
+            Ok::<(), ()>(())
+        })
+        .unwrap();
+    assert_eq!(again.added, [mario.stamp(2)]);
+    assert_eq!(again.folded, [mario.stamp(2), mario.stamp(3), bob.stamp(4)]);
 }
 
 #[test]

@@ -468,7 +468,8 @@ impl Inner {
 
     /// Fetches a blob from its author's machine and every peer at once, then
     /// wakes the paths waiting for it; after a failure it waits before
-    /// trying again.
+    /// trying again, twice as long after each failure in a row, but no
+    /// longer than until a session opens, and reports only the first.
     ///
     /// The blob is protected from the start, so that garbage collection
     /// never takes it before the paths waiting for it protect it.
@@ -490,6 +491,8 @@ impl Inner {
         let mut providers = vec![author];
         providers.extend(self.node.peers().into_iter().filter(|peer| *peer != author));
         providers.retain(|provider| *provider != self.me());
+        let failures = work.fetch_failures.get(&hash).copied().unwrap_or(0);
+        let mut opened = self.node.sessions_opened();
         let inner = Arc::downgrade(self);
         tokio::spawn(async move {
             let Some(engine) = inner.upgrade() else {
@@ -500,25 +503,42 @@ impl Inner {
                 .fetch(pigeon_store::blobs::blob_hash(&hash), providers)
                 .await;
             if let Err(error) = &fetched {
-                engine.report(format!("{error:#}"));
+                if failures == 0 {
+                    engine.report(format!("{error:#}"));
+                }
                 drop(engine);
-                tokio::time::sleep(RETRY).await;
+                let wait = RETRY.saturating_mul(1 << failures.min(16)).min(MAX_RETRY);
+                tokio::select! {
+                    () = tokio::time::sleep(wait) => {}
+                    _ = opened.changed() => {}
+                }
                 let Some(again) = inner.upgrade() else {
                     return;
                 };
-                return again.release(hash).await;
+                return again.release(hash, false).await;
             }
-            engine.release(hash).await;
+            engine.release(hash, true).await;
         });
     }
 
-    async fn release(&self, hash: ContentHash) {
-        let keys = self.work.lock().await.fetching.remove(&hash);
+    /// Wakes the paths waiting for a blob, counting a failed fetch of it.
+    async fn release(&self, hash: ContentHash, fetched: bool) {
+        let mut work = self.work.lock().await;
+        if fetched {
+            work.fetch_failures.remove(&hash);
+        } else {
+            *work.fetch_failures.entry(hash).or_default() += 1;
+        }
+        let keys = work.fetching.remove(&hash);
+        drop(work);
         if let Some(keys) = keys {
             let _ = self.wake.send(keys.into_iter().collect());
         }
     }
 }
 
-/// How long to wait before fetching again a blob that no peer delivered.
+/// How long to wait before fetching again a blob that no peer delivered
+/// the first time.
 const RETRY: Duration = Duration::from_secs(5);
+/// The longest wait before fetching again a blob that no peer delivered.
+const MAX_RETRY: Duration = Duration::from_secs(600);

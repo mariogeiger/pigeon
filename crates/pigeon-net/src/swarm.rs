@@ -4,14 +4,14 @@
 //! board plans them, so the machines that deliver fastest, on the local
 //! network, then direct, then relayed, deliver the most, and a duplicate
 //! lane on a faster machine cuts short a slow last piece. A fetch fails once
-//! no machine can deliver what is missing, or none delivered more for a
-//! while.
+//! no machine can deliver what is missing, or what this machine holds of
+//! the blob stopped growing for a while.
 
 use std::pin::pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Result, bail, ensure};
 use iroh::endpoint::Connection;
 use iroh_blobs::Hash;
 use iroh_blobs::api::Store;
@@ -27,8 +27,6 @@ use crate::board::{Board, Verdict};
 
 /// How many pieces a fetch asks of one machine at once.
 const LANES: usize = 8;
-/// How long a fetch waits for a machine holding part of the blob to grow.
-pub const STALL: Duration = Duration::from_secs(30);
 
 struct Fetch {
     hash: Hash,
@@ -130,14 +128,15 @@ impl Fetch {
 ///
 /// # Errors
 ///
-/// Fails if no machine can deliver what is missing, or none delivered more
-/// for [`STALL`], or the store fails.
+/// Fails if no machine can deliver what is missing, or the store came to
+/// hold no more of the blob for `stall`, or the store fails.
 pub(crate) async fn fetch(
     store: &Store,
     pool: &ConnectionPool,
     rotation: u64,
     hash: Hash,
     machines: Vec<MachineId>,
+    stall: Duration,
 ) -> Result<()> {
     let held = store.observe(hash).await?;
     if held.is_complete() {
@@ -154,16 +153,23 @@ pub(crate) async fn fetch(
     for machine in machines {
         fetching.spawn(fetch.clone().fetch_from(pool.clone(), machine));
     }
+    let mut grown = held.ranges;
+    let mut deadline = tokio::time::Instant::now() + stall;
     loop {
         changes.borrow_and_update();
         let verdict = lock(&fetch.board).verdict();
         match verdict {
             Verdict::Done => break,
             Verdict::Hopeless => bail!("no machine reached holds {hash}"),
-            Verdict::Waiting { idle: false } => changes.changed().await?,
-            Verdict::Waiting { idle: true } => tokio::time::timeout(STALL, changes.changed())
-                .await
-                .with_context(|| format!("no machine delivered more of {hash} for {STALL:?}"))??,
+            Verdict::Waiting => tokio::select! {
+                result = changes.changed() => result?,
+                () = tokio::time::sleep_until(deadline) => {
+                    let held = fetch.held().await.ranges;
+                    ensure!(held != grown, "no machine delivered more of {hash} for {stall:?}");
+                    grown = held;
+                    deadline = tokio::time::Instant::now() + stall;
+                }
+            },
         }
     }
     fetching.abort_all();

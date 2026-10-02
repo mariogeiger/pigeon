@@ -1,5 +1,5 @@
-//! Tests of the state database: patches survive reopening and fold back
-//! into the same ledger, and the index, kept suggestions, and placed
+//! Tests of the state database: patches, recorded together or one by one,
+//! survive reopening and fold back into the same ledger, and the index, kept suggestions, and placed
 //! folders round-trip, every write counted.
 
 use pigeon_core::patch::Content;
@@ -21,9 +21,10 @@ fn patches_survive_reopening_in_stamp_order() {
     let write = mario.patch(300, vec![change(file.as_str(), Some(1), None)]);
     {
         let state = State::open(&path).unwrap();
-        state.add_patch(&write).unwrap();
+        state.add_patches(&[write, join.clone()]).unwrap();
+        let revision = state.revision();
         state.add_patch(&join).unwrap();
-        state.add_patch(&join).unwrap();
+        assert_eq!(state.revision(), revision + 1);
     }
     let state = State::open(&path).unwrap();
     let stamps: Vec<u64> = state

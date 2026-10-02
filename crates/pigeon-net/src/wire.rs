@@ -2,33 +2,33 @@
 //! postcard value preceded by its length as four big-endian bytes, and
 //! patches go in as many messages as keep each within the bound.
 
-use std::collections::BTreeMap;
-
 use anyhow::{Context, Result, ensure};
 use iroh::endpoint::{RecvStream, SendStream};
-use pigeon_core::clock::MachineId;
 use pigeon_core::draft::SignedDrafts;
 use pigeon_core::identity::GroupId;
+use pigeon_core::ledger::Digests;
 use pigeon_core::patch::SignedPatch;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// The protocol's name on the wire.
-pub const SYNC_ALPN: &[u8] = b"pigeon/sync/9";
+pub const SYNC_ALPN: &[u8] = b"pigeon/sync/10";
 
-/// The largest message either side accepts.
+/// The largest message either side accepts once the other is admitted.
 pub const MAX_MESSAGE: usize = 64 << 20;
 
-/// The latest patch time known from each machine.
-pub type Vector = BTreeMap<MachineId, u64>;
+/// The largest hello either side reads, before it knows whether the
+/// other belongs to the group.
+pub const MAX_HELLO: usize = 1 << 20;
 
 /// The first message each side sends: which group it belongs to, a proof
-/// that it knows the group secret, and which patches it already holds.
+/// that it knows the group secret, and the digest of the patches it holds
+/// of each machine.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hello {
     pub group: GroupId,
     pub admission: [u8; 32],
-    pub vector: Vector,
+    pub digests: Digests,
 }
 
 /// Patches the other side may lack.
@@ -41,6 +41,9 @@ pub enum Message {
     /// Every draft the sender's machine holds now, replacing those it
     /// announced before.
     Drafts(Box<SignedDrafts>),
+    /// The digests of the patches the sender holds now, from which the
+    /// receiver tells what it lacks.
+    Holds(Digests),
 }
 
 /// At most what `Message::Patches` adds around its patches: the variant
@@ -99,17 +102,27 @@ pub async fn write<T: Serialize>(send: &mut SendStream, message: &T) -> Result<(
     Ok(())
 }
 
-/// Reads one message.
+/// Reads one message of at most [`MAX_MESSAGE`] bytes.
 ///
 /// # Errors
 ///
 /// Fails if the stream ends, the message is too large, or it does not
 /// decode.
 pub async fn read<T: DeserializeOwned>(recv: &mut RecvStream) -> Result<T> {
+    read_within(recv, MAX_MESSAGE).await
+}
+
+/// Reads one message of at most `bound` bytes.
+///
+/// # Errors
+///
+/// Fails if the stream ends, the message is larger than `bound`, or it
+/// does not decode.
+pub async fn read_within<T: DeserializeOwned>(recv: &mut RecvStream, bound: usize) -> Result<T> {
     let mut length = [0; 4];
     recv.read_exact(&mut length).await?;
     let length = u32::from_be_bytes(length) as usize;
-    ensure!(length <= MAX_MESSAGE, "message of {length} bytes");
+    ensure!(length <= bound, "message of {length} bytes, over {bound}");
     let mut bytes = vec![0; length];
     recv.read_exact(&mut bytes).await?;
     postcard::from_bytes(&bytes).context("decoding a message")
@@ -148,7 +161,7 @@ mod tests {
             .iter()
             .map(|message| match message {
                 Message::Patches(batch) => batch.clone(),
-                Message::Drafts(_) => unreachable!(),
+                Message::Drafts(_) | Message::Holds(_) => unreachable!(),
             })
             .collect();
         for (message, next) in messages.iter().zip(&batches[1..]) {

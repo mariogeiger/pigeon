@@ -7,6 +7,10 @@
 //! as it tells any machine that asks which pigeon it runs. It announces
 //! this machine's drafts to every session and keeps those each connected
 //! machine announces, signed by it, until it announces others or leaves.
+//! Each session compares the digests of what both sides hold at its start
+//! and again periodically, so that every gap is filled; a machine that
+//! cannot be reached is dialed less and less often, with why it failed
+//! kept until a session with it opens.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
@@ -14,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
-use iroh::endpoint::{Connection, SendStream};
+use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, RelayMap, RelayUrl};
 use iroh_blobs::api::Store;
@@ -28,19 +32,21 @@ use n0_future::StreamExt;
 use pigeon_core::clock::MachineId;
 use pigeon_core::draft::{Draft, SignedDrafts};
 use pigeon_core::identity::{GroupId, GroupSecret, MachineCert};
+use pigeon_core::ledger::Digests;
 use pigeon_core::name::MemberName;
 use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::hello::{self, Announcement, Announcing, HELLO_ALPN, Heard};
 use crate::swarm;
-use crate::wire::{self, Hello, Message, Patches, SYNC_ALPN, Vector};
+use crate::wire::{self, Hello, MAX_HELLO, Message, Patches, SYNC_ALPN};
 
 /// The patches a node holds, as its sessions need them.
 pub trait Log: Send + Sync + 'static {
-    /// The latest patch time known from each machine.
-    fn vector(&self) -> Vector;
-    /// Every patch held that `vector` does not cover, in stamp order.
-    fn missing_from(&self, vector: &Vector) -> Patches;
+    /// The digest of the patches held of each machine.
+    fn digests(&self) -> Digests;
+    /// Every patch held that a machine holding `theirs` may lack, in stamp
+    /// order.
+    fn missing_from(&self, theirs: &Digests) -> Patches;
     /// Whether the member list binds the certificate's name to its key.
     fn recognizes(&self, cert: &MachineCert) -> bool;
 }
@@ -62,6 +68,30 @@ pub struct Announced {
 
 type Counts = Mutex<HashMap<MachineId, usize>>;
 
+/// How often a machine that cannot be reached was tried in a row, and when
+/// to try it again.
+#[derive(Clone, Copy)]
+struct Backoff {
+    failures: u32,
+    next: Instant,
+}
+
+impl Backoff {
+    /// The wait after `failures` failed tries in a row: [`REDIAL`], doubled
+    /// with each failure up to [`MAX_REDIAL`].
+    fn after(failures: u32) -> Self {
+        let wait = REDIAL.saturating_mul(1 << failures.saturating_sub(1).min(16));
+        Self {
+            failures,
+            next: Instant::now() + wait.min(MAX_REDIAL),
+        }
+    }
+}
+
+/// The halves of an admitted session's stream, and the digests the other
+/// side sent.
+type Admitted = (SendStream, RecvStream, Digests);
+
 struct Shared {
     endpoint: Endpoint,
     group: GroupId,
@@ -73,6 +103,11 @@ struct Shared {
     connected: Counts,
     admitted: Mutex<HashSet<MachineId>>,
     wanted: Mutex<BTreeSet<MachineId>>,
+    backoff: Mutex<HashMap<MachineId, Backoff>>,
+    failures: Mutex<BTreeMap<MachineId, String>>,
+    /// How many sessions opened so far.
+    opened: watch::Sender<u64>,
+    timings: Timings,
     incompatible: Mutex<BTreeMap<MachineId, Heard>>,
     drafts: watch::Sender<Option<SignedDrafts>>,
     announced: Mutex<BTreeMap<MachineId, Announced>>,
@@ -101,7 +136,7 @@ impl Shared {
         Hello {
             group: self.group,
             admission: self.secret.admission(&self.endpoint.id(), &remote),
-            vector: self.log.vector(),
+            digests: self.log.digests(),
         }
     }
 
@@ -135,44 +170,82 @@ impl Shared {
         }
     }
 
-    /// Runs one sync session until either side closes it: the dialer
-    /// proves itself first, the acceptor answers only once convinced, then
-    /// each sends what the other lacks, then every later patch.
-    async fn session(self: Arc<Self>, connection: Connection, dialer: bool) -> Result<()> {
+    /// Keeps why the last try to sync with `remote` failed, unless too
+    /// many machines failed already.
+    fn fail(&self, remote: MachineId, error: &anyhow::Error) {
+        let mut failures = lock(&self.failures);
+        if failures.len() < MAX_FAILURES || failures.contains_key(&remote) {
+            failures.insert(remote, format!("{error:#}"));
+        }
+    }
+
+    /// Opens a session's stream and exchanges hellos, within [`HANDSHAKE`]:
+    /// the dialer proves itself first, the acceptor answers only once
+    /// convinced, and neither reads more than [`MAX_HELLO`] before.
+    async fn handshake(&self, connection: &Connection, dialer: bool) -> Result<Admitted> {
         let remote = connection.remote_id();
+        let exchange = async {
+            if dialer {
+                let (mut send, mut recv) = connection.open_bi().await?;
+                wire::write(&mut send, &self.hello(remote)).await?;
+                let theirs: Hello = wire::read_within(&mut recv, MAX_HELLO).await?;
+                self.admit(remote, &theirs)?;
+                Ok((send, recv, theirs.digests))
+            } else {
+                let (mut send, mut recv) = connection.accept_bi().await?;
+                let theirs: Hello = wire::read_within(&mut recv, MAX_HELLO).await?;
+                self.admit(remote, &theirs)?;
+                wire::write(&mut send, &self.hello(remote)).await?;
+                Ok((send, recv, theirs.digests))
+            }
+        };
+        tokio::time::timeout(HANDSHAKE, exchange)
+            .await
+            .with_context(|| format!("{remote} did not say hello within {HANDSHAKE:?}"))?
+    }
+
+    /// Runs one admitted sync session until either side closes it: each
+    /// sends what the other lacks, then every later patch, and the digests
+    /// of what it holds every [`Timings::recheck`], from which the other
+    /// sends what it still lacks.
+    async fn session(&self, remote: MachineId, admitted: Admitted) -> Result<()> {
+        let (mut send, mut recv, theirs) = admitted;
         let mut outgoing = self.outgoing.subscribe();
         let mut drafts = self.drafts.subscribe();
-        let (mut send, mut recv, theirs) = if dialer {
-            let (mut send, mut recv) = connection.open_bi().await?;
-            wire::write(&mut send, &self.hello(remote)).await?;
-            let theirs: Hello = wire::read(&mut recv).await?;
-            self.admit(remote, &theirs)?;
-            (send, recv, theirs)
-        } else {
-            let (mut send, mut recv) = connection.accept_bi().await?;
-            let theirs: Hello = wire::read(&mut recv).await?;
-            self.admit(remote, &theirs)?;
-            wire::write(&mut send, &self.hello(remote)).await?;
-            (send, recv, theirs)
-        };
         count(&self.connected, remote, true);
         lock(&self.incompatible).remove(&remote);
+        lock(&self.failures).remove(&remote);
+        lock(&self.backoff).remove(&remote);
+        self.opened.send_modify(|opened| *opened += 1);
+        let (told, mut heard) = watch::channel(theirs);
         let writer = async {
-            self.catch_up(&mut send, &theirs.vector).await?;
+            let theirs = heard.borrow_and_update().clone();
+            self.catch_up(&mut send, &theirs).await?;
             let announced = drafts.borrow_and_update().clone();
             if let Some(announced) = announced {
                 wire::write(&mut send, &Message::Drafts(Box::new(announced))).await?;
             }
+            let mut recheck = tokio::time::interval(self.timings.recheck);
+            recheck.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            recheck.reset();
             loop {
                 let message = tokio::select! {
                     patches = outgoing.recv() => match patches {
                         Ok(message) => message,
                         Err(broadcast::error::RecvError::Lagged(_)) => {
-                            self.catch_up(&mut send, &theirs.vector).await?;
+                            let theirs = heard.borrow().clone();
+                            self.catch_up(&mut send, &theirs).await?;
                             continue;
                         }
                         Err(broadcast::error::RecvError::Closed) => return Ok(()),
                     },
+                    changed = heard.changed() => {
+                        changed?;
+                        let theirs = heard.borrow_and_update().clone();
+                        self.catch_up(&mut send, &theirs).await?;
+                        continue;
+                    }
+                    _ = recheck.tick() => Arc::new(Message::Holds(self.log.digests())),
                     changed = drafts.changed() => {
                         changed?;
                         let Some(announced) = drafts.borrow_and_update().clone() else {
@@ -198,6 +271,9 @@ impl Shared {
                     }
                     Message::Patches(_) => {}
                     Message::Drafts(signed) => self.hear(remote, *signed),
+                    Message::Holds(digests) => {
+                        told.send_replace(digests);
+                    }
                 }
             }
         };
@@ -212,12 +288,20 @@ impl Shared {
         result
     }
 
-    /// Sends every patch a machine holding `vector` lacks.
-    async fn catch_up(&self, send: &mut SendStream, vector: &Vector) -> Result<()> {
-        for message in wire::patch_messages(self.log.missing_from(vector)) {
+    /// Sends every patch a machine holding `theirs` may lack.
+    async fn catch_up(&self, send: &mut SendStream, theirs: &Digests) -> Result<()> {
+        for message in wire::patch_messages(self.log.missing_from(theirs)) {
             wire::write(send, &message).await?;
         }
         Ok(())
+    }
+
+    /// Whether `machine` may be dialed again, as its tries failing in a row
+    /// spaced them out.
+    fn due(&self, machine: MachineId) -> bool {
+        lock(&self.backoff)
+            .get(&machine)
+            .is_none_or(|backoff| backoff.next <= Instant::now())
     }
 
     fn dial(self: &Arc<Self>, machine: MachineId) {
@@ -230,16 +314,44 @@ impl Shared {
         count(&self.attempts, machine, true);
         let shared = self.clone();
         tokio::spawn(async move {
-            let dialed = shared.endpoint.connect(machine, SYNC_ALPN).await;
-            let incompatible = dialed.as_ref().is_err_and(hello::refuses_every_protocol);
+            let dialed =
+                tokio::time::timeout(HANDSHAKE, shared.endpoint.connect(machine, SYNC_ALPN))
+                    .await
+                    .map_err(anyhow::Error::from)
+                    .and_then(|dialed| dialed.map_err(anyhow::Error::from));
+            let incompatible = dialed.as_ref().is_err_and(|error| {
+                error
+                    .downcast_ref()
+                    .is_some_and(hello::refuses_every_protocol)
+            });
             if incompatible {
                 let heard = hello::ask(&shared.endpoint, machine).await;
                 lock(&shared.incompatible).insert(machine, heard);
             } else {
                 lock(&shared.incompatible).remove(&machine);
             }
-            if let Ok(connection) = dialed {
-                let _ = shared.clone().session(connection, true).await;
+            let admitted = match dialed {
+                Ok(connection) => shared
+                    .handshake(&connection, true)
+                    .await
+                    .map(|admitted| (connection, admitted)),
+                Err(error) => Err(error.context(format!("connecting to {machine}"))),
+            };
+            match admitted {
+                Ok((_connection, admitted)) => {
+                    if let Err(error) = shared.session(machine, admitted).await {
+                        shared.fail(machine, &error.context("the session ended"));
+                    }
+                }
+                Err(error) => {
+                    let mut backoff = lock(&shared.backoff);
+                    let failures = backoff.get(&machine).map_or(0, |backoff| backoff.failures);
+                    backoff.insert(machine, Backoff::after(failures + 1));
+                    drop(backoff);
+                    if !incompatible {
+                        shared.fail(machine, &error);
+                    }
+                }
             }
             count(&shared.attempts, machine, false);
         });
@@ -259,7 +371,17 @@ impl ProtocolHandler for SyncProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let remote = connection.remote_id();
         count(&self.0.attempts, remote, true);
-        let result = self.0.clone().session(connection, false).await;
+        let result = match self.0.handshake(&connection, false).await {
+            Ok(admitted) => self
+                .0
+                .session(remote, admitted)
+                .await
+                .map_err(|error| error.context("the session ended")),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = &result {
+            self.0.fail(remote, error);
+        }
         count(&self.0.attempts, remote, false);
         result.map_err(|error| AcceptError::from_boxed(error.into()))
     }
@@ -293,8 +415,32 @@ fn blob_gate(shared: &Arc<Shared>) -> EventSender {
     sender
 }
 
-/// How often a node dials the machines it wants but lacks.
+/// How often a node dials the machines it wants but lacks, while dialing
+/// them works.
 pub const REDIAL: Duration = Duration::from_secs(15);
+/// The longest a node waits before dialing again a machine it wants.
+const MAX_REDIAL: Duration = Duration::from_secs(480);
+/// How long reaching a machine and exchanging hellos with it may take.
+const HANDSHAKE: Duration = Duration::from_secs(30);
+/// How many machines' failures a node keeps.
+const MAX_FAILURES: usize = 64;
+
+/// How often each session tells the other side what this machine holds,
+/// and how long a fetch waits for the blob held here to grow.
+#[derive(Clone, Copy, Debug)]
+pub struct Timings {
+    pub recheck: Duration,
+    pub stall: Duration,
+}
+
+impl Default for Timings {
+    fn default() -> Self {
+        Self {
+            recheck: Duration::from_secs(60),
+            stall: Duration::from_secs(30),
+        }
+    }
+}
 
 /// How long a blob connection to a machine stays open unused.
 const IDLE: Duration = Duration::from_secs(30);
@@ -312,9 +458,9 @@ pub struct Node {
 
 impl Node {
     /// Starts serving sync and blobs of `group` on `endpoint` to the
-    /// machines that know `secret`, and `announcement` to any machine that
-    /// asks, and returns the node with the stream of patches its peers
-    /// send.
+    /// machines that know `secret`, with `timings`, and `announcement` to
+    /// any machine that asks, and returns the node with the stream of
+    /// patches its peers send.
     #[must_use]
     pub fn spawn(
         endpoint: Endpoint,
@@ -323,6 +469,7 @@ impl Node {
         secret: GroupSecret,
         log: Arc<dyn Log>,
         blobs: &Store,
+        timings: Timings,
     ) -> (Self, mpsc::Receiver<Received>) {
         let (incoming, received) = mpsc::channel(64);
         let shared = Arc::new(Shared {
@@ -336,6 +483,10 @@ impl Node {
             connected: Counts::default(),
             admitted: Mutex::default(),
             wanted: Mutex::default(),
+            backoff: Mutex::default(),
+            failures: Mutex::default(),
+            opened: watch::Sender::new(0),
+            timings,
             incompatible: Mutex::default(),
             drafts: watch::Sender::new(None),
             announced: Mutex::default(),
@@ -366,7 +517,9 @@ impl Node {
                 };
                 let wanted: Vec<MachineId> = lock(&shared.wanted).iter().copied().collect();
                 for machine in wanted {
-                    shared.dial(machine);
+                    if shared.due(machine) {
+                        shared.dial(machine);
+                    }
                 }
                 drop(shared);
                 tokio::time::sleep(REDIAL).await;
@@ -425,10 +578,15 @@ impl Node {
     /// Sets the machines to keep a session with, dialing the new ones now.
     pub fn want(&self, machines: impl IntoIterator<Item = MachineId>) {
         let machines: BTreeSet<MachineId> = machines.into_iter().collect();
-        for machine in &machines {
-            self.shared.dial(*machine);
+        let new: Vec<MachineId> = {
+            let mut wanted = lock(&self.shared.wanted);
+            let new = machines.difference(&wanted).copied().collect();
+            *wanted = machines;
+            new
+        };
+        for machine in new {
+            self.shared.dial(machine);
         }
-        *lock(&self.shared.wanted) = machines;
     }
 
     /// Dials every machine that local-network discovery reports.
@@ -483,6 +641,19 @@ impl Node {
         lock(&self.shared.connected).keys().copied().collect()
     }
 
+    /// Changes each time a session opens.
+    #[must_use]
+    pub fn sessions_opened(&self) -> watch::Receiver<u64> {
+        self.shared.opened.subscribe()
+    }
+
+    /// Why the last try to sync with each machine failed, for the machines
+    /// tried since their last session opened.
+    #[must_use]
+    pub fn failures(&self) -> BTreeMap<MachineId, String> {
+        lock(&self.shared.failures).clone()
+    }
+
     /// The machines that refused the last dial for speaking no protocol of
     /// this machine's, as they run another version of pigeon, each with
     /// what asking it which one told, until a session with them opens.
@@ -498,13 +669,14 @@ impl Node {
     ///
     /// # Errors
     ///
-    /// Fails if no provider can deliver what is missing, or none delivered
-    /// more for [`swarm::STALL`].
+    /// Fails if no provider can deliver what is missing, or what is held
+    /// of the blob did not grow for [`Timings::stall`].
     pub async fn fetch(&self, hash: Hash, providers: Vec<MachineId>) -> Result<()> {
         let rotation = self.id().as_bytes()[..8]
             .iter()
             .fold(0, |rotation, byte| rotation << 8 | u64::from(*byte));
-        swarm::fetch(&self.store, &self.pool, rotation, hash, providers)
+        let stall = self.shared.timings.stall;
+        swarm::fetch(&self.store, &self.pool, rotation, hash, providers, stall)
             .await
             .with_context(|| format!("fetching {hash}"))
     }
@@ -517,5 +689,20 @@ impl Node {
     pub async fn shutdown(&self) -> Result<()> {
         self.router.shutdown().await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_machine_failing_in_a_row_is_dialed_less_and_less_often() {
+        let wait = |failures| Backoff::after(failures).next - Instant::now();
+        let second = Duration::from_secs(1);
+        assert!(wait(1) <= REDIAL && wait(1) + second > REDIAL);
+        assert!(wait(2) > REDIAL);
+        assert!(wait(3) > wait(2));
+        assert!(wait(40) <= MAX_REDIAL && wait(40) + second > MAX_REDIAL);
     }
 }

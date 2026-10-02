@@ -1,6 +1,8 @@
 //! Tests of the network on this host: machines that know the group secret
-//! exchange what the other lacks and every later patch, a machine without
-//! it learns nothing, and blobs move only between admitted machines,
+//! exchange what the other lacks, a gap included, and every later patch,
+//! and again what a session lost, a machine without it learns nothing and
+//! why is kept until a session opens, and blobs move only between admitted
+//! machines, a fetch failing once what it holds stops growing,
 //! each from several machines at once, which serve what they hold while
 //! still downloading, and reach each other through the group's relay; a
 //! machine speaking another version of the protocol is reported with the
@@ -20,29 +22,29 @@ use iroh_blobs::Hash;
 use iroh_blobs::protocol::{ChunkRanges, GetRequest};
 use iroh_blobs::store::mem::MemStore;
 use pigeon_core::identity::{GroupSecret, MachineCert};
-use pigeon_core::ledger::Ledger;
+use pigeon_core::ledger::{Digests, Ledger};
 use pigeon_core::patch::SignedPatch;
 use pigeon_core::test_machines;
 use pigeon_net::bind::bind_local;
 use pigeon_net::hello::{Announcement, Announcing, HELLO_ALPN, Heard, Standing};
 use pigeon_net::relay::{relay_url, serve_relay};
-use pigeon_net::wire::{Patches, Vector};
-use pigeon_net::{Log, Node, Received};
+use pigeon_net::wire::{MAX_HELLO, Patches, SYNC_ALPN};
+use pigeon_net::{Log, Node, Received, Timings};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 struct Held(Mutex<Ledger>);
 
 impl Log for Held {
-    fn vector(&self) -> Vector {
-        self.0.lock().unwrap().vector()
+    fn digests(&self) -> Digests {
+        self.0.lock().unwrap().digests()
     }
 
-    fn missing_from(&self, vector: &Vector) -> Patches {
+    fn missing_from(&self, theirs: &Digests) -> Patches {
         self.0
             .lock()
             .unwrap()
-            .missing_from(vector)
+            .missing_from(theirs)
             .into_iter()
             .cloned()
             .collect()
@@ -52,6 +54,13 @@ impl Log for Held {
         self.0.lock().unwrap().recognizes(cert)
     }
 }
+
+/// Sessions that tell what they hold five times a second, and fetches
+/// that give up after two seconds without growing.
+const TIMINGS: Timings = Timings {
+    recheck: Duration::from_millis(200),
+    stall: Duration::from_secs(2),
+};
 
 fn secret(byte: u8) -> GroupSecret {
     GroupSecret([byte; 32])
@@ -122,6 +131,7 @@ impl Machine {
             secret,
             log.clone(),
             &blobs,
+            TIMINGS,
         );
         Self {
             signer,
@@ -200,6 +210,85 @@ async fn admitted_machines_exchange_missing_then_live_patches() {
     assert_eq!(b.next_times().await, [4]);
     a.node.shutdown().await.unwrap();
     b.node.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_gap_brings_every_patch_of_its_machine() {
+    let lookup = MemoryLookup::new();
+    let a = Machine::start(secret(5), &lookup).await;
+    let mut b = Machine::start(secret(5), &lookup).await;
+    let (a1, a2, a3) = (a.patch(1), a.patch(2), a.patch(3));
+    for patch in [&a1, &a2, &a3] {
+        a.hold(patch);
+    }
+    b.hold(&a1);
+    b.hold(&a3);
+    b.node.dial(a.node.id());
+    assert_eq!(b.next_times().await, [1, 2, 3]);
+    a.node.shutdown().await.unwrap();
+    b.node.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_patch_a_session_lost_comes_with_the_next_digests() {
+    let lookup = MemoryLookup::new();
+    let a = Machine::start(secret(5), &lookup).await;
+    let mut b = Machine::start(secret(5), &lookup).await;
+    a.meet(&b).await;
+    a.hold(&a.patch(1));
+    assert_eq!(b.next_times().await, [1]);
+    a.node.shutdown().await.unwrap();
+    b.node.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn why_a_machine_failed_is_kept_until_a_session_with_it_opens() {
+    let lookup = MemoryLookup::new();
+    let a = Machine::start(secret(5), &lookup).await;
+    let key = SecretKey::generate();
+    let outsider = Machine::on(
+        bind_local(key.clone(), &lookup).await.unwrap(),
+        key.clone(),
+        secret(6),
+    );
+    outsider.node.dial(a.node.id());
+    until("the refusal is kept on both sides", || async {
+        let kept = a.node.failures();
+        kept.get(&key.public())
+            .is_some_and(|why| why.contains("does not know the group secret"))
+            && outsider.node.failures().contains_key(&a.node.id())
+    })
+    .await;
+    let loud = bind_local(SecretKey::generate(), &lookup).await.unwrap();
+    let connection = loud.connect(a.node.id(), SYNC_ALPN).await.unwrap();
+    let (mut send, _recv) = connection.open_bi().await.unwrap();
+    let length = u32::try_from(MAX_HELLO + 1).unwrap();
+    send.write_all(&length.to_be_bytes()).await.unwrap();
+    until(
+        "a hello over the bound is refused before it is read",
+        || async {
+            a.node
+                .failures()
+                .get(&loud.id())
+                .is_some_and(|why| why.contains("over"))
+        },
+    )
+    .await;
+    outsider.node.shutdown().await.unwrap();
+    let member = Machine::on(
+        bind_local(key.clone(), &lookup).await.unwrap(),
+        key.clone(),
+        secret(5),
+    );
+    member.meet(&a).await;
+    until("the failure is forgotten once a session opens", || async {
+        !a.node.failures().contains_key(&key.public())
+    })
+    .await;
+    loud.close().await;
+    for machine in [a, member] {
+        machine.node.shutdown().await.unwrap();
+    }
 }
 
 #[tokio::test]
@@ -346,6 +435,33 @@ async fn a_machine_serves_what_it_holds_while_still_downloading() {
         .unwrap();
     c.holds(tag.hash(), &data).await;
     for machine in [a, b, c] {
+        machine.node.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_fetch_fails_once_what_it_holds_stops_growing() {
+    let lookup = MemoryLookup::new();
+    let a = Machine::start(secret(5), &lookup).await;
+    let b = Machine::start(secret(5), &lookup).await;
+    let c = Machine::start(secret(5), &lookup).await;
+    let data = varied(4 << 20);
+    let tag = a.blobs.add_bytes(data.clone()).temp_tag().await.unwrap();
+    b.meet(&a).await;
+    b.take(&a, tag.hash(), 0..2048).await;
+    a.node.shutdown().await.unwrap();
+    c.meet(&b).await;
+    let fetched = timeout(
+        Duration::from_secs(10),
+        c.node.fetch(tag.hash(), vec![b.node.id()]),
+    )
+    .await
+    .expect("a fetch that stopped growing ends");
+    let error = format!("{:#}", fetched.unwrap_err());
+    assert!(error.contains("no machine delivered more"), "{error}");
+    let held = c.blobs.observe(tag.hash()).await.unwrap();
+    assert!(held.ranges.contains(&ChunkNum(2047)));
+    for machine in [b, c] {
         machine.node.shutdown().await.unwrap();
     }
 }

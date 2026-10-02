@@ -40,6 +40,8 @@ pub struct Status {
     /// The machines that run another version of pigeon, whose protocol
     /// this one does not speak.
     pub incompatible: Vec<IncompatibleMachine>,
+    /// The machines this one failed to sync with since their last session.
+    pub unreached: Vec<UnreachedMachine>,
     /// The relay that carries what no direct connection can, once reached.
     pub relay: Option<String>,
     /// Edits waiting to settle.
@@ -79,6 +81,15 @@ impl IncompatibleMachine {
             protocol: announced.map(|told| told.protocol.clone()),
         }
     }
+}
+
+/// A machine this one failed to sync with, the member whose patches it
+/// signed, if any reached this one, and why the last try failed.
+#[derive(Clone, Debug, Serialize)]
+pub struct UnreachedMachine {
+    pub machine: MachineId,
+    pub member: Option<MemberName>,
+    pub error: String,
 }
 
 /// One file of the group as this machine sees it.
@@ -174,6 +185,16 @@ impl Engine {
                 .map(|(machine, heard)| {
                     let member = owners.get(&machine).map(|name| (*name).clone());
                     IncompatibleMachine::new(machine, member, &heard)
+                })
+                .collect(),
+            unreached: inner
+                .node
+                .failures()
+                .into_iter()
+                .map(|(machine, error)| UnreachedMachine {
+                    machine,
+                    member: owners.get(&machine).map(|name| (*name).clone()),
+                    error,
                 })
                 .collect(),
             relay: inner.node.home_relay().map(|url| url.to_string()),

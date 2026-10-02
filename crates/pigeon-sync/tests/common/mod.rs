@@ -13,6 +13,7 @@ use pigeon_core::clock::MachineId;
 use pigeon_core::name::MemberName;
 use pigeon_core::path::GroupPath;
 use pigeon_core::selection::{Cutoff, Rule};
+use pigeon_net::Timings;
 use pigeon_store::config::{Config, ConfigFile};
 use pigeon_store::group_dirs::GroupDirs;
 use pigeon_store::group_key::GroupKey;
@@ -123,6 +124,13 @@ impl Machine {
     }
 }
 
+/// Starts a machine of the member `member`, joining with `key`.
+pub async fn start_with(key: GroupKey, member: &str, options: Options) -> Machine {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    start(key, member, (dir, root), options).await
+}
+
 async fn start(
     key: GroupKey,
     member: &str,
@@ -178,6 +186,10 @@ pub fn options(lookup: &MemoryLookup) -> Options {
         tick: Duration::from_millis(50),
         join_delay: Duration::from_millis(300),
         gc: Duration::from_millis(300),
+        node: Timings {
+            recheck: Duration::from_millis(300),
+            stall: Duration::from_secs(2),
+        },
         ..Options::default()
     }
 }
@@ -190,7 +202,15 @@ pub async fn group(members: &[&str]) -> Vec<Machine> {
 
 /// The same, with the timings `tune` changes.
 pub async fn group_with(members: &[&str], tune: impl Fn(&mut Options)) -> Vec<Machine> {
-    let lookup = MemoryLookup::new();
+    group_on(&MemoryLookup::new(), members, tune).await
+}
+
+/// The same, on `lookup`.
+pub async fn group_on(
+    lookup: &MemoryLookup,
+    members: &[&str],
+    tune: impl Fn(&mut Options),
+) -> Vec<Machine> {
     let dirs: Vec<TempDir> = members
         .iter()
         .map(|_| tempfile::tempdir().unwrap())
@@ -205,7 +225,7 @@ pub async fn group_with(members: &[&str], tune: impl Fn(&mut Options)) -> Vec<Ma
     let mut machines = Vec::new();
     for (dir, member) in dirs.into_iter().zip(members) {
         let root = dir.path().join("root");
-        let mut options = options(&lookup);
+        let mut options = options(lookup);
         tune(&mut options);
         machines.push(start(key.clone(), member, (dir, root), options).await);
     }

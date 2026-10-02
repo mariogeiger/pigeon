@@ -1,5 +1,6 @@
 //! The web UI's Overview page of a group: how it stands here in one line,
-//! with its errors and incompatible machines if any; its members, and the
+//! with its errors, incompatible machines and the machines it failed to
+//! sync with, if any; its members, and the
 //! button to leave; its key; the editor of this machine's `config.toml`,
 //! which `config_editor.js` previews on each keystroke and saves whole,
 //! offering times to a pin line missing one; the folders kept elsewhere;
@@ -64,6 +65,26 @@ fn incompatible_section(machines: &[Value]) -> Markup {
                         td { (told(machine, "version")) }
                         td { (told(machine, "commit")) }
                         td { (told(machine, "protocol")) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The machines this one failed to sync with since their last session,
+/// each with its member and why the last try failed.
+fn unreached_section(machines: &[Value]) -> Markup {
+    html! {
+        section {
+            h2 { "Unreached machines" }
+            table {
+                tr { th { "member" } th { "machine" } th { "last failure" } }
+                @for machine in machines {
+                    tr {
+                        td { (cell("member", &machine["member"])) }
+                        td { (cell("machine", &machine["machine"])) }
+                        td { (cell("", &machine["error"])) }
                     }
                 }
             }
@@ -176,6 +197,9 @@ pub fn overview(bar: &Bar<'_>, shown: &Overview<'_>) -> Markup {
         }
         @if !items(&status["incompatible"]).is_empty() {
             (incompatible_section(items(&status["incompatible"])))
+        }
+        @if !items(&status["unreached"]).is_empty() {
+            (unreached_section(items(&status["unreached"])))
         }
         (members_section(group, me, shown.members))
         section {

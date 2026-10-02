@@ -100,6 +100,7 @@ fn the_page_holds_the_file_and_offers_to_leave() {
     let status = json!({
         "member": "alice", "root": "/cheapmo", "join": { "state": "joined" },
         "peers": ["m2", "m3"], "incompatible": [], "errors": ["disk full"],
+        "unreached": [{"machine": "m4", "member": "bob", "error": "connecting to m4: timed out"}],
         "machine": "m1", "patches": 7,
     });
     let members = json!([
@@ -126,6 +127,11 @@ fn the_page_holds_the_file_and_offers_to_leave() {
         "{page}"
     );
     assert!(page.contains(r#"<p class="error">disk full</p>"#), "{page}");
+    assert!(page.contains("Unreached machines"), "{page}");
+    assert!(
+        page.contains("<td>connecting to m4: timed out</td>"),
+        "{page}"
+    );
     assert!(page.contains(r#"data-version="v9""#), "{page}");
     assert!(page.contains("member = &quot;alice&quot;"), "{page}");
     assert!(page.contains(r#"value="cheapmo-key""#), "{page}");

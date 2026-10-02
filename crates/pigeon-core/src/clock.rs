@@ -1,13 +1,14 @@
-//! Timestamps that order all patches totally: a hybrid logical clock time
-//! from `uhlc`, never behind any time its machine received, with the
-//! machine's key breaking ties.
+//! Timestamps that order all patches totally: a hybrid logical clock time,
+//! never behind the wall clock nor any time its machine stamped or
+//! received, with the machine's key breaking ties.
 
 use std::fmt::{self, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use iroh_base::PublicKey;
 use serde::{Deserialize, Serialize};
-use uhlc::{HLC, HLCBuilder, ID, NTP64, Timestamp};
+use uhlc::NTP64;
 
 /// The identity of a machine: its iroh public key.
 pub type MachineId = PublicKey;
@@ -114,46 +115,76 @@ fn binary_fraction(digits: &str) -> u64 {
     bits.div_ceil(2)
 }
 
-/// A machine's hybrid logical clock.
+/// The NTP64 span of `duration`.
+fn ntp_span(duration: Duration) -> u64 {
+    NTP64::from(duration).0
+}
+
+/// A machine's hybrid logical clock: each stamp is the wall clock's time,
+/// or one past the latest time the clock stamped or observed when that is
+/// later, so its stamps only increase, across restarts too once it observes
+/// the patches it holds.
 pub struct Clock {
-    hlc: HLC,
     machine: MachineId,
+    max_drift: Duration,
+    /// The latest time stamped or observed.
+    latest: AtomicU64,
 }
 
 impl Clock {
-    /// A clock for `machine`, accepting received times up to `max_drift`
-    /// ahead of its own.
+    /// A clock for `machine`, admitting received times up to `max_drift`
+    /// ahead of the wall clock.
     #[must_use]
     pub fn new(machine: MachineId, max_drift: Duration) -> Self {
-        let mut id = [0u8; 16];
-        id.copy_from_slice(&machine.as_bytes()[..16]);
-        id[15] |= 1;
-        let hlc = HLCBuilder::new()
-            .with_id(ID::try_from(id).unwrap_or_else(|_| ID::rand()))
-            .with_max_delta(max_drift)
-            .build();
-        Self { hlc, machine }
+        Self {
+            machine,
+            max_drift,
+            latest: AtomicU64::new(0),
+        }
     }
 
-    /// A new stamp, later than every stamp this clock made or received.
+    /// A new stamp, later than every time this clock stamped or observed.
     #[must_use]
     pub fn stamp(&self) -> Stamp {
+        let wall = ntp_time(SystemTime::now());
+        let (Ok(previous) | Err(previous)) =
+            self.latest
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |latest| {
+                    Some(wall.max(latest.saturating_add(1)))
+                });
         Stamp {
-            time: self.hlc.new_timestamp().get_time().0,
+            time: wall.max(previous.saturating_add(1)),
             machine: self.machine,
         }
     }
 
-    /// Moves the clock past a received stamp.
+    /// Moves the clock past `time`, so that every later stamp follows it.
+    pub fn observe(&self, time: u64) {
+        self.latest.fetch_max(time, Ordering::SeqCst);
+    }
+
+    /// Whether a received stamp lies within the allowed drift of the wall
+    /// clock, or else how far ahead of it.
     ///
     /// # Errors
-    /// Fails when the stamp lies further ahead than the allowed drift,
-    /// which means one of the two machines has a wrong clock.
-    pub fn observe(&self, stamp: &Stamp) -> Result<(), String> {
-        let received = Timestamp::new(NTP64(stamp.time), *self.hlc.get_id());
-        self.hlc
-            .update_with_timestamp(&received)
-            .map_err(|error| error.to_string())
+    ///
+    /// Returns how far ahead of the wall clock the stamp lies when that is
+    /// beyond the allowed drift, which means one of the two machines has a
+    /// wrong clock.
+    pub fn admits(&self, stamp: &Stamp) -> Result<(), Duration> {
+        let wall = ntp_time(SystemTime::now());
+        if stamp.time <= wall.saturating_add(ntp_span(self.max_drift)) {
+            return Ok(());
+        }
+        Err(NTP64(stamp.time - wall).to_duration())
+    }
+
+    /// How far the latest time this clock stamped or observed lies ahead of
+    /// the wall clock: how much the wall clock lags behind the patches.
+    #[must_use]
+    pub fn lead(&self) -> Duration {
+        let wall = ntp_time(SystemTime::now());
+        NTP64(self.latest.load(Ordering::SeqCst).saturating_sub(wall)).to_duration()
     }
 }
 
@@ -163,18 +194,47 @@ mod tests {
     use iroh_base::SecretKey;
 
     #[test]
-    fn stamps_increase_and_follow_received_ones() {
+    fn stamps_increase_and_follow_observed_times() {
         let machine = SecretKey::from_bytes(&[7; 32]).public();
         let clock = Clock::new(machine, Duration::from_secs(3600));
         let a = clock.stamp();
         let b = clock.stamp();
         assert!(a < b);
-        let ahead = Stamp {
-            time: b.time + (60 << 32),
+        assert!(clock.lead() < Duration::from_secs(1));
+        let ahead = b.time + (60 << 32);
+        clock.observe(ahead);
+        clock.observe(b.time);
+        assert!(clock.stamp().time > ahead);
+        assert!(clock.lead() > Duration::from_secs(59));
+    }
+
+    #[test]
+    fn a_clock_set_back_still_stamps_after_every_time_it_observed() {
+        let machine = SecretKey::from_bytes(&[7; 32]).public();
+        let clock = Clock::new(machine, Duration::from_secs(300));
+        let held = ntp_time(SystemTime::now()) + (3600 << 32);
+        clock.observe(held);
+        let next = clock.stamp();
+        assert_eq!(next.time, held + 1);
+        assert!(clock.stamp() > next);
+        let lead = clock.lead();
+        assert!(lead > Duration::from_secs(3599) && lead <= Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn a_stamp_is_admitted_only_within_the_drift() {
+        let machine = SecretKey::from_bytes(&[7; 32]).public();
+        let clock = Clock::new(machine, Duration::from_secs(300));
+        let now = ntp_time(SystemTime::now());
+        let at = |seconds: u64| Stamp {
+            time: now + (seconds << 32),
             machine,
         };
-        clock.observe(&ahead).unwrap();
-        assert!(clock.stamp().time > ahead.time);
+        assert_eq!(clock.admits(&at(0)), Ok(()));
+        assert_eq!(clock.admits(&at(200)), Ok(()));
+        let refused = clock.admits(&at(600)).unwrap_err();
+        assert!(refused > Duration::from_secs(599) && refused <= Duration::from_secs(600));
+        assert!(clock.stamp().time < at(1).time);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! The ledger: every known patch, folded in stamp order into the accepted
 //! versions of each path and their lineage across moves, the member list
-//! with the key each name is bound to, and the names that tags claim.
+//! with the key each name is bound to, and the names that tags claim, with
+//! a digest of each machine's patches that tells two ledgers apart.
 //! Each patch is accepted or rejected as a whole against the state it lands
 //! on, so every machine holding the same patches computes the same tree.
 //! Any member changes any file: the ledger guards who speaks for a name and
@@ -10,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Bound;
 
 use iroh_base::PublicKey;
+use serde::{Deserialize, Serialize};
 
 use crate::clock::{MachineId, Stamp};
 use crate::identity::{GroupId, MachineCert};
@@ -240,12 +242,117 @@ impl State {
     }
 }
 
+/// What a ledger holds of one machine's patches: the newest time, how
+/// many, and the XOR of the BLAKE3 hashes of their stamps, so that two
+/// ledgers holding different sets of that machine's patches differ.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct Digest {
+    pub newest: u64,
+    pub count: u64,
+    pub xor: [u8; 32],
+}
+
+/// The digest of each machine whose patches a ledger holds.
+pub type Digests = BTreeMap<MachineId, Digest>;
+
+/// The hash of a stamp that digests combine.
+fn stamp_hash(stamp: &Stamp) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&stamp.time.to_be_bytes());
+    hasher.update(stamp.machine.as_bytes());
+    *hasher.finalize().as_bytes()
+}
+
+fn xor(into: &mut [u8; 32], hash: &[u8; 32]) {
+    for (byte, other) in into.iter_mut().zip(hash) {
+        *byte ^= other;
+    }
+}
+
+/// The patches held from one machine: their times, and the XOR of their
+/// stamps' hashes.
+#[derive(Default)]
+struct History {
+    times: BTreeSet<u64>,
+    xor: [u8; 32],
+}
+
+impl History {
+    fn add(&mut self, stamp: &Stamp) {
+        if self.times.insert(stamp.time) {
+            xor(&mut self.xor, &stamp_hash(stamp));
+        }
+    }
+
+    fn digest(&self) -> Option<Digest> {
+        Some(Digest {
+            newest: *self.times.last()?,
+            count: self.times.len() as u64,
+            xor: self.xor,
+        })
+    }
+
+    /// The times of the patches a ledger whose digest of this machine is
+    /// `theirs` may lack: those after its newest when it holds exactly the
+    /// patches held here up to it, none when it holds a later patch, as
+    /// the other side then tells what it lacks, and else every one.
+    fn missing_from(&self, machine: MachineId, theirs: Option<&Digest>) -> Vec<u64> {
+        let Some(theirs) = theirs else {
+            return self.times.iter().copied().collect();
+        };
+        if self.digest().as_ref() == Some(theirs) {
+            return Vec::new();
+        }
+        let after: Vec<u64> = self
+            .times
+            .range((Bound::Excluded(theirs.newest), Bound::Unbounded))
+            .copied()
+            .collect();
+        let mut held = self.xor;
+        for time in &after {
+            xor(
+                &mut held,
+                &stamp_hash(&Stamp {
+                    time: *time,
+                    machine,
+                }),
+            );
+        }
+        let up_to_theirs = Digest {
+            newest: theirs.newest,
+            count: (self.times.len() - after.len()) as u64,
+            xor: held,
+        };
+        if self.times.contains(&theirs.newest) && up_to_theirs == *theirs {
+            after
+        } else if self
+            .times
+            .last()
+            .is_some_and(|newest| theirs.newest > *newest)
+        {
+            Vec::new()
+        } else {
+            self.times.iter().copied().collect()
+        }
+    }
+}
+
+/// What inserting patches did.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Inserted {
+    /// The patches that were new, in stamp order.
+    pub added: Vec<Stamp>,
+    /// Every patch whose outcome was computed anew, in stamp order.
+    pub folded: Vec<Stamp>,
+    /// The new patches whose signatures do not hold, which were not stored.
+    pub refused: Vec<(Stamp, SignatureError)>,
+}
+
 /// Every patch a machine knows, and the tree they fold into.
 pub struct Ledger {
     group: GroupId,
     patches: BTreeMap<Stamp, SignedPatch>,
-    /// The times of each machine's patches.
-    by_machine: BTreeMap<MachineId, BTreeSet<u64>>,
+    by_machine: BTreeMap<MachineId, History>,
     state: State,
 }
 
@@ -271,31 +378,77 @@ impl Ledger {
     /// # Errors
     /// Refuses a patch whose signatures do not hold; it is not stored.
     pub fn insert(&mut self, signed: SignedPatch) -> Result<Vec<Stamp>, SignatureError> {
-        let stamp = signed.stamp();
-        if self.patches.contains_key(&stamp) {
-            return Ok(Vec::new());
+        let inserted = self.extend([signed]);
+        match inserted.refused.into_iter().next() {
+            Some((_, error)) => Err(error),
+            None => Ok(inserted.folded),
         }
-        signed.verify(&self.group)?;
-        self.patches.insert(stamp, signed);
-        self.by_machine
-            .entry(stamp.machine)
-            .or_default()
-            .insert(stamp.time);
+    }
+
+    /// Adds the new patches among `patches` whose signatures hold, folding
+    /// every patch from the earliest of them on once.
+    pub fn extend(&mut self, patches: impl IntoIterator<Item = SignedPatch>) -> Inserted {
+        self.insert_all(patches, |_| Ok::<(), std::convert::Infallible>(()))
+            .unwrap_or_else(|never| match never {})
+    }
+
+    /// Adds the new patches among `patches` whose signatures hold once
+    /// `persist` stored them, folding every patch from the earliest of
+    /// them on once; nothing is added when `persist` fails.
+    ///
+    /// # Errors
+    /// Returns the error of `persist`.
+    pub fn insert_all<E>(
+        &mut self,
+        patches: impl IntoIterator<Item = SignedPatch>,
+        persist: impl FnOnce(&[SignedPatch]) -> Result<(), E>,
+    ) -> Result<Inserted, E> {
+        let mut inserted = Inserted::default();
+        let mut new = BTreeMap::new();
+        for signed in patches {
+            let stamp = signed.stamp();
+            if self.patches.contains_key(&stamp) || new.contains_key(&stamp) {
+                continue;
+            }
+            match signed.verify(&self.group) {
+                Ok(()) => {
+                    new.insert(stamp, signed);
+                }
+                Err(error) => inserted.refused.push((stamp, error)),
+            }
+        }
+        let Some(earliest) = new.keys().next().copied() else {
+            return Ok(inserted);
+        };
+        let new: Vec<SignedPatch> = new.into_values().collect();
+        persist(&new)?;
+        for signed in new {
+            let stamp = signed.stamp();
+            self.by_machine
+                .entry(stamp.machine)
+                .or_default()
+                .add(&stamp);
+            self.patches.insert(stamp, signed);
+            inserted.added.push(stamp);
+        }
         let later: Vec<Stamp> = self
             .state
             .outcomes
-            .range((Bound::Excluded(stamp), Bound::Unbounded))
+            .range(earliest..)
             .map(|(later, _)| *later)
             .collect();
         for later in later.iter().rev() {
             self.state.undo(later);
         }
-        let mut folded = vec![stamp];
-        folded.extend(later);
-        for stamp in &folded {
+        inserted.folded = self
+            .patches
+            .range(earliest..)
+            .map(|(stamp, _)| *stamp)
+            .collect();
+        for stamp in &inserted.folded {
             self.state.fold(&self.patches[stamp]);
         }
-        Ok(folded)
+        Ok(inserted)
     }
 
     /// Checks what the current state says of a patch `author` would make now.
@@ -444,31 +597,41 @@ impl Ledger {
             .collect()
     }
 
-    /// The latest time known from each machine.
+    /// The digest of each machine's patches.
     #[must_use]
-    pub fn vector(&self) -> BTreeMap<MachineId, u64> {
+    pub fn digests(&self) -> Digests {
         self.by_machine
             .iter()
-            .filter_map(|(machine, times)| Some((*machine, *times.last()?)))
+            .filter_map(|(machine, history)| Some((*machine, history.digest()?)))
             .collect()
     }
 
-    /// Every patch that `vector` does not cover.
+    /// The time of the newest patch held.
     #[must_use]
-    pub fn missing_from(&self, vector: &BTreeMap<MachineId, u64>) -> Vec<&SignedPatch> {
+    pub fn newest(&self) -> Option<u64> {
+        self.patches.keys().next_back().map(|stamp| stamp.time)
+    }
+
+    /// Every patch that a ledger whose digests are `theirs` may lack, in
+    /// stamp order: of each machine, the patches after the newest it holds
+    /// when it holds exactly those held here up to it, none when it holds
+    /// a later one, and else every one, so that a gap in what it holds is
+    /// filled.
+    #[must_use]
+    pub fn missing_from(&self, theirs: &Digests) -> Vec<&SignedPatch> {
         let mut missing: Vec<&SignedPatch> = self
             .by_machine
             .iter()
-            .flat_map(|(machine, times)| {
-                let after = vector
-                    .get(machine)
-                    .map_or(Bound::Unbounded, |time| Bound::Excluded(*time));
-                times.range((after, Bound::Unbounded)).map(|time| {
-                    &self.patches[&Stamp {
-                        time: *time,
-                        machine: *machine,
-                    }]
-                })
+            .flat_map(|(machine, history)| {
+                history
+                    .missing_from(*machine, theirs.get(machine))
+                    .into_iter()
+                    .map(|time| {
+                        &self.patches[&Stamp {
+                            time,
+                            machine: *machine,
+                        }]
+                    })
             })
             .collect();
         missing.sort_by_key(|signed| signed.stamp());

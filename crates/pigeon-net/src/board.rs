@@ -27,8 +27,8 @@ pub(crate) enum Verdict {
     Done,
     /// No machine left can deliver what is missing.
     Hopeless,
-    /// Pieces are missing; `idle` when no lane is fetching one.
-    Waiting { idle: bool },
+    /// Pieces are missing, and some machine may still deliver them.
+    Waiting,
 }
 
 #[derive(Clone, Copy)]
@@ -204,7 +204,7 @@ impl Board {
         if self.offers.is_empty() || (idle && self.offers.values().all(empty)) {
             return Verdict::Hopeless;
         }
-        Verdict::Waiting { idle }
+        Verdict::Waiting
     }
 }
 
@@ -300,10 +300,10 @@ mod tests {
     fn a_fetch_is_hopeless_only_when_no_machine_holds_or_may_grow_anything() {
         let (a, b) = (machine(1), machine(2));
         let mut board = Board::new(0, &Bitfield::empty(), [a, b]);
-        assert_eq!(board.verdict(), Verdict::Waiting { idle: true });
+        assert_eq!(board.verdict(), Verdict::Waiting);
         board.offer(a, &Bitfield::empty());
         board.offer(b, &partial(0..10));
-        assert_eq!(board.verdict(), Verdict::Waiting { idle: true });
+        assert_eq!(board.verdict(), Verdict::Waiting);
         board.lose(b);
         assert_eq!(board.verdict(), Verdict::Hopeless);
         board.lose(a);
