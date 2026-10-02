@@ -191,3 +191,32 @@ async fn restoring_a_folder_brings_back_what_it_held_with_new_versions() {
     assert!(bob.engine.restore("+alice/notes/", then).await.is_err());
     shut_down(machines).await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_on_this_machine_is_published_as_content_without_holding_it_in_memory() {
+    let machines = group(&["alice", "bob"]).await;
+    joined(&machines).await;
+    let [alice, bob] = &machines[..] else {
+        unreachable!()
+    };
+    let source = alice.dirs.config().join("staged");
+    std::fs::write(&source, "imported\n").unwrap();
+    let written = alice
+        .engine
+        .edit(vec![Edit::Import {
+            path: path("+alice/imported.txt"),
+            from: source.clone(),
+        }])
+        .await
+        .unwrap();
+    assert_eq!(written.published.len(), 1);
+    assert_eq!(
+        alice.read("+alice/imported.txt").as_deref(),
+        Some("imported\n")
+    );
+    eventually("bob knows the imported file", || async {
+        bob.engine.history(&path("+alice/imported.txt")).len() == 1
+    })
+    .await;
+    assert!(source.exists(), "the staged file is the caller's to remove");
+}

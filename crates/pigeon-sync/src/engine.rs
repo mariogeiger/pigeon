@@ -8,6 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -375,6 +376,18 @@ impl Inner {
     pub(crate) async fn add_content(&self, work: &mut Work, bytes: Vec<u8>) -> Result<Content> {
         let size = bytes.len() as u64;
         let tag = self.blobs.add_bytes(bytes).await?;
+        Ok(Self::keep_content(work, tag, size))
+    }
+
+    /// Stores the file at `from`, read in chunks, and returns it as file
+    /// content.
+    pub(crate) async fn add_file(&self, work: &mut Work, from: &Path) -> Result<Content> {
+        let (tag, size) = self.blobs.import(from).await?;
+        Ok(Self::keep_content(work, tag, size))
+    }
+
+    /// Keeps the stored content safe from collection until it is protected.
+    fn keep_content(work: &mut Work, tag: TempTag, size: u64) -> Content {
         let content = Content {
             hash: ContentHash(*tag.hash().as_bytes()),
             size,
@@ -382,7 +395,7 @@ impl Inner {
         };
         work.tags.push(tag);
         work.protect_due = true;
-        Ok(content)
+        content
     }
 
     /// Where the member stands, from the ledger.

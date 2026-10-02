@@ -4,6 +4,7 @@
 //! files to what they held at a time. A draft, which only this machine's
 //! disk holds, moves or goes on disk and is published at once.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Result, bail};
@@ -23,9 +24,23 @@ use crate::engine::{Engine, Inner, Work};
 /// inside.
 #[derive(Clone, Debug)]
 pub enum Edit {
-    Write { path: GroupPath, bytes: Vec<u8> },
-    Delete { path: GroupPath },
-    Rename { from: GroupPath, to: GroupPath },
+    Write {
+        path: GroupPath,
+        bytes: Vec<u8>,
+    },
+    /// Writes the content of the file at `from`, which is read in chunks
+    /// rather than held in memory.
+    Import {
+        path: GroupPath,
+        from: PathBuf,
+    },
+    Delete {
+        path: GroupPath,
+    },
+    Rename {
+        from: GroupPath,
+        to: GroupPath,
+    },
 }
 
 /// The paths an action changed, all published.
@@ -37,6 +52,8 @@ pub struct Edited {
 /// The content a published path is to hold.
 enum Target {
     Bytes(Vec<u8>),
+    /// The content of a file on this machine.
+    File(PathBuf),
     /// The content of the published version it moves from.
     Moved(Content, VersionRef),
     Gone,
@@ -77,6 +94,7 @@ fn drafts_at<'a>(ledger: &Ledger, drafts: &'a [GroupPath], path: &GroupPath) -> 
 fn plan(ledger: &Ledger, drafts: &[GroupPath], edit: Edit) -> Result<Vec<(GroupPath, Planned)>> {
     match edit {
         Edit::Write { path, bytes } => Ok(vec![(path, Planned::Publish(Target::Bytes(bytes)))]),
+        Edit::Import { path, from } => Ok(vec![(path, Planned::Publish(Target::File(from)))]),
         Edit::Delete { path } => {
             let files = files_at(ledger, &path);
             let drafts = drafts_at(ledger, drafts, &path);
@@ -175,14 +193,30 @@ impl Inner {
         target: Target,
     ) -> Result<Change> {
         let head = self.ledger.lock().head(&path.key()).cloned();
+        let executable = head
+            .as_ref()
+            .and_then(|head| head.content)
+            .is_some_and(|old| old.executable);
         let (content, continues) = match target {
             Target::Bytes(bytes) => {
-                let mut content = self.add_content(work, bytes).await?;
-                content.executable = head
-                    .as_ref()
-                    .and_then(|head| head.content)
-                    .is_some_and(|old| old.executable);
-                (Some(content), None)
+                let content = self.add_content(work, bytes).await?;
+                (
+                    Some(Content {
+                        executable,
+                        ..content
+                    }),
+                    None,
+                )
+            }
+            Target::File(from) => {
+                let content = self.add_file(work, &from).await?;
+                (
+                    Some(Content {
+                        executable,
+                        ..content
+                    }),
+                    None,
+                )
             }
             Target::Moved(content, from) => (
                 Some(content),

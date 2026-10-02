@@ -13,9 +13,9 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
-use data_encoding::BASE64;
 use iroh::address_lookup::MemoryLookup;
 use pigeon::api::{App, serve};
 use pigeon::client::{Unconfirmed, call_at};
@@ -237,6 +237,16 @@ impl Machine {
         self.dir.path().join(name)
     }
 
+    /// A file holding `text` outside the group's root, named as a file's
+    /// content is for the command line to send.
+    pub fn upload(&self, text: &str) -> String {
+        static UPLOADS: AtomicUsize = AtomicUsize::new(0);
+        let name = format!("upload-{}", UPLOADS.fetch_add(1, Ordering::Relaxed));
+        let path = self.outside(&name);
+        std::fs::write(&path, text).unwrap();
+        path.display().to_string()
+    }
+
     /// The group's root on this machine.
     pub fn root(&self) -> PathBuf {
         self.dir.path().join(GROUP)
@@ -439,7 +449,7 @@ pub async fn alice_with_notes(internet: &MemoryLookup) -> (Machine, PathBuf) {
         .run(
             "file",
             "write",
-            json!({"path": "+alice/notes.txt", "content": base64("hello\n")}),
+            json!({"path": "+alice/notes.txt", "content": alice.upload("hello\n")}),
         )
         .await;
     let notes = alice.path("+alice/notes.txt");
@@ -489,8 +499,4 @@ pub async fn published(machine: &Machine, path: &str, versions: usize) {
 /// Waits long enough for the engines to settle and publish what they saw.
 pub async fn settle() {
     tokio::time::sleep(Duration::from_millis(1500)).await;
-}
-
-pub fn base64(text: &str) -> String {
-    BASE64.encode(text.as_bytes())
 }

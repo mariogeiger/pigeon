@@ -14,8 +14,9 @@ pub enum Kind {
     Pattern,
     /// A folder on this machine.
     Folder,
-    /// A file's content: a local file on the command line, an upload in
-    /// the web UI, base64 in the API.
+    /// A file's content, of any size: a local file on the command line, an
+    /// upload in the web UI, the body of the request in the API, which
+    /// takes the other arguments in its query. An action has at most one.
     Bytes,
     /// An RFC 3339 time, such as `2026-10-01T12:00:00Z`, or `now`, the
     /// time at which the action is carried out.
@@ -625,6 +626,14 @@ mod tests {
                 );
             }
             assert!(action.changes || action.params.iter().all(|param| param.kind != Kind::Bytes));
+            assert!(
+                action
+                    .params
+                    .iter()
+                    .filter(|param| param.kind == Kind::Bytes)
+                    .count()
+                    <= 1
+            );
             let asks = action.param(YES.name).is_some();
             assert!(
                 !asks || action.params.iter().all(|param| param.kind != Kind::Bytes),

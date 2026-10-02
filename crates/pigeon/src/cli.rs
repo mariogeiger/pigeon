@@ -10,7 +10,6 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint};
-use data_encoding::BASE64;
 use serde_json::{Map, Value};
 
 use crate::catalog::{ACTIONS, Action, GROUP, Kind, NOUNS, Param, Scope, find};
@@ -203,7 +202,6 @@ pub fn arguments(action: &Action, matches: &ArgMatches, ask: bool) -> Result<Map
             ),
         };
         let value = match param.kind {
-            Kind::Bytes => BASE64.encode(&read_local(&value)?),
             Kind::Document => String::from_utf8(read_local(&value)?)
                 .with_context(|| format!("--{}: {value} is not UTF-8 text", param.name))?,
             _ => value,
@@ -374,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn content_is_read_from_a_local_file() {
+    fn content_names_the_local_file_to_send() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("a.txt");
         std::fs::write(&file, "hello").unwrap();
@@ -392,6 +390,6 @@ mod tests {
         let (_, nouns) = matches.subcommand().unwrap();
         let (_, verbs) = nouns.subcommand().unwrap();
         let args = arguments(find("file", "write").unwrap(), verbs, false).unwrap();
-        assert_eq!(args["content"], Value::String(BASE64.encode(b"hello")));
+        assert_eq!(args["content"], Value::String(file.display().to_string()));
     }
 }

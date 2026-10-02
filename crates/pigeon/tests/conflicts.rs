@@ -259,7 +259,7 @@ async fn an_action_reaching_an_owner_who_edited_offline_wins_and_keeps_both_in_h
         .run(
             "file",
             "write",
-            json!({"path": "+alice/list.txt", "content": common::base64("milk, bread\n")}),
+            json!({"path": "+alice/list.txt", "content": desktop.upload("milk, bread\n")}),
         )
         .await;
     alice.go_online().await;

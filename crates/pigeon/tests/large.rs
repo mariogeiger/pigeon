@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{GROUP, alice_with_notes, base64, eventually};
+use common::{GROUP, alice_with_notes, eventually};
 use iroh::address_lookup::MemoryLookup;
 use serde_json::json;
 
@@ -24,7 +24,7 @@ async fn a_file_larger_than_two_megabytes_is_written_by_the_api_and_downloaded()
         .run(
             "file",
             "write",
-            json!({"path": "+alice/large.txt", "content": base64(&text)}),
+            json!({"path": "+alice/large.txt", "content": alice.upload(&text)}),
         )
         .await;
     eventually("the large file is on disk", &[&alice], async || {

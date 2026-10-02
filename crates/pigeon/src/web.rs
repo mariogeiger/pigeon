@@ -11,12 +11,11 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::body::{Body, Bytes};
-use axum::extract::{Form, Multipart, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Form, Multipart, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Json, Redirect, Response};
 use axum::routing::{get, post};
-use data_encoding::BASE64;
 use futures_util::StreamExt;
 use maud::{Markup, html};
 use pigeon_core::patch::Content;
@@ -25,8 +24,8 @@ use pigeon_sync::Engine;
 use serde_json::{Map, Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use crate::api::{App, Refusal, call};
-use crate::catalog::{Kind, find};
+use crate::api::{App, Refusal, TEXT_LIMIT, call};
+use crate::catalog::{Kind, Param, find};
 use crate::config_preview;
 use crate::confirm_page;
 use crate::file_page;
@@ -34,6 +33,7 @@ use crate::files_page;
 use crate::form::BACK;
 use crate::overview_page::{self, Overview};
 use crate::pages::{self, Bar, Side, Tab, diff, layout};
+use crate::upload::Upload;
 
 /// Why a page cannot be shown, and where to go back to.
 struct Failure {
@@ -433,51 +433,91 @@ fn shown_by_its_page(result: &Value) -> bool {
     }
 }
 
+/// What a form sent: the page to return to, the arguments, and the files
+/// received, which hold the content the arguments name until they drop.
+struct Submitted {
+    back: String,
+    values: Map<String, Value>,
+    files: Vec<Upload>,
+}
+
+/// Reads the fields of a form of an action with `params`, writing a file
+/// chosen in it to disk as it arrives and a text field, up to `TEXT_LIMIT`.
+async fn submitted(
+    app: &App,
+    params: &[Param],
+    mut multipart: Multipart,
+) -> Result<Submitted, Failure> {
+    let mut sent = Submitted {
+        back: "/".to_owned(),
+        values: Map::new(),
+        files: Vec::new(),
+    };
+    let broke = |back: &str| Failure::new(StatusCode::BAD_REQUEST, "The upload broke off.", back);
+    loop {
+        let mut field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => return Ok(sent),
+            Err(error) => {
+                return Err(Failure::new(
+                    StatusCode::BAD_REQUEST,
+                    error.to_string(),
+                    &sent.back,
+                ));
+            }
+        };
+        let name = field.name().unwrap_or_default().to_owned();
+        let is_file = params
+            .iter()
+            .any(|param| param.name == name && param.kind == Kind::Bytes);
+        if is_file {
+            if field.file_name().is_none_or(str::is_empty) {
+                continue;
+            }
+            let file = Upload::receive(&app.daemon.home().uploads_path(), Box::pin(field))
+                .await
+                .map_err(|_| broke(&sent.back))?;
+            let path = file.path().display().to_string();
+            sent.values.insert(name, Value::String(path));
+            sent.files.push(file);
+            continue;
+        }
+        let mut text = Vec::new();
+        while let Some(chunk) = field.chunk().await.map_err(|_| broke(&sent.back))? {
+            if text.len() + chunk.len() > TEXT_LIMIT {
+                return Err(Failure::new(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "A field of the form is too large.",
+                    &sent.back,
+                ));
+            }
+            text.extend_from_slice(&chunk);
+        }
+        let text = String::from_utf8_lossy(&text).into_owned();
+        if name == BACK {
+            sent.back = text;
+        } else {
+            sent.values.insert(name, Value::String(text));
+        }
+    }
+}
+
 /// Runs a form's action, then returns to its page, or shows the result
 /// when there is one to read.
 async fn act(
     State(app): State<Arc<App>>,
     Path((noun, verb)): Path<(String, String)>,
-    mut multipart: Multipart,
+    multipart: Multipart,
 ) -> Response {
-    let mut back = "/".to_owned();
-    let mut values = Map::new();
-    let kinds = find(&noun, &verb)
-        .map(|action| action.params)
-        .unwrap_or_default();
-    loop {
-        let field = match multipart.next_field().await {
-            Ok(Some(field)) => field,
-            Ok(None) => break,
-            Err(error) => {
-                return Failure::new(StatusCode::BAD_REQUEST, error.to_string(), &back)
-                    .into_response();
-            }
-        };
-        let name = field.name().unwrap_or_default().to_owned();
-        let kind = kinds
-            .iter()
-            .find(|param| param.name == name)
-            .map(|param| param.kind);
-        let uploaded = field.file_name().is_some_and(|file| !file.is_empty());
-        let Ok(bytes) = field.bytes().await else {
-            return Failure::new(StatusCode::BAD_REQUEST, "The upload broke off.", &back)
-                .into_response();
-        };
-        if name == BACK {
-            back = String::from_utf8_lossy(&bytes).into_owned();
-            continue;
-        }
-        let value = if kind == Some(Kind::Bytes) {
-            if !uploaded {
-                continue;
-            }
-            BASE64.encode(&bytes)
-        } else {
-            String::from_utf8_lossy(&bytes).into_owned()
-        };
-        values.insert(name, Value::String(value));
-    }
+    let params = find(&noun, &verb).map_or(&[][..], |action| action.params);
+    let Submitted {
+        mut back,
+        values,
+        files: _files,
+    } = match submitted(&app, params, multipart).await {
+        Ok(sent) => sent,
+        Err(failure) => return failure.into_response(),
+    };
     if !local_page(&back) {
         "/".clone_into(&mut back);
     }
@@ -515,7 +555,10 @@ pub fn routes() -> Router<Arc<App>> {
         .route("/live.js", get(live_script))
         .route("/files.js", get(files_script))
         .route("/config_editor.js", get(config_editor_script))
-        .route("/act/{noun}/{verb}", post(act))
+        .route(
+            "/act/{noun}/{verb}",
+            post(act).layer(DefaultBodyLimit::disable()),
+        )
 }
 
 #[cfg(test)]

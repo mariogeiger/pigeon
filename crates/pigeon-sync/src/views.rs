@@ -163,6 +163,15 @@ pub struct MemberView {
     pub online: Vec<MachineId>,
 }
 
+#[cfg(feature = "testing")]
+impl Engine {
+    /// Holds the engine busy, as a long pass of its loop does, until the
+    /// returned guard drops: what the views say must not wait for it.
+    pub async fn hold_work(&self) -> impl Drop + Send {
+        self.inner.work.lock().await
+    }
+}
+
 impl Engine {
     /// What the engine shows as of its latest signal, without waiting for
     /// the work in progress.

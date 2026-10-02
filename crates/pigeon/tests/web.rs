@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use common::web::next_event;
-use common::{GROUP, Machine, alice_with_notes, base64, eventually};
+use common::{GROUP, Machine, alice_with_notes, eventually};
 use iroh::address_lookup::MemoryLookup;
 use pigeon_core::clock::{ntp_time, parse_rfc3339};
 use serde_json::{Value, json};
@@ -51,7 +51,7 @@ async fn group_pages_follow_files_and_hear_each_change() {
     peer.call(
         "file",
         "write",
-        json!({"path": "+alice/notes.txt", "content": base64("hello\n")}),
+        json!({"path": "+alice/notes.txt", "content": peer.upload("hello\n")}),
     )
     .await
     .unwrap();
@@ -229,7 +229,7 @@ async fn the_web_restores_a_version_after_asking() {
     peer.call(
         "file",
         "write",
-        json!({"path": "+alice/notes.txt", "content": base64("hello again\n")}),
+        json!({"path": "+alice/notes.txt", "content": peer.upload("hello again\n")}),
     )
     .await
     .unwrap();
@@ -287,7 +287,7 @@ async fn the_web_decides_the_suggestions_it_shows() {
     peer.call(
         "file",
         "write",
-        json!({"path": "docs/plan.txt", "content": base64("plan\n")}),
+        json!({"path": "docs/plan.txt", "content": peer.upload("plan\n")}),
     )
     .await
     .unwrap();

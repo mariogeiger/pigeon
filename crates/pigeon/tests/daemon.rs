@@ -7,7 +7,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{GROUP, Machine, alice_with_notes, base64, eventually};
+use common::{GROUP, Machine, alice_with_notes, eventually};
 use iroh::address_lookup::MemoryLookup;
 use serde_json::json;
 
@@ -64,7 +64,7 @@ async fn two_daemons_share_files_and_decide_suggestions() {
         .call(
             "file",
             "write",
-            json!({"path": "+alice/notes.txt", "content": base64("hello\n")}),
+            json!({"path": "+alice/notes.txt", "content": a.upload("hello\n")}),
         )
         .await
         .unwrap();
@@ -161,7 +161,7 @@ async fn a_machine_hears_the_group_before_choosing_its_name() {
     a.call(
         "file",
         "write",
-        json!({"path": "docs/+carol/plan.txt", "content": base64("plan\n")}),
+        json!({"path": "docs/+carol/plan.txt", "content": a.upload("plan\n")}),
     )
     .await
     .unwrap();
@@ -418,4 +418,20 @@ async fn serving_follows_every_file_and_keeps_every_history() {
         "{shown}"
     );
     assert!(peer.joined().await);
+}
+
+#[tokio::test]
+async fn a_group_lists_and_tells_its_status_while_its_engine_is_busy() {
+    let lookup = MemoryLookup::new();
+    let (peer, _) = alice_with_notes(&lookup).await;
+    let groups = peer.daemon().groups().await;
+    let _busy = groups.running()[GROUP].hold_work().await;
+    for (noun, verb) in [("group", "status"), ("group", "list")] {
+        let answer =
+            tokio::time::timeout(Duration::from_secs(5), peer.call(noun, verb, json!({}))).await;
+        assert!(
+            answer.is_ok_and(|answer| answer.is_ok()),
+            "{noun} {verb} waited"
+        );
+    }
 }

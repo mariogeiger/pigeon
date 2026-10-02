@@ -27,12 +27,13 @@ serde.workspace = true
 serde_json.workspace = true
 similar.workspace = true
 tokio.workspace = true
+tempfile.workspace = true
 toml.workspace = true
 ureq.workspace = true
 
 [dev-dependencies]
 iroh.workspace = true
-tempfile.workspace = true
+pigeon-sync = { workspace = true, features = ["testing"] }
 
 [lints]
 workspace = true

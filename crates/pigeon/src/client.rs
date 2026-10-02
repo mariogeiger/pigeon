@@ -2,12 +2,15 @@
 //! daemon this user runs, whose refusal may ask a question before the call
 //! is made again with `yes`, or whether the daemon answers at all.
 
+use std::fs::File;
+use std::io::Read;
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Map, Value};
 
+use crate::catalog::{Action, Kind, Param, find};
 use crate::home::Home;
 
 /// The header carrying the token.
@@ -60,6 +63,49 @@ pub fn call_at(
     call_within(address, token, noun, verb, args, ANSWER_WITHIN)
 }
 
+/// The argument of `action` that holds a file's content, which the request
+/// carries as its body.
+fn uploaded(action: &Action) -> Option<&'static Param> {
+    action.params.iter().find(|param| param.kind == Kind::Bytes)
+}
+
+/// How a query holds the value of an argument, if it has one.
+fn query_text(value: &Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::String(text) => Some(text.clone()),
+        other => Some(other.to_string()),
+    }
+}
+
+/// Sends the arguments but `param`, the name of a local file or `-` for
+/// standard input, in the query, and the file as the body, read as it is
+/// sent.
+fn send_file(
+    request: ureq::RequestBuilder<ureq::typestate::WithBody>,
+    param: &Param,
+    args: &Map<String, Value>,
+) -> Result<Result<ureq::http::Response<ureq::Body>, ureq::Error>> {
+    let source = args
+        .get(param.name)
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("--{} is missing", param.name))?;
+    let file: Box<dyn Read + Send> = if source == "-" {
+        Box::new(std::io::stdin())
+    } else {
+        Box::new(File::open(source).with_context(|| format!("reading {source}"))?)
+    };
+    let query: Vec<(&str, String)> = args
+        .iter()
+        .filter(|(name, _)| name.as_str() != param.name)
+        .filter_map(|(name, value)| Some((name.as_str(), query_text(value)?)))
+        .collect();
+    Ok(request
+        .query_pairs(query.iter().map(|(name, text)| (*name, text.as_str())))
+        .content_type("application/octet-stream")
+        .send(ureq::SendBody::from_owned_reader(file)))
+}
+
 /// As [`call_at`], giving up on an answer after `within`.
 fn call_within(
     address: SocketAddr,
@@ -75,11 +121,15 @@ fn call_within(
         .timeout_global(Some(within))
         .build()
         .into();
-    let mut response = agent
+    let request = agent
         .post(format!("http://{address}/api/{noun}/{verb}"))
-        .header(TOKEN_HEADER, format!("Bearer {token}"))
-        .send_json(args)
-        .map_err(|_| anyhow!("the daemon is not running: start it with `pigeon daemon`"))?;
+        .header(TOKEN_HEADER, format!("Bearer {token}"));
+    let sent = match find(noun, verb).and_then(uploaded) {
+        Some(param) => send_file(request, param, args)?,
+        None => request.send_json(args),
+    };
+    let mut response =
+        sent.map_err(|_| anyhow!("the daemon is not running: start it with `pigeon daemon`"))?;
     let status = response.status();
     let body: Value = response
         .body_mut()

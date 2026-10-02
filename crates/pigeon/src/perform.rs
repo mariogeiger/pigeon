@@ -282,8 +282,8 @@ async fn apply_edit(engine: &Engine, edit: Edit) -> Result<Value> {
 pub(crate) fn write_file<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
     Box::pin(async move {
         let path = args.path("path")?;
-        let bytes = args.bytes("content")?;
-        apply_edit(engine, Edit::Write { path, bytes }).await
+        let from = args.upload("content")?;
+        apply_edit(engine, Edit::Import { path, from }).await
     })
 }
 

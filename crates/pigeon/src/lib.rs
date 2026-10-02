@@ -32,6 +32,7 @@ pub mod service;
 pub mod setup;
 pub mod shared_root;
 pub mod update;
+mod upload;
 mod web;
 
 /// pigeon's version and the commit it was built from.

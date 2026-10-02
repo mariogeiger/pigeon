@@ -2,13 +2,14 @@
 //! web UI, both answering only requests addressed to localhost that carry
 //! the user's secret token, so that no website can act in the user's name.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Result;
 use axum::Router;
-use axum::body::Bytes;
+use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
@@ -19,11 +20,12 @@ use serde_json::{Map, Value, json};
 use tokio::net::TcpListener;
 
 use crate::args::Args;
-use crate::catalog::find;
+use crate::catalog::{Kind, Param, find};
 use crate::client::{CONFIRM, TOKEN_HEADER};
 use crate::confirm::Confirm;
 use crate::daemon::Daemon;
 use crate::perform::perform;
+use crate::upload::Upload;
 use crate::web;
 
 /// The cookie that carries the token in the web UI.
@@ -165,10 +167,6 @@ async fn open(State(app): State<Arc<App>>, Query(query): Query<Open>) -> Respons
     ([(header::SET_COOKIE, cookie)], Redirect::to("/")).into_response()
 }
 
-fn api_error(status: StatusCode, error: &str) -> Response {
-    (status, axum::Json(json!({ "error": error }))).into_response()
-}
-
 /// Why a call is not done: its status and message, and, when making it
 /// again with `yes` would do it, the question to ask first.
 pub struct Refusal {
@@ -178,6 +176,14 @@ pub struct Refusal {
 }
 
 impl Refusal {
+    fn plain(status: StatusCode, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+            confirm: None,
+        }
+    }
+
     fn new(status: StatusCode, error: &anyhow::Error) -> Self {
         Self {
             status,
@@ -223,18 +229,56 @@ pub async fn call(
         .map_err(|error| Refusal::new(StatusCode::BAD_REQUEST, &error))
 }
 
+/// The most a JSON body or a text field of a form may hold: a file's
+/// content is in neither.
+pub(crate) const TEXT_LIMIT: usize = 64 << 20;
+
+/// What a request brings to `action`: its arguments and, when it takes a
+/// file's content, the file that holds it, as it is received.
+async fn arrive(
+    app: &App,
+    param: Option<&Param>,
+    query: HashMap<String, String>,
+    body: Body,
+) -> Result<(Map<String, Value>, Option<Upload>), Refusal> {
+    let Some(param) = param else {
+        let bytes = axum::body::to_bytes(body, TEXT_LIMIT)
+            .await
+            .map_err(|_| Refusal::plain(StatusCode::PAYLOAD_TOO_LARGE, "the body is too large"))?;
+        if bytes.is_empty() {
+            return Ok((Map::new(), None));
+        }
+        return match serde_json::from_slice(&bytes) {
+            Ok(Value::Object(values)) => Ok((values, None)),
+            _ => Err(Refusal::plain(
+                StatusCode::BAD_REQUEST,
+                "the body is not a JSON object",
+            )),
+        };
+    };
+    let upload = Upload::receive(&app.daemon.home().uploads_path(), body.into_data_stream())
+        .await
+        .map_err(|error| Refusal::plain(StatusCode::BAD_REQUEST, format!("{error:#}")))?;
+    let mut values: Map<String, Value> = query
+        .into_iter()
+        .map(|(name, text)| (name, Value::String(text)))
+        .collect();
+    let path = upload.path().display().to_string();
+    values.insert(param.name.to_owned(), Value::String(path));
+    Ok((values, Some(upload)))
+}
+
 async fn api(
     State(app): State<Arc<App>>,
     Path((noun, verb)): Path<(String, String)>,
-    body: Bytes,
+    Query(query): Query<HashMap<String, String>>,
+    body: Body,
 ) -> Response {
-    let values = if body.is_empty() {
-        Map::new()
-    } else {
-        match serde_json::from_slice(&body) {
-            Ok(Value::Object(values)) => values,
-            _ => return api_error(StatusCode::BAD_REQUEST, "the body is not a JSON object"),
-        }
+    let param = find(&noun, &verb)
+        .and_then(|action| action.params.iter().find(|param| param.kind == Kind::Bytes));
+    let (values, _upload) = match arrive(&app, param, query, body).await {
+        Ok(arrived) => arrived,
+        Err(refusal) => return refusal.into_response(),
     };
     match call(&app, &noun, &verb, values).await {
         Ok(result) => axum::Json(result).into_response(),
@@ -242,14 +286,15 @@ async fn api(
     }
 }
 
-/// The whole server, which takes a body of any size: the size of a file is
-/// not for the server to limit.
+/// The whole server, which takes a file of any size, received in chunks.
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
-        .route("/api/{noun}/{verb}", post(api))
+        .route(
+            "/api/{noun}/{verb}",
+            post(api).layer(DefaultBodyLimit::disable()),
+        )
         .route("/open", get(open))
         .merge(web::routes())
-        .layer(DefaultBodyLimit::disable())
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
 }

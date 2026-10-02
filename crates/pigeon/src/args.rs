@@ -1,8 +1,9 @@
 //! The arguments of one call, as the JSON object every interface sends:
 //! checked against the action's definition once, then read by type.
 
+use std::path::PathBuf;
+
 use anyhow::{Context, Result, anyhow, bail};
-use data_encoding::BASE64;
 use pigeon_core::clock::parse_rfc3339;
 use pigeon_core::patch::VersionRef;
 use pigeon_core::path::GroupPath;
@@ -111,15 +112,14 @@ impl Args {
             .transpose()
     }
 
-    /// The bytes in `name`, sent as base64.
+    /// The file that holds the bytes in `name`, which the server received
+    /// and keeps until the call is done.
     ///
     /// # Errors
     ///
-    /// Fails if it is missing or not base64.
-    pub fn bytes(&self, name: &str) -> Result<Vec<u8>> {
-        BASE64
-            .decode(self.required(name)?.as_bytes())
-            .with_context(|| format!("--{name} is not base64"))
+    /// Fails if it is missing.
+    pub fn upload(&self, name: &str) -> Result<PathBuf> {
+        Ok(PathBuf::from(self.required(name)?))
     }
 
     /// Whether the flag `name` is on.

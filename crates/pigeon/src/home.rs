@@ -122,6 +122,13 @@ impl Home {
         self.state.join("daemon.log")
     }
 
+    /// Where the files sent to the daemon wait while they arrive and are
+    /// stored, on the volume of the data they go to.
+    #[must_use]
+    pub fn uploads_path(&self) -> PathBuf {
+        self.data.join("uploads")
+    }
+
     /// Where the relay keeps its certificates.
     #[must_use]
     pub fn relay_path(&self) -> PathBuf {

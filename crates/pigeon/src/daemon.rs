@@ -26,6 +26,7 @@ use crate::config_preview::{self, Freed};
 use crate::home::Home;
 use crate::program::Program;
 use crate::shared_root::{create_root, shared_root};
+use crate::upload;
 
 /// How long, beyond the time a new machine listens, joining waits for the
 /// group's verdict on the name.
@@ -201,6 +202,7 @@ impl Daemon {
     /// Fails if the groups folder or the running program cannot be read.
     pub async fn start(home: Home, options: Options) -> Result<Self> {
         let program = Program::running()?;
+        upload::clear(&home.uploads_path())?;
         let mut groups = Groups::default();
         for name in home.group_names()? {
             let started = Engine::start(&home.group(&name), options.clone()).await;
