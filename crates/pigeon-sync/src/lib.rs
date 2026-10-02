@@ -8,6 +8,7 @@
 
 mod actions;
 mod batches;
+mod blocking;
 mod disk_sync;
 pub mod edit;
 pub mod engine;

@@ -4,7 +4,7 @@
 //! patches of bounded size that keep each move whole, and suggesting the
 //! rest to the group.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -17,9 +17,10 @@ use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::selection::Cutoff;
 use pigeon_core::statement::{Reason, SuggestedChange, is_statement};
 use pigeon_store::disk::Stat;
-use pigeon_store::index::{IndexEntry, hash_file, observe};
+use pigeon_store::index::{IndexEntry, hash_file};
 
 use crate::batches::{BATCH_BYTES, batches, encoded_size};
+use crate::blocking::{blocking, observed};
 use crate::disk_sync::{change_at, probed, stat_time};
 use crate::engine::{Inner, JoinState, Pending, Work, now};
 
@@ -147,7 +148,7 @@ impl Inner {
         if work.join != JoinState::Joined {
             return;
         }
-        let due = self.due(work, at_once);
+        let due = self.due(&work.pending, at_once).await;
         let settled = self.take_settled(work, &due).await;
         let mut automatic = Vec::new();
         for unit in pair_moves(settled) {
@@ -222,9 +223,12 @@ impl Inner {
     /// or are asked for at once, with the other half of each move one of
     /// them makes, a vanished file and a file of the same content that
     /// appeared.
-    fn due(&self, work: &Work, at_once: &[PathKey]) -> BTreeSet<PathKey> {
-        let mut due: BTreeSet<PathKey> = work
-            .pending
+    async fn due(
+        &self,
+        pending: &HashMap<PathKey, Pending>,
+        at_once: &[PathKey],
+    ) -> BTreeSet<PathKey> {
+        let mut due: BTreeSet<PathKey> = pending
             .iter()
             .filter(|(key, pending)| {
                 at_once.contains(key) || pending.since.elapsed() >= self.settle_time(pending)
@@ -233,7 +237,7 @@ impl Inner {
             .collect();
         let mut vanished = Vec::new();
         let mut appeared = Vec::new();
-        for (key, pending) in &work.pending {
+        for (key, pending) in pending {
             let synced = self.synced_at(key).ok().flatten();
             match Shape::of(synced, pending.stat.is_some()) {
                 Shape::Vanished(_, content) => vanished.push((key, content)),
@@ -243,17 +247,27 @@ impl Inner {
         }
         let mut paired = BTreeSet::new();
         for (from, content) in vanished {
-            let Some((to, _)) = appeared.iter().find(|(to, pending)| {
-                !paired.contains(*to)
+            let mut continued = None;
+            for (to, pending) in &appeared {
+                let candidate = !paired.contains(*to)
                     && (due.contains(from) || due.contains(*to))
-                    && pending.stat.is_some_and(|stat| stat.size == content.size)
-                    && hash_file(&pending.location).is_ok_and(|hash| hash == content.hash)
-            }) else {
+                    && pending.stat.is_some_and(|stat| stat.size == content.size);
+                let location = pending.location.clone();
+                if candidate
+                    && blocking(move || hash_file(&location))
+                        .await
+                        .is_ok_and(|hash| hash == content.hash)
+                {
+                    continued = Some(*to);
+                    break;
+                }
+            }
+            let Some(to) = continued else {
                 continue;
             };
-            paired.insert((*to).clone());
+            paired.insert(to.clone());
             due.insert(from.clone());
-            due.insert((*to).clone());
+            due.insert(to.clone());
         }
         due
     }
@@ -395,7 +409,7 @@ impl Inner {
         let synced_change = self.synced_at(key)?;
         let previous = entry.as_ref().and_then(|entry| entry.seen);
         let seen = match pending.stat {
-            Some(stat) => Some(observe(&pending.location, stat, previous.as_ref())?),
+            Some(stat) => Some(observed(pending.location.clone(), stat, previous).await?),
             None => None,
         };
         let content = seen.map(|seen| seen.content);

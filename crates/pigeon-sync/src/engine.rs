@@ -248,6 +248,9 @@ const ERRORS_KEPT: usize = 100;
 const LAG_REPORTED: Duration = Duration::from_secs(1);
 const PROTECT_EVERY: Duration = Duration::from_secs(60);
 const DEBOUNCE: Duration = Duration::from_millis(200);
+/// The most subtrees rescanned one by one after a burst of changes; a
+/// larger burst rescans the whole tree once.
+const RESCANS_KEPT: usize = 256;
 
 /// The current time in NTP64.
 pub(crate) fn now() -> u64 {
@@ -437,13 +440,8 @@ impl Inner {
     }
 
     /// One pass of the timer: join when due, publish or suggest settled
-    /// edits, rescan and protect when due.
-    async fn tick(
-        self: &Arc<Self>,
-        work: &mut Work,
-        last_rescan: &mut Instant,
-        last_protect: &mut Instant,
-    ) {
+    /// edits, and protect when due.
+    async fn tick(self: &Arc<Self>, work: &mut Work, last_protect: &mut Instant) {
         self.pause_without_root(work);
         if work.join == JoinState::Pending
             && self.started.elapsed() >= self.options.join_delay
@@ -452,11 +450,6 @@ impl Inner {
             self.report(format!("joining: {error}"));
         }
         self.publish_settled(work, &[]).await;
-        if last_rescan.elapsed() >= self.options.rescan {
-            *last_rescan = Instant::now();
-            self.refresh(work, &Rescan::All).await;
-            self.follow_suggestions(work).await;
-        }
         if work.protect_due || last_protect.elapsed() >= PROTECT_EVERY {
             *last_protect = Instant::now();
             if let Err(error) = self.protect(work).await {
@@ -611,25 +604,25 @@ impl Engine {
     }
 }
 
-/// Merges the rescans that arrive within the debounce window.
+/// Merges the rescans that arrive within the debounce window, at most
+/// `RESCANS_KEPT` subtrees before the whole tree.
 fn merge(rescans: &mut Vec<Rescan>, rescan: Rescan) {
-    match rescan {
-        Rescan::All => {
-            rescans.clear();
-            rescans.push(Rescan::All);
-        }
-        Rescan::Under(path) => {
-            let covered = rescans.iter().any(|known| match known {
-                Rescan::All => true,
-                Rescan::Under(known) => path.is_within(known),
-            });
-            if !covered {
-                rescans.retain(
-                    |known| !matches!(known, Rescan::Under(known) if known.is_within(&path)),
-                );
-                rescans.push(Rescan::Under(path));
-            }
-        }
+    let Rescan::Under(path) = rescan else {
+        *rescans = vec![Rescan::All];
+        return;
+    };
+    let covered = rescans.iter().any(|known| match known {
+        Rescan::All => true,
+        Rescan::Under(known) => path.is_within(known),
+    });
+    if covered {
+        return;
+    }
+    rescans.retain(|known| !matches!(known, Rescan::Under(known) if known.is_within(&path)));
+    if rescans.len() < RESCANS_KEPT {
+        rescans.push(Rescan::Under(path));
+    } else {
+        *rescans = vec![Rescan::All];
     }
 }
 
@@ -647,7 +640,7 @@ async fn run(
     {
         inner.follow_relay().await;
         let mut work = inner.work.lock().await;
-        inner.lay_out(&mut work);
+        inner.lay_out(&mut work).await;
         if let Err(error) = inner
             .applied_selection(&work)
             .and_then(|before| inner.free_unselected(&work, &before))
@@ -679,9 +672,8 @@ async fn run(
                 while let Ok(rescan) = rescan_events.try_recv() {
                     merge(&mut rescans, rescan);
                 }
-                let mut work = inner.work.lock().await;
                 for rescan in &rescans {
-                    inner.refresh(&mut work, rescan).await;
+                    inner.rescan(rescan).await;
                 }
             }
             Some(keys) = wakes.recv() => {
@@ -694,7 +686,13 @@ async fn run(
             }
             _ = ticks.tick() => {
                 let mut work = inner.work.lock().await;
-                inner.tick(&mut work, &mut last_rescan, &mut last_protect).await;
+                inner.tick(&mut work, &mut last_protect).await;
+                drop(work);
+                if last_rescan.elapsed() >= inner.options.rescan {
+                    last_rescan = Instant::now();
+                    inner.rescan(&Rescan::All).await;
+                    inner.follow_suggestions(&mut *inner.work.lock().await).await;
+                }
             }
         }
         let mut work = inner.work.lock().await;
@@ -723,6 +721,21 @@ mod tests {
             matches!(&rescans[..], [Rescan::Under(d), Rescan::Under(a)] if d.as_str() == "d" && a.as_str() == "a")
         );
         merge(&mut rescans, Rescan::All);
+        assert!(matches!(&rescans[..], [Rescan::All]));
+    }
+
+    #[test]
+    fn a_burst_past_the_bound_rescans_the_whole_tree_once() {
+        let mut rescans = Vec::new();
+        for index in 0..RESCANS_KEPT {
+            merge(&mut rescans, under(&format!("f{index}")));
+        }
+        assert_eq!(rescans.len(), RESCANS_KEPT);
+        merge(&mut rescans, under("f0"));
+        assert_eq!(rescans.len(), RESCANS_KEPT);
+        merge(&mut rescans, under("one more"));
+        assert!(matches!(&rescans[..], [Rescan::All]));
+        merge(&mut rescans, under("f1"));
         assert!(matches!(&rescans[..], [Rescan::All]));
     }
 }

@@ -16,10 +16,12 @@ use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::selection::Cutoff;
 use pigeon_core::statement::is_statement;
 use pigeon_store::disk::{self, Stat, fs_path};
-use pigeon_store::index::{IndexEntry, Seen, now_nanos, observe};
+use pigeon_store::index::{IndexEntry, Seen, now_nanos};
 use pigeon_store::probe::{Probe, Prober};
+use pigeon_store::scan::Scan;
 use pigeon_store::state::Kept;
 
+use crate::blocking::{blocking, observed};
 use crate::engine::{Inner, Pending, Work};
 use crate::reconcile::{Disk, KeptSuggestion, Step, View, reconcile};
 use crate::watch::Rescan;
@@ -103,7 +105,7 @@ pub(crate) fn change_at(ledger: &Ledger, stamp: &Stamp, key: &PathKey) -> Option
 /// holds when known. A file whose metadata changed is hashed only when
 /// `hash` asks for its content; one whose metadata did not is hashed again
 /// only while it was last read too soon after its change to be sure.
-fn compare_disk(
+async fn compare_disk(
     probe: &Probed,
     previous: Option<Seen>,
     synced: Option<Content>,
@@ -119,7 +121,7 @@ fn compare_disk(
     };
     let unchanged = previous.is_some_and(|seen| seen.matches(&stat));
     let seen = if hash || unchanged {
-        Some(observe(&probe.location, stat, previous.as_ref())?)
+        Some(observed(probe.location.clone(), stat, previous).await?)
     } else {
         None
     };
@@ -129,6 +131,33 @@ fn compare_disk(
         Disk::Changed
     };
     Ok((disk, seen))
+}
+
+/// What `prober` sees walking the disk at `rescan`, on a thread for
+/// blocking work, having removed the temporary files a stopped run left
+/// there; why one could not be removed is among the errors.
+async fn scanned(mut prober: Prober, rescan: &Rescan) -> (Prober, Scan) {
+    let under = match rescan {
+        Rescan::Under(path) => Some(path.clone()),
+        Rescan::All => None,
+    };
+    blocking(move || {
+        let mut scan = prober.scan(under.as_ref());
+        for temporary in scan
+            .temporaries
+            .iter()
+            .filter(|path| disk::is_left_over(path))
+        {
+            if let Err(error) = std::fs::remove_file(temporary)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                scan.errors
+                    .push(format!("{}: {error}", temporary.display()));
+            }
+        }
+        (prober, scan)
+    })
+    .await
 }
 
 /// What the ledger says of one path, read under its lock.
@@ -169,37 +198,66 @@ impl Inner {
     /// stopped run left in the folders scanned; for the whole root, first
     /// suggests the changes of this machine that did not last.
     pub(crate) async fn refresh(self: &Arc<Self>, work: &mut Work, rescan: &Rescan) {
-        if !work.join.syncs() {
+        if !self.ready_to_scan(work, rescan).await {
             return;
+        }
+        let (prober, scan) = scanned(self.prober(work), rescan).await;
+        self.compare_scan(work, prober, rescan, scan).await;
+    }
+
+    /// Refreshes as [`Inner::refresh`] does, walking the disk without
+    /// holding the work, which every view and action waits for; a scan
+    /// that the layout or the root changed under is made again holding it.
+    pub(crate) async fn rescan(self: &Arc<Self>, rescan: &Rescan) {
+        let mut work = self.work.lock().await;
+        if !self.ready_to_scan(&mut work, rescan).await {
+            return;
+        }
+        let in_place = work.in_place();
+        let prober = self.prober(&work);
+        drop(work);
+        let (_, scan) = scanned(prober, rescan).await;
+        let mut work = self.work.lock().await;
+        self.lay_out(&mut work).await;
+        if work.in_place() != in_place || work.root_problem.is_some() {
+            return self.refresh(&mut work, rescan).await;
+        }
+        let prober = self.prober(&work);
+        self.compare_scan(&mut work, prober, rescan, scan).await;
+    }
+
+    /// Whether the disk can be scanned: the member's machine syncs and the
+    /// root and the folders are laid out, having suggested first, for the
+    /// whole root, the changes of this machine that did not last.
+    async fn ready_to_scan(&self, work: &mut Work, rescan: &Rescan) -> bool {
+        if !work.join.syncs() {
+            return false;
         }
         if matches!(rescan, Rescan::All) {
             self.suggest_losses(work).await;
         }
-        self.lay_out(work);
-        if work.root_problem.is_some() {
-            return;
-        }
+        self.lay_out(work).await;
+        work.root_problem.is_none()
+    }
+
+    /// Compares with the ledger every path `scan` found, and every path
+    /// the index, the pending edits and, for the whole root, the ledger
+    /// know there, probing the others with `prober`.
+    async fn compare_scan(
+        self: &Arc<Self>,
+        work: &mut Work,
+        mut prober: Prober,
+        rescan: &Rescan,
+        scan: Scan,
+    ) {
         let under = match rescan {
             Rescan::Under(path) => Some(path.clone()),
             Rescan::All => None,
         };
-        let mut prober = self.prober(work);
-        let found = prober.scan(under.as_ref());
-        for error in &found.errors {
+        for error in &scan.errors {
             self.report(error);
         }
-        for temporary in found
-            .temporaries
-            .iter()
-            .filter(|path| disk::is_left_over(path))
-        {
-            if let Err(error) = std::fs::remove_file(temporary)
-                && error.kind() != std::io::ErrorKind::NotFound
-            {
-                self.report(format!("{}: {error}", temporary.display()));
-            }
-        }
-        let mut sought: BTreeMap<PathKey, Option<(GroupPath, Probe)>> = found
+        let mut sought: BTreeMap<PathKey, Option<(GroupPath, Probe)>> = scan
             .files
             .into_iter()
             .map(|(key, file)| (key, Some((file.path.clone(), Probe::Present(file)))))
@@ -226,7 +284,7 @@ impl Inner {
                 sought.entry(key.clone()).or_insert(None);
             }
         }
-        work.note_unportable(under.as_ref(), found.unportable);
+        work.note_unportable(under.as_ref(), scan.unportable);
         for (key, probe) in sought {
             if let Err(error) = self.sync_key(work, &mut prober, &key, probe).await {
                 self.report(format!("{}: {error:#}", key.as_str()));
@@ -239,7 +297,7 @@ impl Inner {
         if !work.join.syncs() {
             return;
         }
-        self.lay_out(work);
+        self.lay_out(work).await;
         if work.root_problem.is_some() {
             return;
         }
@@ -275,7 +333,7 @@ impl Inner {
         let previous = entry.as_ref().and_then(|entry| entry.seen);
         let record = self.state.kept_at(probe.path.as_str())?;
         let hash = moved || record.is_some();
-        let (disk, seen) = compare_disk(&probe, previous, synced_content, hash)?;
+        let (disk, seen) = compare_disk(&probe, previous, synced_content, hash).await?;
         let renamed = probe.stat.is_some()
             && entry
                 .as_ref()

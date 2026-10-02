@@ -13,6 +13,7 @@ use pigeon_store::disk::fs_path;
 use pigeon_store::layout;
 use serde::Serialize;
 
+use crate::blocking::blocking;
 use crate::engine::{Engine, Inner, Work};
 use crate::watch::{Rescan, Watched, watch};
 
@@ -44,7 +45,7 @@ impl Inner {
     /// wanted ones to their destinations, as far as each destination
     /// allows; the folders left out of place pause, and the watcher
     /// follows the destinations reached.
-    pub(crate) fn lay_out(&self, work: &mut Work) {
+    pub(crate) async fn lay_out(&self, work: &mut Work) {
         if self.pause_without_root(work) {
             return;
         }
@@ -55,7 +56,8 @@ impl Inner {
             if work.config.places.get(&place.folder) == Some(place.destination.as_path()) {
                 continue;
             }
-            match layout::unplace(&fs_path(root, &place.folder), &place.destination) {
+            let (location, destination) = (fs_path(root, &place.folder), place.destination.clone());
+            match blocking(move || layout::unplace(&location, &destination)).await {
                 Ok(()) => {
                     let _ = work.placed.remove(&place.folder);
                     self.save_placed(work);
@@ -70,7 +72,7 @@ impl Inner {
             if applied && layout::is_in_place(&location, &place.destination) {
                 continue;
             }
-            match self.place_one(work, &location, &place, applied) {
+            match self.place_one(work, location, &place, applied).await {
                 Ok(()) => self.save_placed(work),
                 Err(problem) => problems.push((place.folder, problem)),
             }
@@ -87,10 +89,10 @@ impl Inner {
     /// Moves one wanted folder to its destination; a destination that went
     /// missing after the move is never made again, since the files are
     /// there.
-    fn place_one(
+    async fn place_one(
         &self,
         work: &mut Work,
-        location: &Path,
+        location: PathBuf,
         place: &Place,
         applied: bool,
     ) -> Result<(), String> {
@@ -109,7 +111,10 @@ impl Inner {
                 layout::resolved,
             )
             .map_err(|error| format!("{error}, which has not moved back yet"))?;
-        layout::place(location, &place.destination).map_err(|error| error.to_string())?;
+        let destination = place.destination.clone();
+        blocking(move || layout::place(&location, &destination))
+            .await
+            .map_err(|error| error.to_string())?;
         work.placed = placed;
         Ok(())
     }
@@ -205,7 +210,7 @@ impl Engine {
 
     async fn settle_layout(&self, work: &mut Work, folder: &GroupPath) -> Result<()> {
         let inner = &self.inner;
-        inner.lay_out(work);
+        inner.lay_out(work).await;
         inner.refresh(work, &Rescan::All).await;
         match work.problem(folder) {
             Some(problem) => bail!("{folder} waits: {problem}"),
