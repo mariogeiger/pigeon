@@ -10,6 +10,7 @@ pub mod error;
 pub mod group_dirs;
 pub mod group_key;
 pub mod index;
+mod index_v1;
 pub mod layout;
 pub mod scan;
 pub mod secrets;

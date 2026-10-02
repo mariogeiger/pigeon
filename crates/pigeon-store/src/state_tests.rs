@@ -51,8 +51,10 @@ fn index_entries_are_set_and_removed_together() {
                 size: 1,
                 modified: -5,
                 executable: None,
+                inode: None,
             },
             content: content(2),
+            racy: false,
         }),
         synced: None,
     };
@@ -139,4 +141,36 @@ fn placed_folders_round_trip() {
     drop(state);
     let state = State::open(&dir.path().join("s")).unwrap();
     assert_eq!(state.placed().unwrap(), places);
+}
+
+#[test]
+fn the_index_of_0_8_moves_to_the_current_form_trusted_as_it_was() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("s");
+    let file = GroupPath::parse("Docs/a.txt").unwrap();
+    {
+        let database = redb::Database::create(&path).unwrap();
+        let transaction = database.begin_write().unwrap();
+        let old: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("index");
+        let seen = Some(((7_u64, 42_i128, Some(true)), content(3)));
+        let bytes = postcard::to_stdvec(&(&file, seen, None::<Stamp>)).unwrap();
+        transaction
+            .open_table(old)
+            .unwrap()
+            .insert(file.key().as_str(), bytes.as_slice())
+            .unwrap();
+        transaction.commit().unwrap();
+    }
+    let state = State::open(&path).unwrap();
+    let entry = state.index_entry(&file.key()).unwrap().unwrap();
+    let seen = entry.seen.unwrap();
+    assert_eq!(entry.path, file);
+    assert_eq!((seen.stat.size, seen.stat.modified), (7, 42));
+    assert_eq!(seen.stat.executable, Some(true));
+    assert_eq!(seen.stat.inode, None);
+    assert_eq!(seen.content, content(3));
+    assert!(!seen.racy);
+    drop(state);
+    let again = State::open(&path).unwrap();
+    assert_eq!(again.index(None).unwrap().len(), 1);
 }

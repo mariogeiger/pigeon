@@ -16,7 +16,7 @@ use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::selection::Cutoff;
 use pigeon_core::statement::{Reason, SuggestedChange, is_statement};
 use pigeon_store::disk::{self, Stat, fs_path};
-use pigeon_store::index::{IndexEntry, Seen, observe};
+use pigeon_store::index::{IndexEntry, Seen, now_nanos, observe};
 use pigeon_store::scan::scan;
 use pigeon_store::state::Kept;
 
@@ -454,7 +454,7 @@ impl Inner {
         self.blobs
             .export(&content.hash, &location, content.executable)
             .await?;
-        let seen = file_stat(&location).map(|stat| Seen { stat, content });
+        let seen = file_stat(&location).map(|stat| Seen::read(stat, content, now_nanos()));
         let entry = IndexEntry {
             path: version.path.clone(),
             seen,

@@ -170,8 +170,9 @@ impl Blobs {
             .map_err(blob_error)
     }
 
-    /// Writes the content to `target` at once, creating its folders and
-    /// giving it its bits.
+    /// Writes the content to `target` at once, flushed to the disk,
+    /// creating its folders and giving it its bits; nothing is left of a
+    /// write that failed.
     ///
     /// # Errors
     ///
@@ -184,11 +185,10 @@ impl Blobs {
         let parent = target.parent().expect("a file has a parent");
         std::fs::create_dir_all(parent).map_err(StoreError::io(parent))?;
         let temporary = disk::temporary_path(target);
-        self.store
-            .blobs()
-            .export(blob_hash(hash), &temporary)
-            .await
-            .map_err(blob_error)?;
+        if let Err(error) = self.store.blobs().export(blob_hash(hash), &temporary).await {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(blob_error(error));
+        }
         disk::install(&temporary, target, executable)
     }
 

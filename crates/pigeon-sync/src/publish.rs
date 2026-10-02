@@ -16,7 +16,7 @@ use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::selection::Cutoff;
 use pigeon_core::statement::{Reason, SuggestedChange, is_statement};
 use pigeon_store::disk::Stat;
-use pigeon_store::index::{IndexEntry, Seen, hash_file};
+use pigeon_store::index::{IndexEntry, Seen, hash_file, now_nanos};
 
 use crate::disk_sync::{change_at, file_stat, stat_time};
 use crate::engine::{Inner, JoinState, Pending, Work, now};
@@ -353,10 +353,11 @@ impl Inner {
         let synced = entry.as_ref().and_then(|entry| entry.synced);
         let synced_change = self.synced_at(key)?;
         let seen = match pending.stat {
-            Some(stat) => Some(Seen {
-                stat,
-                content: self.import(work, &pending.location, &stat).await?,
-            }),
+            Some(stat) => {
+                let read_at = now_nanos();
+                let content = self.import(work, &pending.location, &stat).await?;
+                Some(Seen::read(stat, content, read_at))
+            }
             None => None,
         };
         let content = seen.map(|seen| seen.content);

@@ -9,7 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 pigeon-core.workspace = true
-blake3 = { workspace = true, features = ["mmap", "rayon"] }
+blake3 = { workspace = true, features = ["rayon"] }
 data-encoding.workspace = true
 fs4.workspace = true
 getrandom.workspace = true

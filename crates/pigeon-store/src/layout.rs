@@ -182,14 +182,17 @@ fn move_file(source: &Path, target: &Path, regular: bool) -> io::Result<()> {
 }
 
 /// Copies the regular file `source` to the new file `target`, with its
-/// modification time and bits.
+/// modification time and bits, flushed to the disk with its folder before
+/// the source may go.
 fn copy_file(source: &Path, target: &Path) -> io::Result<()> {
     let metadata = fs::metadata(source)?;
     let mut writer = fs::File::create_new(target)?;
     io::copy(&mut fs::File::open(source)?, &mut writer)?;
     writer.set_modified(metadata.modified()?)?;
+    writer.sync_all()?;
     drop(writer);
-    fs::set_permissions(target, metadata.permissions())
+    fs::set_permissions(target, metadata.permissions())?;
+    target.parent().map_or(Ok(()), crate::disk::sync_folder)
 }
 
 #[cfg(all(test, unix))]
@@ -294,6 +297,12 @@ mod tests {
         copy_file(&source, &target).unwrap();
         assert!(copy_file(&source, &target).is_err());
         assert_eq!(fs::read_to_string(&target).unwrap(), "a");
-        assert_eq!(crate::disk::Stat::read(&target).unwrap(), before);
+        let after = crate::disk::Stat::read(&target).unwrap();
+        assert_ne!(after.inode, before.inode);
+        let without_inode = |stat| crate::disk::Stat {
+            inode: None,
+            ..stat
+        };
+        assert_eq!(without_inode(after), without_inode(before));
     }
 }

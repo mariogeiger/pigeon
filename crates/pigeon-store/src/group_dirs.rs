@@ -91,8 +91,9 @@ pub fn read_if_present(path: &Path) -> Result<Option<String>> {
     }
 }
 
-/// Writes a file readable only by its owner, through a temporary file so
-/// that a crash never leaves it half written.
+/// Writes a file readable only by its owner, through a temporary file
+/// flushed to the disk before it replaces the file, so that neither a crash
+/// nor a power loss leaves it half written.
 ///
 /// # Errors
 ///
@@ -104,17 +105,20 @@ pub fn read_if_present(path: &Path) -> Result<Option<String>> {
 pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().expect("a data file has a parent");
     fs::create_dir_all(parent).map_err(StoreError::io(parent))?;
-    let temporary = path.with_extension("tmp");
+    let temporary = crate::disk::temporary_path(path);
     let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut file = options
-        .open(&temporary)
-        .map_err(StoreError::io(&temporary))?;
-    std::io::Write::write_all(&mut file, bytes).map_err(StoreError::io(&temporary))?;
-    file.sync_all().map_err(StoreError::io(&temporary))?;
-    fs::rename(&temporary, path).map_err(StoreError::io(path))
+    let written = options.open(&temporary).and_then(|mut file| {
+        std::io::Write::write_all(&mut file, bytes)?;
+        file.sync_all()
+    });
+    if let Err(error) = written {
+        let _ = fs::remove_file(&temporary);
+        return Err(StoreError::io(&temporary)(error));
+    }
+    crate::disk::replace(&temporary, path)
 }
 
 #[cfg(test)]

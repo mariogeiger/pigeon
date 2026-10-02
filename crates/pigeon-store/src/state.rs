@@ -23,9 +23,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, StoreError};
 use crate::index::IndexEntry;
+use crate::index_v1::IndexEntryV1;
 
 const PATCHES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("signed patches");
-const INDEX: TableDefinition<&str, &[u8]> = TableDefinition::new("index");
+const INDEX: TableDefinition<&str, &[u8]> = TableDefinition::new("index 2");
+/// The index as 0.8 kept it, moved to [`INDEX`] on opening.
+const INDEX_V1: TableDefinition<&str, &[u8]> = TableDefinition::new("index");
 const KEPT: TableDefinition<&str, &[u8]> = TableDefinition::new("kept suggestions");
 const PLACED: TableDefinition<&str, &str> = TableDefinition::new("placed");
 const APPLIED: TableDefinition<&str, &[u8]> = TableDefinition::new("applied");
@@ -43,6 +46,28 @@ pub struct Kept {
 /// Decodes a value the database holds.
 fn decode<T: DeserializeOwned>(value: &AccessGuard<'_, &[u8]>) -> Result<T> {
     Ok(postcard::from_bytes(value.value())?)
+}
+
+/// Moves the entries of the index 0.8 kept to the current index, then
+/// drops the old table.
+fn move_index_v1(transaction: &WriteTransaction) -> Result<()> {
+    let mut moved = Vec::new();
+    {
+        let old = transaction.open_table(INDEX_V1)?;
+        for entry in old.iter()? {
+            let (key, value) = entry?;
+            let entry: IndexEntryV1 = postcard::from_bytes(value.value())?;
+            moved.push((key.value().to_owned(), IndexEntry::from(entry)));
+        }
+    }
+    let mut index = transaction.open_table(INDEX)?;
+    for (key, entry) in moved {
+        let bytes = postcard::to_stdvec(&entry)?;
+        index.insert(key.as_str(), bytes.as_slice())?;
+    }
+    drop(index);
+    transaction.delete_table(INDEX_V1)?;
+    Ok(())
 }
 
 /// A patch's key, which sorts patches in stamp order.
@@ -76,6 +101,7 @@ impl State {
         transaction.open_table(KEPT)?;
         transaction.open_table(PLACED)?;
         transaction.open_table(APPLIED)?;
+        move_index_v1(&transaction)?;
         transaction.commit()?;
         Ok(Self {
             database,

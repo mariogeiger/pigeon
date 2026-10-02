@@ -1,10 +1,12 @@
 //! Files in a group's root: where a group path lives on disk, what a file's
-//! metadata says, and how pigeon replaces or removes a file at once,
+//! metadata says, and how pigeon replaces or removes a file at once, the
+//! new file flushed to the disk before it takes the place of the old,
 //! keeping the permissions it finds and setting only whether the file may
 //! be executed.
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::UNIX_EPOCH;
 
 use pigeon_core::path::GroupPath;
@@ -32,6 +34,9 @@ pub struct Stat {
     pub modified: i128,
     /// The executable bit, where the system has one.
     pub executable: Option<bool>,
+    /// The device and inode numbers, where the system gives them: a file
+    /// copied over another, with its size and time, is another file.
+    pub inode: Option<(u64, u64)>,
 }
 
 impl Stat {
@@ -44,19 +49,28 @@ impl Stat {
         };
         #[cfg(not(unix))]
         let executable = None;
-        let modified =
-            metadata
-                .modified()
-                .map_or(0, |time| match time.duration_since(UNIX_EPOCH) {
-                    Ok(after) => i128::try_from(after.as_nanos()).unwrap_or(i128::MAX),
-                    Err(before) => {
-                        -i128::try_from(before.duration().as_nanos()).unwrap_or(i128::MAX)
-                    }
-                });
+        #[cfg(unix)]
+        let inode = {
+            use std::os::unix::fs::MetadataExt;
+            Some((metadata.dev(), metadata.ino()))
+        };
+        #[cfg(not(unix))]
+        let inode = None;
+        let modified = metadata.modified().map_or(0, Self::nanos);
         Self {
             size: metadata.len(),
             modified,
             executable,
+            inode,
+        }
+    }
+
+    /// `time` in nanoseconds since the Unix epoch, negative before it.
+    #[must_use]
+    pub fn nanos(time: std::time::SystemTime) -> i128 {
+        match time.duration_since(UNIX_EPOCH) {
+            Ok(after) => i128::try_from(after.as_nanos()).unwrap_or(i128::MAX),
+            Err(before) => -i128::try_from(before.duration().as_nanos()).unwrap_or(i128::MAX),
         }
     }
 
@@ -82,27 +96,71 @@ fn with_execution(mode: u32, executable: bool) -> u32 {
     }
 }
 
-/// The temporary file next to `target` into which its new content goes.
+/// A new temporary file next to `target`, into which its new content goes:
+/// no other write of this process uses it, and its name is short whatever
+/// the target's.
 ///
 /// # Panics
 ///
 /// Panics if `target` has no file name.
 #[must_use]
 pub fn temporary_path(target: &Path) -> PathBuf {
-    let name = target
-        .file_name()
-        .expect("a file has a name")
-        .to_string_lossy();
-    target.with_file_name(format!("{TEMPORARY_PREFIX}{name}"))
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+    assert!(target.file_name().is_some(), "a file has a name");
+    let write = WRITES.fetch_add(1, Ordering::Relaxed);
+    target.with_file_name(format!("{TEMPORARY_PREFIX}{}-{write}", std::process::id()))
 }
 
-/// Moves `temporary` onto `target` at once. The file takes the
-/// permissions of the file it replaces, or else those it was written with,
-/// which the umask decided, and may be executed as `executable` says.
+/// Flushes the names `folder` holds to the disk, so that a file moved into
+/// it stays there after a power loss. Windows journals its moves and opens
+/// no folder as a file.
 ///
 /// # Errors
 ///
-/// Fails if the file cannot be moved or its permissions set.
+/// Fails if the folder cannot be flushed.
+pub fn sync_folder(folder: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    fs::File::open(folder)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = folder;
+    Ok(())
+}
+
+/// Moves the written file `temporary` onto `target` at once, after
+/// flushing its content, then flushes the folder, so that a crash leaves
+/// the old file or the new one whole. The temporary file goes on failure.
+/// Unix flushes a file opened only to read it, and so a read-only one.
+///
+/// # Errors
+///
+/// Fails if the file cannot be flushed or moved.
+pub fn replace(temporary: &Path, target: &Path) -> Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(not(unix))]
+    options.write(true);
+    let moved = options
+        .open(temporary)
+        .and_then(|file| file.sync_all())
+        .map_err(StoreError::io(temporary))
+        .and_then(|()| fs::rename(temporary, target).map_err(StoreError::io(target)));
+    if moved.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    moved?;
+    target.parent().map_or(Ok(()), |folder| {
+        sync_folder(folder).map_err(StoreError::io(folder))
+    })
+}
+
+/// Moves `temporary` onto `target` at once, as [`replace`] does. The file
+/// takes the permissions of the file it replaces, or else those it was
+/// written with, which the umask decided, and may be executed as
+/// `executable` says.
+///
+/// # Errors
+///
+/// Fails if the file cannot be flushed, moved or its permissions set.
 pub fn install(temporary: &Path, target: &Path, executable: bool) -> Result<()> {
     #[cfg(unix)]
     {
@@ -117,14 +175,16 @@ pub fn install(temporary: &Path, target: &Path, executable: bool) -> Result<()> 
             .filter(fs::Metadata::is_file)
             .map_or(written, |metadata| metadata.permissions().mode() & 0o777);
         let mode = with_execution(found, executable);
-        if mode != written {
-            fs::set_permissions(temporary, fs::Permissions::from_mode(mode))
-                .map_err(StoreError::io(temporary))?;
+        if mode != written
+            && let Err(error) = fs::set_permissions(temporary, fs::Permissions::from_mode(mode))
+        {
+            let _ = fs::remove_file(temporary);
+            return Err(StoreError::io(temporary)(error));
         }
     }
     #[cfg(not(unix))]
     let _ = executable;
-    fs::rename(temporary, target).map_err(StoreError::io(target))
+    replace(temporary, target)
 }
 
 /// Removes the file at `target`, then every folder it leaves empty up to,
@@ -178,7 +238,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("run.sh");
         let temporary = written(&target, 0o640);
-        assert_eq!(temporary.file_name().unwrap(), ".~pigeon-run.sh");
+        let name = temporary.file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with(TEMPORARY_PREFIX));
+        assert_ne!(temporary, temporary_path(&target));
         install(&temporary, &target, true).unwrap();
         assert_eq!(fs::read_to_string(&target).unwrap(), "new");
         assert_eq!(mode(&target), 0o750);
