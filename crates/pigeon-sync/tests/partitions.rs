@@ -12,10 +12,6 @@ use iroh::address_lookup::MemoryLookup;
 use pigeon_core::statement::Reason;
 use pigeon_sync::Edit;
 
-/// What a machine on the far side of the machine between reports while the
-/// machine between has yet to fetch a content it wants.
-const NOT_YET_BETWEEN: &str = "no machine reached holds";
-
 #[tokio::test(flavor = "multi_thread")]
 async fn edits_made_at_once_on_both_sides_of_a_partial_partition_converge_then_and_once_it_heals() {
     let near = MemoryLookup::new();
@@ -42,7 +38,7 @@ async fn edits_made_at_once_on_both_sides_of_a_partial_partition_converge_then_a
     laptop.edit("+alice/laptop.txt", "from the laptop");
     desktop.edit("+alice/todo.txt", "desktop");
     desktop.edit("+alice/desktop.txt", "from the desktop");
-    converged(&machines, &[NOT_YET_BETWEEN]).await;
+    converged(&machines, &[]).await;
     let desktop_id = machines[2].engine.machine();
     assert!(!machines[1].engine.status().peers.contains(&desktop_id));
     let suggestions = machines[1].engine.suggestions().await;
@@ -56,7 +52,7 @@ async fn edits_made_at_once_on_both_sides_of_a_partial_partition_converge_then_a
         machines[1].engine.status().peers.contains(&desktop_id)
     })
     .await;
-    converged(&machines, &[NOT_YET_BETWEEN]).await;
+    converged(&machines, &[]).await;
     let loser = machines
         .iter()
         .find(|machine| machine.engine.machine() == suggestion.machine)
@@ -66,7 +62,7 @@ async fn edits_made_at_once_on_both_sides_of_a_partial_partition_converge_then_a
         .discard(std::slice::from_ref(&suggestion.statement))
         .await
         .unwrap();
-    converged(&machines, &[NOT_YET_BETWEEN]).await;
+    converged(&machines, &[]).await;
     let todo = machines[0].read("+alice/todo.txt");
     assert!(todo.is_some());
     for machine in &machines {

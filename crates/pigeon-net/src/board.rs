@@ -190,18 +190,16 @@ impl Board {
     }
 
     /// Where the fetch stands: done once every chunk is held, even while
-    /// a lane still fetches a piece another lane finished. It is hopeless once no machine is left, or
-    /// once no lane is fetching and every machine answered that it holds
-    /// nothing of the blob; a machine holding part of it may still grow.
+    /// a lane still fetches a piece another lane finished, and hopeless
+    /// once no machine is left: a machine holding nothing of the blob yet
+    /// may still come to hold it, as the machine between two others does,
+    /// for as long as the fetch does not stall.
     pub(crate) fn verdict(&self) -> Verdict {
         let whole = |cut: Cut| ChunkRanges::from(..ChunkNum(cut.chunks)).is_subset(&self.held);
         if self.cut.is_some_and(whole) {
             return Verdict::Done;
         }
-        let idle = self.taken.is_empty();
-        let empty =
-            |offer: &Option<ChunkRanges>| offer.as_ref().is_some_and(|ranges| ranges.is_empty());
-        if self.offers.is_empty() || (idle && self.offers.values().all(empty)) {
+        if self.offers.is_empty() {
             return Verdict::Hopeless;
         }
         Verdict::Waiting
@@ -297,7 +295,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fetch_is_hopeless_only_when_no_machine_holds_or_may_grow_anything() {
+    fn a_fetch_is_hopeless_only_once_no_machine_is_left() {
         let (a, b) = (machine(1), machine(2));
         let mut board = Board::new(0, &Bitfield::empty(), [a, b]);
         assert_eq!(board.verdict(), Verdict::Waiting);
@@ -305,7 +303,7 @@ mod tests {
         board.offer(b, &partial(0..10));
         assert_eq!(board.verdict(), Verdict::Waiting);
         board.lose(b);
-        assert_eq!(board.verdict(), Verdict::Hopeless);
+        assert_eq!(board.verdict(), Verdict::Waiting);
         board.lose(a);
         assert_eq!(board.verdict(), Verdict::Hopeless);
     }
