@@ -168,6 +168,37 @@ impl Machine {
         Some(error.downcast::<Unconfirmed>().ok()?.question)
     }
 
+    /// How many passes of the timer and scans of the disk the engine
+    /// made so far.
+    async fn passes(&self) -> (u64, u64) {
+        let status = self.run("group", "status", json!({})).await;
+        (
+            status["ticks"].as_u64().unwrap(),
+            status["scans"].as_u64().unwrap(),
+        )
+    }
+
+    /// Waits until the edits made before the call had the time to settle
+    /// and a pass of the timer came after, for what must not happen by
+    /// then: the engine notices them by the end of the first scan begun
+    /// after the call, or, when none comes, within the time an edit takes
+    /// to settle, by which the watcher reported them.
+    pub async fn wait_past_settling(&self) {
+        let timings = options(&MemoryLookup::new());
+        let settle = timings.settle_personal.max(timings.settle_draft);
+        let (_, scans) = self.passes().await;
+        let noticed = tokio::time::Instant::now() + settle;
+        while self.passes().await.1 < scans + 2 && tokio::time::Instant::now() < noticed {
+            tokio::time::sleep(timings.tick).await;
+        }
+        tokio::time::sleep(settle).await;
+        let (ticks, _) = self.passes().await;
+        eventually("two passes of the timer end", &[self], async || {
+            self.passes().await.0 >= ticks + 2
+        })
+        .await;
+    }
+
     /// The daemon of this machine, while it is switched on.
     pub fn daemon(&self) -> &Daemon {
         &self.running().app.daemon
@@ -494,9 +525,4 @@ pub async fn published(machine: &Machine, path: &str, versions: usize) {
         machine.history(path).await.len() == versions
     })
     .await;
-}
-
-/// Waits long enough for the engines to settle and publish what they saw.
-pub async fn settle() {
-    tokio::time::sleep(Duration::from_millis(1500)).await;
 }

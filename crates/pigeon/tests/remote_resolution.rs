@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::{Machine, eventually, family, published, settle};
+use common::{Machine, eventually, family, published};
 use iroh::address_lookup::MemoryLookup;
 use serde_json::{Value, json};
 
@@ -34,7 +34,7 @@ async fn apart(alice: &mut Machine, desktop: &mut Machine, laptop: &mut Machine)
     desktop.write("+papy/budget.txt", "from home, later\n");
     published(desktop, "+papy/budget.txt", 2).await;
     desktop.save_atomically("+alice/recipe.txt", "flour, sugar\n");
-    settle().await;
+    desktop.wait_past_settling().await;
     alice.go_online().await;
     desktop.go_online().await;
     laptop.go_online().await;
@@ -106,7 +106,7 @@ async fn a_passive_members_conflicts_are_all_resolved_by_another_from_her_machin
 
     desktop.switch_off().await;
     desktop.switch_on().await;
-    settle().await;
+    desktop.wait_past_settling().await;
     assert_eq!(desktop.suggestions().await, Vec::<Value>::new());
     assert!(desktop.shows("+alice/recipe.txt", "flour, sugar\n"));
 }

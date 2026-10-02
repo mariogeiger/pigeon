@@ -9,7 +9,7 @@
 
 mod common;
 
-use common::{content, eventually, family, published, settle};
+use common::{content, eventually, family, published};
 use iroh::address_lookup::MemoryLookup;
 use pigeon_core::statement::Reason;
 use serde_json::{Value, json};
@@ -212,7 +212,7 @@ async fn a_name_windows_cannot_hold_stays_out_until_its_machine_renames_it_as_pr
             .is_some_and(|reason| reason.contains("Windows forbids")),
         "{names}"
     );
-    settle().await;
+    desktop.wait_past_settling().await;
     assert_eq!(desktop.suggestions().await, Vec::<Value>::new());
     assert!(desktop.history("+papy/Facture_ mars.txt").await.is_empty());
     let renamed = desktop
