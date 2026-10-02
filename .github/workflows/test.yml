@@ -23,4 +23,4 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - if: runner.os == 'Linux'
         run: pipx run pre-commit run --all-files --show-diff-on-failure
-      - run: cargo test --workspace --locked
+      - run: cargo test --workspace --locked --no-fail-fast
