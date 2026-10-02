@@ -2,11 +2,13 @@
 //! redrawing a checklist that each step marks from the machine's real
 //! state, so that running it again resumes. It is a client of the daemon's
 //! API like the command line, each step a command one may run alone:
-//! start at login, run the daemon, keep, join or create a group, choose
-//! what to follow, as a server follows everything, and open the web UI.
+//! complete with Tab in the shell, start at login, run the daemon, keep,
+//! join or create a group, choose what to follow, as a server follows
+//! everything, and open the web UI.
 
 mod ask;
 mod checklist;
+mod completion;
 mod group;
 mod installation;
 mod root;
@@ -22,6 +24,7 @@ use pigeon_store::config::Config;
 use serde_json::{Map, Value, json};
 
 use self::checklist::{Checklist, Mark};
+use self::completion::Startup;
 use self::group::{Membership, Origin};
 use self::tree::{File, Tree};
 use crate::home::Home;
@@ -30,6 +33,7 @@ use crate::{api, client, render, service};
 const RUST: &str = "Rust";
 const BUILT: &str = "pigeon built";
 const INSTALLED: &str = "Installed";
+const COMPLETION: &str = "Tab completion";
 const SERVICE: &str = "Start at login";
 const DAEMON: &str = "Daemon running";
 const GROUP: &str = "Group";
@@ -57,10 +61,11 @@ pub fn run(home: &Home) -> Result<()> {
     let mut list = Checklist::new(
         term,
         &[
-            RUST, BUILT, INSTALLED, SERVICE, DAEMON, GROUP, NAME, ROOT, FOLLOW, UI,
+            RUST, BUILT, INSTALLED, COMPLETION, SERVICE, DAEMON, GROUP, NAME, ROOT, FOLLOW, UI,
         ],
     );
     installation(&mut list)?;
+    complete_in_shell(&mut list)?;
     start_at_login(home, &mut list)?;
     run_daemon(home, &mut list)?;
     let membership = group::step(home, &mut list)?;
@@ -93,6 +98,36 @@ fn installation(list: &mut Checklist) -> Result<()> {
                 running.parent().unwrap_or(&running).display()
             ),
         ),
+    }
+}
+
+/// Offers to load pigeon's completion as the user's shell starts.
+fn complete_in_shell(list: &mut Checklist) -> Result<()> {
+    let Some(startup) = Startup::current() else {
+        return list.set(COMPLETION, Mark::Skipped, "see pigeon completions --help");
+    };
+    let file = startup.file.display().to_string();
+    if startup.completes() {
+        return list.set(COMPLETION, Mark::Done, file);
+    }
+    let term = list.term().clone();
+    let question = format!(
+        "Complete pigeon's commands, groups and paths with Tab in {}, from a line added to {file}?",
+        startup.shell
+    );
+    if !ask::yes(&term, &question, true)? {
+        return list.set(
+            COMPLETION,
+            Mark::Skipped,
+            format!("pigeon completions {}", startup.shell),
+        );
+    }
+    match startup.add() {
+        Ok(()) => {
+            list.note("Tab completion starts in new terminals");
+            list.set(COMPLETION, Mark::Done, file)
+        }
+        Err(error) => list.set(COMPLETION, Mark::Failed, format!("{error:#}")),
     }
 }
 

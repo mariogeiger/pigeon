@@ -4,6 +4,14 @@ All notable user-visible changes to pigeon are documented here. While the
 version is 0.x, a change that breaks compatibility increments the second
 number, and any other change the third.
 
+## 0.7.3 — 2026-10-02
+
+### Added
+
+- `pigeon setup`, which the install script runs, offers to turn on Tab
+  completion: it adds the line that loads it to `~/.zshrc`, `~/.bashrc`
+  or fish's `config.fish`, whichever your login shell reads.
+
 ## 0.7.2 — 2026-10-02
 
 ### Added

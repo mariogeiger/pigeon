@@ -20,20 +20,20 @@ installs Rust with rustup if cargo is missing, builds pigeon the way
 [Rust](https://rustup.rs), then run
 `cargo install --git https://github.com/mariogeiger/pigeon pigeon` and
 `pigeon setup`. The setup asks, step by step, the questions the commands
-below answer: start at login, join or create a group, where its root folder
-goes, and what to follow. Running it again resumes where the machine
+below answer: complete with Tab in the shell, start at login, join or
+create a group, where its root folder goes, and what to follow. Running it again resumes where the machine
 stands.
 
 Tab completes commands, flags and the values the daemon knows: groups,
 members, the group's paths and patterns one folder at a time, version
-times and suggestion ids. To have it, add to `~/.zshrc`
+times and suggestion ids. `pigeon setup` offers to add the line that
+loads it to the file your shell reads as it starts: `~/.zshrc`,
+`~/.bashrc` or fish's `config.fish`. Elsewhere, load the script
+`pigeon completions <shell>` prints, for elvish or PowerShell too:
 
 ```sh
 source <(pigeon completions zsh)
 ```
-
-or the same line with `bash` to `~/.bashrc`; `pigeon completions` prints
-the script of fish, elvish and PowerShell too.
 
 To update, run `pigeon update`. It brings a clone of pigeon kept in your
 cache folder to the head of the main branch with git, then builds it with
