@@ -1,13 +1,14 @@
 //! The blob store: file contents by BLAKE3 hash, in iroh-blobs' file store,
 //! whose garbage collector keeps exactly the hashes pigeon protects, and
 //! everything until pigeon first says which, on a disk whose size bounds
-//! the history.
+//! the history; a store stops whole, its collector, threads and files
+//! gone, before another opens in its folder.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use iroh_blobs::Hash;
 use iroh_blobs::api::TempTag;
@@ -17,6 +18,7 @@ use iroh_blobs::store::fs::options::Options;
 use iroh_blobs::store::{GcConfig, ProtectOutcome};
 use pigeon_core::patch::ContentHash;
 use tokio::io::AsyncRead;
+use tokio::sync::watch;
 
 use crate::disk;
 use crate::error::{Result, StoreError};
@@ -31,11 +33,48 @@ pub fn blob_hash(hash: &ContentHash) -> Hash {
     Hash::from_bytes(hash.0)
 }
 
+/// How often iroh's garbage collector asks whether a collection is due:
+/// at most how long a store outlives the stop of its database.
+const ASKED_EVERY: Duration = Duration::from_millis(50);
+
 /// The hashes garbage collection keeps, once pigeon computed them.
 #[derive(Default)]
 struct Protected {
     hashes: HashSet<Hash>,
     computed: bool,
+}
+
+/// What iroh's garbage collector asks before each collection, held by the
+/// store alone, so that it goes, closing `_whole`, once the store stopped
+/// whole.
+struct Collector {
+    protected: Arc<Mutex<Protected>>,
+    collections: Arc<AtomicU64>,
+    stopping: Arc<AtomicBool>,
+    interval: Duration,
+    due: Mutex<Instant>,
+    _whole: watch::Sender<()>,
+}
+
+impl Collector {
+    /// Whether a collection runs now, with the hashes it keeps added to
+    /// `live`: once the store's database stopped, so that the collection
+    /// fails and the collector ends, and otherwise every `interval`, once
+    /// pigeon said what to keep.
+    fn ask(&self, live: &mut HashSet<Hash>) -> ProtectOutcome {
+        if self.stopping.load(Ordering::Acquire) {
+            return ProtectOutcome::Continue;
+        }
+        let mut due = self.due.lock().expect("no panic holds the lock");
+        let protected = self.protected.lock().expect("no panic holds the lock");
+        if Instant::now() < *due || !protected.computed {
+            return ProtectOutcome::Abort;
+        }
+        *due = Instant::now() + self.interval;
+        live.extend(protected.hashes.iter());
+        self.collections.fetch_add(1, Ordering::Relaxed);
+        ProtectOutcome::Continue
+    }
 }
 
 /// One group's blob store.
@@ -45,6 +84,10 @@ pub struct Blobs {
     protected: Arc<Mutex<Protected>>,
     /// The collections begun, each ending before the next begins.
     collections: Arc<AtomicU64>,
+    /// Set once the database stopped, for the collector to end.
+    stopping: Arc<AtomicBool>,
+    /// Closed once the store stopped whole.
+    whole: watch::Receiver<()>,
     path: PathBuf,
 }
 
@@ -63,20 +106,21 @@ impl Blobs {
     pub async fn open(path: &Path, gc_interval: Duration) -> Result<Self> {
         let protected = Arc::new(Mutex::new(Protected::default()));
         let collections = Arc::new(AtomicU64::new(0));
-        let shared = protected.clone();
-        let begun = collections.clone();
+        let stopping = Arc::new(AtomicBool::new(false));
+        let (stopped_whole, whole) = watch::channel(());
+        let collector = Collector {
+            protected: protected.clone(),
+            collections: collections.clone(),
+            stopping: stopping.clone(),
+            interval: gc_interval,
+            due: Mutex::new(Instant::now() + gc_interval),
+            _whole: stopped_whole,
+        };
         let options = Options {
             gc: Some(GcConfig {
-                interval: gc_interval,
+                interval: ASKED_EVERY.min(gc_interval),
                 add_protected: Some(Arc::new(move |live: &mut HashSet<Hash>| {
-                    let protected = shared.lock().expect("no panic holds the lock");
-                    live.extend(protected.hashes.iter());
-                    let outcome = if protected.computed {
-                        begun.fetch_add(1, Ordering::Relaxed);
-                        ProtectOutcome::Continue
-                    } else {
-                        ProtectOutcome::Abort
-                    };
+                    let outcome = collector.ask(live);
                     Box::pin(async move { outcome })
                 })),
             }),
@@ -89,6 +133,8 @@ impl Blobs {
             store,
             protected,
             collections,
+            stopping,
+            whole,
             path: path.to_path_buf(),
         })
     }
@@ -259,6 +305,19 @@ impl Blobs {
     pub async fn shutdown(&self) -> Result<()> {
         self.store.shutdown().await.map_err(blob_error)
     }
+
+    /// Stops the store, unless the network's shutdown stopped it already,
+    /// and waits until it stopped whole: its collector, its threads and its
+    /// files gone, once every other copy of it went too. Stopping a store
+    /// again fails, finding its database gone, which is all such a failure
+    /// tells, so none is reported.
+    pub async fn stop_whole(self) {
+        let _ = self.store.shutdown().await;
+        self.stopping.store(true, Ordering::Release);
+        let mut whole = self.whole.clone();
+        drop(self);
+        while whole.changed().await.is_ok() {}
+    }
 }
 
 #[cfg(test)]
@@ -286,6 +345,27 @@ mod tests {
         assert!(!std::fs::metadata(&target).unwrap().permissions().readonly());
         assert!(!disk::temporary_path(&target).exists());
         blobs.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_store_that_collects_seldom_stops_whole_at_once_keeping_what_it_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blobs");
+        let hour = Duration::from_secs(3600);
+        let blobs = Blobs::open(&path, hour).await.unwrap();
+        let tag = blobs.add_bytes(b"kept".to_vec()).await.unwrap();
+        let hash = ContentHash(*tag.hash().as_bytes());
+        drop(tag);
+        let copy = blobs.clone();
+        let stopped = tokio::time::timeout(Duration::from_secs(60), async {
+            drop(blobs);
+            copy.stop_whole().await;
+        })
+        .await;
+        assert!(stopped.is_ok(), "the store outlived its stop");
+        let reopened = Blobs::open(&path, hour).await.unwrap();
+        assert_eq!(reopened.read(&hash).await.unwrap(), b"kept");
+        reopened.stop_whole().await;
     }
 
     #[tokio::test]

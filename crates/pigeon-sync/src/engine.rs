@@ -676,9 +676,9 @@ impl Engine {
         self.inner.me()
     }
 
-    /// Stops the loop, ends the fetches and closes every session, so that
-    /// nothing holds the group's state once it returns; closing the blob
-    /// protocol flushes the blob store.
+    /// Stops the loop, ends the fetches, closes every session and stops the
+    /// blob store whole, so that nothing holds the group's state once it
+    /// returns; closing the blob protocol flushes the blob store.
     ///
     /// # Errors
     ///
@@ -692,8 +692,11 @@ impl Engine {
         }
         let mut fetches = std::mem::take(&mut self.inner.work.lock().await.fetches);
         fetches.shutdown().await;
-        self.inner.node.shutdown().await?;
-        Ok(())
+        let closed = self.inner.node.shutdown().await;
+        let blobs = self.inner.blobs.clone();
+        drop(self);
+        blobs.stop_whole().await;
+        closed
     }
 }
 
