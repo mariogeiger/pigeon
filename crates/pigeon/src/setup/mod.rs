@@ -27,6 +27,7 @@ use self::checklist::{Checklist, Mark};
 use self::completion::Startup;
 use self::group::{Membership, Origin};
 use self::tree::{File, Tree};
+use crate::file_status::mode;
 use crate::home::Home;
 use crate::{api, client, render, service};
 
@@ -241,7 +242,7 @@ fn follow(home: &Home, list: &mut Checklist, membership: &Membership) -> Result<
         .map(|file| File {
             path: file["path"].as_str().unwrap_or_default().to_owned(),
             size: file["content"]["size"].as_u64().unwrap_or(0),
-            followed: file["cutoff"] == "PlusInfinity",
+            followed: mode(file) == "follow",
             held: file["held"].as_bool().unwrap_or(false),
             own: file["owner"] == membership.member.as_str(),
         })

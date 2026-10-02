@@ -118,6 +118,14 @@ fn rivals(item: &Value) -> Markup {
     }
 }
 
+/// The mode the selection gives the file `item` describes, as the first
+/// word of a rule's line: follow, pin or free.
+#[must_use]
+pub fn mode(item: &Value) -> &str {
+    let cutoff = item["cutoff"].as_str().unwrap_or_default();
+    cutoff.split(' ').next().unwrap_or_default()
+}
+
 /// The statuses of the file at one path: its published version `file`,
 /// the edit of it `waiting` here, and the `drafts` of it other machines
 /// announced.
@@ -126,12 +134,11 @@ pub fn file_status(file: Option<&Value>, waiting: Option<&Value>, drafts: &[&Val
     let empty = html! {};
     html! {
         @if let Some(file) = file {
-            @let pinned = file["cutoff"]["At"].is_u64();
             @let held = file["held"] == true;
-            @if file["cutoff"] == "PlusInfinity" && (!held || file["outdated"] == true) {
+            @if mode(file) == "follow" && (!held || file["outdated"] == true) {
                 (mark(Status::Updating, None, &empty))
             }
-            @if pinned && held { (mark(Status::Pinned, None, &empty)) }
+            @if mode(file) == "pin" && held { (mark(Status::Pinned, None, &empty)) }
         }
         @if let Some(waiting) = waiting {
             @let status = if waiting["deleted"] == true { Status::Deleting } else { Status::Waiting };
@@ -226,10 +233,11 @@ mod tests {
     #[test]
     fn a_file_shows_only_what_departs_from_being_in_sync() {
         let file = |cutoff: Value, held: bool, outdated: bool| json!({"cutoff": cutoff, "held": held, "outdated": outdated});
-        let followed = json!("PlusInfinity");
-        let pinned = json!({"At": 5});
+        let followed = json!("follow");
+        let pinned = json!("pin 2026-10-01T12:00:00Z");
+        assert_eq!(mode(&file(pinned.clone(), true, false)), "pin");
         assert_eq!(shown(&file(followed.clone(), true, false)), "");
-        assert_eq!(shown(&file(json!("MinusInfinity"), false, false)), "");
+        assert_eq!(shown(&file(json!("free"), false, false)), "");
         assert!(shown(&file(followed.clone(), false, false)).contains("⏬"));
         assert!(shown(&file(followed, true, true)).contains("⏬"));
         assert!(shown(&file(pinned.clone(), true, true)).contains("📌"));

@@ -1,10 +1,7 @@
 //! The web UI's page of one file, with the changes suggested to it and the
 //! difference each makes, its history back through the paths it moved
 //! from, each version with the button that restores it, and what can be
-//! done to it; and the addresses and form fillings the group's pages
-//! share.
-
-use std::fmt::Write;
+//! done to it.
 
 use maud::{Markup, html};
 use pigeon_core::path::GroupPath;
@@ -13,39 +10,8 @@ use serde_json::Value;
 
 use crate::file_status::{Status, suggestion_title};
 use crate::files_page::waiting_note;
-use crate::form::{Fill, form};
-use crate::pages::{Bar, action, fields, layout, table};
-
-/// `text` as a URL query value.
-#[must_use]
-pub fn encode(text: &str) -> String {
-    let mut encoded = String::new();
-    for byte in text.bytes() {
-        if byte.is_ascii_alphanumeric() || b"-._~/@".contains(&byte) {
-            encoded.push(char::from(byte));
-        } else {
-            let _ = write!(encoded, "%{byte:02X}");
-        }
-    }
-    encoded
-}
-
-/// A file's address in the web UI.
-pub fn file_link(group: &str, path: &str) -> String {
-    format!("/g/{group}/file?path={}", encode(path))
-}
-
-pub fn fill<'a>(
-    group: &'a str,
-    fixed: &'a [(&'a str, &'a str)],
-    defaults: &'a [(&'a str, &'a str)],
-) -> Fill<'a> {
-    Fill {
-        group: Some(group),
-        fixed,
-        defaults,
-    }
-}
+use crate::form::form;
+use crate::pages::{Bar, action, deciding, encode, fields, file_link, fill, layout, table};
 
 /// What the page of one file shows: its current version, its history, the
 /// edit of it waiting here, and the changes of it suggested, each with its
@@ -55,28 +21,6 @@ pub struct Shown<'a> {
     pub history: &'a Value,
     pub waiting: &'a Value,
     pub suggested: &'a [(Value, Value, Markup)],
-}
-
-/// The forms that decide `suggestion` from `back`, each asking first: the
-/// one that validates it at another path only for a single file's content.
-fn suggestion_forms(group: &str, back: &str, suggestion: &Value, path: &str) -> Markup {
-    let id = suggestion["id"].as_str().unwrap_or_default();
-    let shown = [("suggestions", id), ("to", "")];
-    let elsewhere = matches!(
-        suggestion["changes"].as_array().map(Vec::as_slice),
-        Some([one]) if one["content"].is_object()
-    );
-    html! {
-        div data-confirm="Validate this suggestion? It publishes at once, for the whole group." {
-            (form(action("suggestion", "validate"), back, fill(group, &shown, &[])))
-        }
-        div data-confirm="Discard this suggestion for the whole group? The history keeps it." {
-            (form(action("suggestion", "discard"), back, fill(group, &shown[..1], &[])))
-        }
-        @if elsewhere {
-            (form(action("suggestion", "validate"), back, fill(group, &shown[..1], &[("to", path)])))
-        }
-    }
 }
 
 /// The form that restores the file at `pattern` to the version `item` of
@@ -122,7 +66,7 @@ pub fn file(bar: &Bar<'_>, path: &str, shown: &Shown) -> Markup {
                     li {
                         div class="line" {
                             span class="what" { (suggestion_title(suggestion, change)) }
-                            (suggestion_forms(group, &back, suggestion, path))
+                            (deciding(group, &back, &[suggestion["id"].as_str().unwrap_or_default()], (suggestion["placeable"] == true).then_some(path)))
                         }
                         details class="diff" open {
                             summary { "Difference with the current version" }
@@ -153,12 +97,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn query_values_are_percent_encoded() {
-        assert_eq!(encode("+alice/a b&c.txt"), "%2Balice/a%20b%26c.txt");
-        assert_eq!(encode("é"), "%C3%A9");
-    }
-
-    #[test]
     fn a_file_shows_its_suggestions_and_restores_each_version() {
         let bar = Bar {
             group: "cheapmo",
@@ -169,7 +107,7 @@ mod tests {
             {"time": "2026-01-01T00:00:00Z", "path": "a.txt", "stamp": {"time": 1}, "content": {"size": 1}, "author": "bob"},
             {"time": "2026-01-02T00:00:00Z", "path": "b.txt", "stamp": {"time": 2}, "content": {"size": 2}, "author": "papy"},
         ]);
-        let suggestion = serde_json::json!({"id": "b.txt@1-m", "author": "papy", "reason": "the rules leave it to the group",
+        let suggestion = serde_json::json!({"id": "b.txt@1-m", "author": "papy", "reason": "the rules leave it to the group", "placeable": true,
             "changes": [{"path": "b.txt", "what": "a new file", "content": {"size": 3}, "outdated": false}]});
         let change = suggestion["changes"][0].clone();
         let suggested = [(suggestion, change, html! {})];

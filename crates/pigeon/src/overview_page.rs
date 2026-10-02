@@ -11,8 +11,7 @@ use serde_json::{Value, json};
 
 use crate::config_preview::{Freed, count};
 use crate::form::form;
-use crate::group_pages::{encode, file_link, fill};
-use crate::pages::{self, Bar, action, fields, layout, short_time};
+use crate::pages::{self, Bar, action, encode, fields, file_link, fill, layout, short_time};
 use crate::render::{cell, size};
 
 /// What the Overview page shows of a group.

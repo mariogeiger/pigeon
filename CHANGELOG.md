@@ -4,6 +4,65 @@ All notable user-visible changes to pigeon are documented here. While the
 version is 0.x, a change that breaks compatibility increments the second
 number, and any other change the third.
 
+## 0.8.0 — 2026-10-02
+
+### Changed
+
+- Leaving a group is local: `pigeon group leave` and the Overview's Leave
+  stop this machine syncing and forget the group's secrets and state,
+  keeping its files, and publish nothing, so the member's name stays in
+  the group. Whoever knows the group key is admitted.
+- The sync protocol is `pigeon/sync/9`, which 0.7 machines cannot join:
+  every machine of a group must update.
+- pigeon no longer sets the permissions of the files it writes: a new file
+  takes those of the umask, executable where readable when its content
+  executes, and a file it replaces keeps its own, only whether it executes
+  changing.
+- Selection patterns and paths match regardless of case, as the names of
+  files already did.
+- The selection changes through the verbs of `config.toml`: `pigeon
+  selection follow`, `pin --time <RFC 3339 time|now>` and `free`. The Files
+  menu's Pin pins a file or folder as it is now, and stopping following
+  asks whether to pin now or free the space. `pigeon file list` and `file
+  pending` show how the selection takes each file as its line would:
+  `follow`, `pin <time>` or `free`.
+- A copy kept at a time is a pin wherever pigeon speaks of it: `pigeon
+  config preview` and `daemon reload` show a `pin` column in place of
+  `freeze`, the Files page 📌 pinned in place of 🧊 frozen, and `pigeon
+  setup` asks whether to keep a pinned copy.
+- Why a suggestion waits, what each of its changes is and how another
+  machine's pigeon stands read the same on the command line as on the
+  web, as sentences, and `pigeon suggestion list` names a suggestion by
+  its `id` alone.
+- `pigeon daemon reload` and `pigeon config set` ask the web's question
+  before edits free space on this machine, and apply them on yes;
+  without a terminal they refuse unless given `--yes`.
+- A group whose new `config.toml` does not start runs on with the
+  configuration it had, which pigeon writes back, and the error says so.
+
+### Removed
+
+- Excluding a member: `pigeon member exclude`, the Overview's Exclude
+  and the renewal of the group key it made. The exclusions in a group's
+  history are ignored.
+- The upgrades of the files and states of pigeon 0.6 and older: update to
+  0.7 and run it once first.
+- The certificate `secrets.toml` kept for members of groups created
+  before 0.2.3, whose key does not derive from their name: such a group
+  must be created again. A group whose `secrets.toml` holds fields of
+  older pigeons does not start, and the error names the field; `pigeon
+  group leave` still takes it off the machine.
+
+### Fixed
+
+- A machine catches up on a history of any size: the patches it lacks
+  come in as many messages as keep each within the bound, where a single
+  message over 64 MiB was refused on every retry.
+- A version a machine makes at a path its member neither owns nor
+  follows, such as an action in another member's folder, keeps its
+  content until another machine fetches it: garbage collection could
+  delete it first, so that the owner never received it.
+
 ## 0.7.3 — 2026-10-02
 
 ### Added

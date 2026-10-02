@@ -26,9 +26,9 @@ use serde_json::{Map, Value, json};
 use crate::api::{App, Refusal, call};
 use crate::catalog::{Kind, find};
 use crate::config_preview;
+use crate::file_page;
 use crate::files_page;
 use crate::form::BACK;
-use crate::group_pages;
 use crate::overview_page::{self, Overview};
 use crate::pages::{self, Bar, Side, Tab, diff, layout};
 
@@ -98,19 +98,20 @@ async fn home(State(app): State<Arc<App>>) -> Page {
     Ok(html_page(&pages::home(&groups)))
 }
 
-/// How many suggestions of `group` wait for the group.
-async fn suggestions(app: &App, group: &str) -> Result<usize, Failure> {
-    let suggestions = view(app, "suggestion", "list", json!({ "group": group })).await?;
-    Ok(suggestions.as_array().map_or(0, Vec::len))
+/// The bar of `group`'s page at `tab`, with the `suggestions` that wait
+/// for the group.
+fn bar_with<'a>(group: &'a str, tab: Option<Tab>, suggestions: &Value) -> Bar<'a> {
+    Bar {
+        group,
+        tab,
+        suggestions: suggestions.as_array().map_or(0, Vec::len),
+    }
 }
 
 /// The bar of `group`'s page at `tab`.
 async fn bar<'a>(app: &App, group: &'a str, tab: Option<Tab>) -> Result<Bar<'a>, Failure> {
-    Ok(Bar {
-        group,
-        tab,
-        suggestions: suggestions(app, group).await?,
-    })
+    let suggestions = view(app, "suggestion", "list", json!({ "group": group })).await?;
+    Ok(bar_with(group, tab, &suggestions))
 }
 
 async fn overview(State(app): State<Arc<App>>, Path(group): Path<String>) -> Page {
@@ -144,7 +145,7 @@ async fn files(
     let waiting = view(&app, "file", "pending", json!({ "group": group })).await?;
     let suggestions = view(&app, "suggestion", "list", json!({ "group": group })).await?;
     let member = status["member"].as_str().unwrap_or_default();
-    let bar = bar(&app, &group, Some(Tab::Files)).await?;
+    let bar = bar_with(&group, Some(Tab::Files), &suggestions);
     Ok(html_page(&files_page::files(
         &bar,
         member,
@@ -201,13 +202,13 @@ async fn file(
     })
     .await?;
     let bar = bar(&app, &group, None).await?;
-    let shown = group_pages::Shown {
+    let shown = file_page::Shown {
         file: &current,
         history: &history,
         waiting: &waiting,
         suggested: &suggested,
     };
-    Ok(html_page(&group_pages::file(&bar, path, &shown)))
+    Ok(html_page(&file_page::file(&bar, path, &shown)))
 }
 
 /// The side of a comparison that `content` is.
@@ -484,9 +485,7 @@ mod tests {
     fn forms_return_to_their_page_unless_the_result_tells_more() {
         assert!(shown_by_its_page(&Value::Null));
         assert!(shown_by_its_page(&json!({"published": ["a.txt"]})));
-        assert!(!shown_by_its_page(
-            &json!({"published": [], "requests": []})
-        ));
+        assert!(!shown_by_its_page(&json!({"published": [], "key": "k"})));
         assert!(!shown_by_its_page(&json!({"key": "k"})));
         assert!(!shown_by_its_page(&json!([])));
     }

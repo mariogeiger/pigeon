@@ -40,6 +40,17 @@ impl Cutoff {
     }
 }
 
+/// The mode a rule's line spells: `follow`, `pin` and its time, or `free`.
+impl fmt::Display for Cutoff {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PlusInfinity => f.write_str("follow"),
+            Self::At(time) => write!(f, "pin {}", rfc3339(*time)),
+            Self::MinusInfinity => f.write_str("free"),
+        }
+    }
+}
+
 /// One selection rule.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct Rule {
@@ -99,11 +110,7 @@ impl Rule {
 
 impl fmt::Display for Rule {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.cutoff {
-            Cutoff::PlusInfinity => write!(f, "follow {}", self.pattern),
-            Cutoff::At(time) => write!(f, "pin {} {}", rfc3339(time), self.pattern),
-            Cutoff::MinusInfinity => write!(f, "free {}", self.pattern),
-        }
+        write!(f, "{} {}", self.cutoff, self.pattern)
     }
 }
 
@@ -378,8 +385,15 @@ mod tests {
                 cutoff,
             };
             let line = rule.to_string();
+            assert_eq!(line, format!("{cutoff} /my report/"));
             assert_eq!(Rule::parse(&line), Ok(rule), "{line}");
         }
+        assert_eq!(Cutoff::PlusInfinity.to_string(), "follow");
+        assert_eq!(Cutoff::MinusInfinity.to_string(), "free");
+        assert_eq!(
+            Cutoff::At(1_790_856_000 << 32).to_string(),
+            "pin 2026-10-01T12:00:00Z"
+        );
         assert_eq!(
             Rule::parse("  pin   2026-10-01T12:00:00Z  /report/"),
             Ok(Rule {

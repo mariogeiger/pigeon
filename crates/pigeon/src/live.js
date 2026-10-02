@@ -2,11 +2,12 @@
 // page again and swaps its bar and <main>, unless the person is typing,
 // reading an open form or answering a question, keeping the parts marked
 // data-keep, and tells the page through a groupchange event, and through
-// a mainswap event once it swapped; follow boxes post the selection,
-// asking first whether to pin an unfollowed copy here as it is now or to
-// free it; countdowns tick; forms marked data-confirm ask before they
-// publish; once the daemon restarts onto another program, a banner offers
-// to reload the page.
+// a mainswap event once it swapped; follow boxes submit the page's form
+// that follows their pattern, or ask first whether to pin an unfollowed
+// copy here as it is now or to free it; forms marked data-confirm ask
+// before they publish, and those inside data-in-place swap the page they
+// return to in place; countdowns tick; once the daemon restarts onto
+// another program, a banner offers to reload the page.
 "use strict";
 (() => {
   const group = document.body.dataset.group;
@@ -80,12 +81,9 @@
     if (stale) setTimeout(refresh, 0);
   };
 
-  const post = async (verb, fields) => {
-    const body = new FormData();
-    body.set("group", group);
-    body.set("back", location.pathname + location.search);
-    for (const [name, value] of Object.entries(fields)) body.set(name, value);
-    const response = await fetch(`/act/selection/${verb}`, { method: "POST", body });
+  // Sends `form` and shows the page it returns to, or alerts its error.
+  const send = async (form) => {
+    const response = await fetch(form.action, { method: "POST", body: new FormData(form) });
     const text = await response.text();
     if (response.ok) {
       show(text);
@@ -96,38 +94,52 @@
     refresh();
   };
 
-  const ask = (dialog) =>
-    new Promise((resolve) => {
-      dialog.returnValue = "";
-      dialog.addEventListener("close", () => resolve(dialog.returnValue), { once: true });
-      dialog.showModal();
-    });
+  // The box whose unchecking the unfollow dialog asks about, checked
+  // again unless one of its answers is sent.
+  let unchecked = null;
 
-  document.addEventListener("change", async (event) => {
+  document.addEventListener("change", (event) => {
     const box = event.target;
     if (!(box instanceof HTMLInputElement) || box.dataset.pattern === undefined) return;
-    const { pattern } = box.dataset;
+    for (const field of document.querySelectorAll("#follow [name=pattern], #unfollow [name=pattern]")) {
+      field.value = box.dataset.pattern;
+    }
     if (box.checked) {
-      await post("follow", { pattern });
+      document.querySelector("#follow form").requestSubmit();
       return;
     }
-    const answer = await ask(document.getElementById("unfollow"));
-    if (answer === "") {
-      box.checked = true;
-      retry();
-      return;
-    }
-    await post(answer, answer === "pin" ? { pattern, time: "now" } : { pattern });
+    unchecked = box;
+    document.getElementById("unfollow").showModal();
   });
 
   document.addEventListener("submit", (event) => {
-    const asking = event.target.closest("[data-confirm]");
-    if (asking !== null && !confirm(asking.dataset.confirm)) event.preventDefault();
+    const form = event.target;
+    const asking = form.closest("[data-confirm]");
+    if (asking !== null && !confirm(asking.dataset.confirm)) {
+      event.preventDefault();
+      return;
+    }
+    if (form.closest("[data-in-place]") === null) return;
+    event.preventDefault();
+    unchecked = null;
+    form.closest("dialog")?.close();
+    send(form);
   });
+
+  document.addEventListener(
+    "close",
+    (event) => {
+      if (event.target.id === "unfollow" && unchecked !== null) {
+        unchecked.checked = true;
+        unchecked = null;
+      }
+      retry();
+    },
+    true,
+  );
 
   document.addEventListener("focusout", retry);
   document.addEventListener("toggle", retry, true);
-  document.addEventListener("close", retry, true);
   setInterval(tick, 1000);
   prepare(document);
 

@@ -150,6 +150,15 @@ pub struct Suggestion {
     pub reason: Reason,
 }
 
+impl Suggestion {
+    /// Whether validating it may place it at another path: it changes one
+    /// path, giving it content.
+    #[must_use]
+    pub fn placeable(&self) -> bool {
+        matches!(&self.changes[..], [change] if change.content.is_some())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

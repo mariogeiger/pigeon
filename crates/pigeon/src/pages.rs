@@ -1,13 +1,16 @@
 //! The web UI's pages as HTML: the layout with its bar, tables of an
-//! action's columns, text differences, an object's fields, and the page of
-//! the groups.
+//! action's columns, text differences, an object's fields, the forms that
+//! decide suggestions, the addresses and form fillings a group's pages
+//! share, and the page of the groups.
+
+use std::fmt::Write;
 
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use serde_json::Value;
 use similar::{ChangeTag, TextDiff};
 
 use crate::catalog::{Action, find};
-use crate::form::{Fill, form};
+use crate::form::{Fill, asking, form};
 use crate::render::{cell, field, header};
 
 const STYLE: &str = "
@@ -34,7 +37,7 @@ table.tree tr.draft { color: #888; }
 table.tree tr.target { background: #ffd; }
 table.tree .status { white-space: nowrap; margin-right: .5em; cursor: help; }
 ul.legend { list-style: none; padding: 0; font-size: 13px; color: #555; columns: 2; }
-table.tree form.action, table.tree div[data-confirm], table.members div[data-confirm] { display: inline; }
+table.tree form.action, dialog .change div[data-confirm], table.members div[data-confirm] { display: inline; }
 dialog .choices { display: flex; flex-direction: column; align-items: start; gap: .25rem; margin-bottom: .5rem; }
 dialog .choices form { margin: 0; }
 dialog form label { margin: .5rem 0; }
@@ -63,6 +66,73 @@ ul.changes details.diff > summary { cursor: pointer; font-size: 13px; color: #55
 #[must_use]
 pub fn action(noun: &str, verb: &str) -> &'static Action {
     find(noun, verb).expect("the web UI uses actions of the catalog")
+}
+
+/// `text` as a URL query value.
+#[must_use]
+pub fn encode(text: &str) -> String {
+    let mut encoded = String::new();
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~/@".contains(&byte) {
+            encoded.push(char::from(byte));
+        } else {
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
+}
+
+/// A file's address in the web UI.
+#[must_use]
+pub fn file_link(group: &str, path: &str) -> String {
+    format!("/g/{group}/file?path={}", encode(path))
+}
+
+/// What a page of `group` knows of a form's arguments: the `fixed` ones,
+/// set and not shown, and the `defaults` shown to start from.
+#[must_use]
+pub fn fill<'a>(
+    group: &'a str,
+    fixed: &'a [(&'a str, &'a str)],
+    defaults: &'a [(&'a str, &'a str)],
+) -> Fill<'a> {
+    Fill {
+        group: Some(group),
+        fixed,
+        defaults,
+    }
+}
+
+/// What a change confirmed on a group's page does.
+pub const PUBLISHES: &str = "It publishes at once, for the whole group.";
+
+/// The forms that decide the suggestions `ids` of `group` and then return
+/// to `back`, each asking first, and, when `placeable_at` names the path
+/// of the single file they suggest, the one that validates them at
+/// another path, starting from it.
+#[must_use]
+pub fn deciding(group: &str, back: &str, ids: &[&str], placeable_at: Option<&str>) -> Markup {
+    let joined = ids.join(" ");
+    let which = match ids.len() {
+        1 => "this suggestion".to_owned(),
+        count => format!("these {count} suggestions"),
+    };
+    let chosen = [("suggestions", joined.as_str()), ("to", "")];
+    let validate = action("suggestion", "validate");
+    html! {
+        div data-confirm={ "Validate " (which) "? " (PUBLISHES) } {
+            (form(validate, back, fill(group, &chosen, &[])))
+        }
+        div data-confirm={ "Discard " (which) "? The files stay as they are, and the history keeps what was suggested." } {
+            (form(action("suggestion", "discard"), back, fill(group, &chosen[..1], &[])))
+        }
+        @if let Some(path) = placeable_at {
+            details class="action" {
+                summary { "Validate at another path…" }
+                (asking(validate, back, fill(group, &chosen[..1], &[("to", path)]), PUBLISHES))
+            }
+        }
+    }
 }
 
 /// The pages of a group that the bar names as tabs.
@@ -267,5 +337,37 @@ pub fn fields(value: &Value) -> Markup {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_values_are_percent_encoded() {
+        assert_eq!(encode("+alice/a b&c.txt"), "%2Balice/a%20b%26c.txt");
+        assert_eq!(encode("é"), "%C3%A9");
+    }
+
+    #[test]
+    fn suggestions_are_decided_together_and_one_file_also_at_another_path() {
+        let both = deciding("cheapmo", "/back", &["s1", "s2"], None).into_string();
+        assert!(
+            both.contains("Validate these 2 suggestions? It publishes"),
+            "{both}"
+        );
+        assert_eq!(
+            both.matches(r#"name="suggestions" value="s1 s2""#).count(),
+            2,
+            "{both}"
+        );
+        assert!(!both.contains("<details"), "{both}");
+        let one = deciding("cheapmo", "/back", &["s1"], Some("a.txt")).into_string();
+        assert!(one.contains("Discard this suggestion?"), "{one}");
+        assert!(
+            one.contains(r#"<input type="text" name="to" value="a.txt""#),
+            "{one}"
+        );
     }
 }

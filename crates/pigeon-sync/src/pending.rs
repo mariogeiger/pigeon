@@ -15,6 +15,7 @@ use pigeon_core::selection::Cutoff;
 use serde::Serialize;
 
 use crate::engine::{Engine, Inner, Pending, Work};
+use crate::views::as_text;
 
 /// How long past its due time an announced draft is still shown, while its
 /// machine publishes it and announces that it is gone.
@@ -48,7 +49,8 @@ pub struct PendingView {
     /// Whether it is a draft, a new file at a path no member owns, which
     /// other machines learn of and which waits longer.
     pub draft: bool,
-    /// The cutoff the selection gives the file.
+    /// The mode the selection gives the file, as a rule's line spells it.
+    #[serde(serialize_with = "as_text")]
     pub cutoff: Cutoff,
     /// The other drafts of the same path, whatever its case.
     pub rivals: Vec<Rival>,

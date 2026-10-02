@@ -22,24 +22,17 @@ use pigeon_core::statement::{
 use pigeon_store::disk::{self, fs_path};
 use pigeon_store::index::{IndexEntry, hash_file};
 use pigeon_store::state::Kept;
-use serde::{Serialize, Serializer};
+use serde::Serialize;
 
 use crate::disk_sync::file_stat;
 use crate::engine::{Engine, Inner, Work};
+use crate::views::as_text;
 
 /// A live suggestion: its statement's version and what it says.
 #[derive(Clone, Debug)]
 pub(crate) struct Live {
     pub version: Version,
     pub suggestion: Suggestion,
-}
-
-/// `value` serialized as the text it reads as.
-fn as_text<S: Serializer>(
-    value: &impl std::fmt::Display,
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    serializer.collect_str(value)
 }
 
 /// A suggestion as anyone may decide it, its statement and reason
@@ -55,6 +48,8 @@ pub struct SuggestionView {
     pub time: String,
     #[serde(serialize_with = "as_text")]
     pub reason: Reason,
+    /// Whether validating it may place it at another path.
+    pub placeable: bool,
     pub changes: Vec<SuggestedChangeView>,
 }
 
@@ -405,9 +400,7 @@ impl Inner {
             let Decision::Validate(to) = decision else {
                 continue;
             };
-            if to.is_some()
-                && !matches!(&suggestion.changes[..], [change] if change.content.is_some())
-            {
+            if to.is_some() && !suggestion.placeable() {
                 bail!(placed);
             }
             for change in suggestion.changes {
@@ -443,6 +436,7 @@ impl Engine {
                 machine: live.version.stamp.machine,
                 time: live.version.stamp.rfc3339(),
                 reason: live.suggestion.reason.clone(),
+                placeable: live.suggestion.placeable(),
                 changes: live
                     .suggestion
                     .changes

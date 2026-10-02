@@ -3,24 +3,24 @@
 //! it, checked when every file under it is followed and mixed when only
 //! some are, its size, author, time and statuses, one emoji each, which a
 //! legend below the tree explains, and a menu of what can be done to it,
-//! the suggestions at it and under it included. The drafts other machines
-//! announce, and the suggestions at paths without a file, show greyed.
-//! Every change asks to be confirmed, then publishes at once.
+//! the suggestions at it and under it included, which the page renders
+//! and `files.js` only shows. The drafts other machines announce, and the
+//! suggestions at paths without a file, show greyed. Every change asks to
+//! be confirmed, then publishes at once.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use maud::{Markup, html};
 use pigeon_core::path::GroupPath;
 use pigeon_core::selection::{exact_pattern, folder_pattern};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::file_status::{
-    countdown, file_status, folder_status, legend, suggested_status, suggestion_title,
+    Status, countdown, file_status, folder_status, legend, mode, suggested_status, suggestion_title,
 };
 use crate::file_tree::{self, Facts, Folder, Followed, Leaf, Row};
-use crate::form::form;
-use crate::group_pages::{encode, file_link, fill};
-use crate::pages::{Bar, action, layout, short_time};
+use crate::form::{asking, form};
+use crate::pages::{Bar, PUBLISHES, action, deciding, encode, file_link, fill, layout, short_time};
 use crate::render::size;
 
 /// The value of a box's `data-state`.
@@ -34,7 +34,7 @@ fn state(followed: Followed) -> &'static str {
 
 /// Whether the selection follows the file `item` describes.
 fn follows(item: &Value) -> bool {
-    item["cutoff"] == "PlusInfinity"
+    mode(item) == "follow"
 }
 
 /// A change suggested at a path: the place of its suggestion among all,
@@ -103,12 +103,16 @@ fn entries<'a>(
     suggestions: &'a [Value],
 ) -> Vec<Entry<'a>> {
     let mut entries = BTreeMap::new();
-    for item in files.iter().chain(waiting) {
-        let entry = entry_at(&mut entries, item["path"].as_str().unwrap_or_default());
-        match &item["here"] {
-            Value::Bool(true) => entry.waiting = Some(item),
-            Value::Bool(false) => entry.drafts.push(item),
-            _ => entry.file = Some(item),
+    let path = |item: &'a Value| item["path"].as_str().unwrap_or_default();
+    for file in files {
+        entry_at(&mut entries, path(file)).file = Some(file);
+    }
+    for item in waiting {
+        let entry = entry_at(&mut entries, path(item));
+        if item["here"] == true {
+            entry.waiting = Some(item);
+        } else {
+            entry.drafts.push(item);
         }
     }
     for (order, suggestion) in suggestions.iter().enumerate() {
@@ -166,135 +170,163 @@ fn first_open(rows: &[Row<Entry>], member: &str, under: &str) -> BTreeSet<String
     open
 }
 
-/// The suggestions at `entries`, once each, oldest first, as `files.js`
-/// offers to decide them: by id, with what the first change of each in
-/// `entries` does, and whether it may be validated at another path, which
-/// takes a single file's content.
-fn suggestions_offered<'a>(entries: impl Iterator<Item = &'a Entry<'a>>) -> Value {
+/// The suggestions at `entries`, once each, oldest first, each with what
+/// the first change of it there does and the forms that decide it, then,
+/// when there are several, those that decide them all.
+fn suggestion_lines<'a>(
+    group: &str,
+    back: &str,
+    entries: impl Iterator<Item = &'a Entry<'a>>,
+) -> Markup {
     let mut offered = BTreeMap::new();
     for (order, suggestion, change) in entries.flat_map(|entry| entry.suggested.iter()) {
-        let elsewhere =
-            matches!(listed(&suggestion["changes"]), [one] if one["content"].is_object());
-        offered.entry(order).or_insert_with(|| {
-            json!({
-                "id": suggestion["id"],
-                "title": suggestion_title(suggestion, change),
-                "elsewhere": elsewhere,
-            })
-        });
+        offered.entry(*order).or_insert((*suggestion, *change));
     }
-    Value::Array(offered.into_values().collect())
-}
-
-/// The menu button of a row, which tells `files.js` what can be done.
-fn menu_button(
-    kind: &str,
-    path: &str,
-    folder: Option<&Folder<Entry>>,
-    entry: Option<&Entry>,
-) -> Markup {
-    let pattern = GroupPath::parse(path).ok().map(|parsed| match kind {
-        "file" => exact_pattern(&parsed),
-        _ => folder_pattern(&parsed),
-    });
-    let under: Vec<&Entry> = match (folder, entry) {
-        (Some(folder), _) => folder.leaves().collect(),
-        (None, Some(entry)) => vec![entry],
-        (None, None) => Vec::new(),
-    };
-    let waiting = under.iter().filter(|entry| entry.waiting.is_some()).count();
-    let published = entry.is_some_and(|entry| entry.file.is_some());
-    let editable = entry.is_none_or(|entry| entry.file.or(entry.waiting).is_some());
-    let suggestions = suggestions_offered(under.into_iter()).to_string();
+    let id = |suggestion: &'a Value| suggestion["id"].as_str().unwrap_or_default();
+    let ids: Vec<&str> = offered
+        .values()
+        .map(|(suggestion, _)| id(suggestion))
+        .collect();
+    let emoji = Status::Suggested.emoji();
     html! {
-        button type="button" class="more" title="Actions" data-kind=(kind) data-path=(path)
-            data-pattern=[pattern] data-waiting=(waiting) data-published=(published)
-            data-editable=(editable) data-suggestions=(suggestions) { "⋯" }
+        @for (suggestion, change) in offered.values() {
+            @let placeable_at = change["path"].as_str().filter(|_| suggestion["placeable"] == true);
+            div class="change" {
+                p { (emoji) " " (suggestion_title(suggestion, change)) }
+                (deciding(group, back, &[id(suggestion)], placeable_at))
+            }
+        }
+        @if ids.len() > 1 {
+            div class="change" {
+                p { (emoji) " " (ids.len()) " suggestions" }
+                (deciding(group, back, &ids, None))
+            }
+        }
     }
 }
 
-/// The dialogs the menu opens, each filled by `files.js` for its row and
-/// confirmed before it publishes.
+/// A place of the tree its menu acts on: the group's root, a folder, or a
+/// file.
+#[derive(Clone, Copy)]
+enum Place<'t, 'a> {
+    Root(&'t Folder<Entry<'a>>),
+    Folder(&'t Folder<Entry<'a>>),
+    File(&'t Entry<'a>),
+}
+
+/// The menu of `place`, returning to `back`: its button, which tells
+/// `files.js` the place's path, pattern and name, which of the menu's
+/// choices it offers and where its history is, and the suggestions at it
+/// and under it, each with the forms that decide it.
+fn menu(group: &str, back: &str, place: Place<'_, '_>) -> Markup {
+    let (path, under): (&str, Vec<&Entry>) = match place {
+        Place::Root(folder) | Place::Folder(folder) => (&folder.path, folder.leaves().collect()),
+        Place::File(entry) => (entry.path, vec![entry]),
+    };
+    let parsed = GroupPath::parse(path).ok();
+    let (subject, pattern, offers, link) = match place {
+        Place::Root(_) => (group.to_owned(), None, vec!["add"], None),
+        Place::Folder(_) => (
+            format!("{path}/"),
+            parsed.as_ref().map(folder_pattern),
+            vec!["rename", "add", "delete", "pin"],
+            None,
+        ),
+        Place::File(entry) => {
+            let published = entry.file.is_some();
+            let editable = entry.file.or(entry.waiting).is_some();
+            let offers = [
+                ("rename", editable),
+                ("replace", editable),
+                ("delete", editable),
+                ("pin", published),
+                ("history", published),
+            ];
+            (
+                path.to_owned(),
+                parsed.as_ref().map(exact_pattern),
+                offers
+                    .into_iter()
+                    .filter(|(_, offered)| *offered)
+                    .map(|(offer, _)| offer)
+                    .collect(),
+                published.then(|| file_link(group, path)),
+            )
+        }
+    };
+    let waiting = under.iter().any(|entry| entry.waiting.is_some());
+    let offers = offers
+        .into_iter()
+        .chain(waiting.then_some("publish"))
+        .collect::<Vec<_>>();
+    let suggested = under.iter().any(|entry| !entry.suggested.is_empty());
+    html! {
+        button type="button" class="more" title="Actions" data-path=(path) data-subject=(subject)
+            data-pattern=[pattern] data-offers=(offers.join(" ")) data-link=[link] { "⋯" }
+        @if suggested { template { (suggestion_lines(group, back, under.into_iter())) } }
+    }
+}
+
+/// A dialog the menu opens, asking `question` of the place it was opened
+/// for, then running the form `asked`, once `files.js` filled both for it.
+fn dialog(id: &str, question: &Markup, asked: &Markup) -> Markup {
+    html! {
+        dialog id=(id) {
+            p { (question) }
+            (asked)
+            button type="button" class="close" { "Cancel" }
+        }
+    }
+}
+
+/// The menu and the dialogs it opens, each filled by `files.js` for its
+/// place, then the question unchecking a box asks, whose answers, like
+/// checking one, change the selection in place.
 fn dialogs(group: &str, back: &str) -> Markup {
-    let hidden = |name: &str| html! { input type="hidden" name=(name); };
-    let start = html! {
-        input type="hidden" name="back" value=(back);
-        input type="hidden" name="group" value=(group);
+    let note = format!("{PUBLISHES} The history keeps what it replaces.");
+    let ask = |noun, verb, fixed, defaults| {
+        asking(
+            action(noun, verb),
+            back,
+            fill(group, fixed, defaults),
+            &note,
+        )
     };
-    let close = html! { button type="button" value="" class="close" { "Cancel" } };
-    let confirm = html! {
-        p { "It publishes at once, for the whole group; the history keeps what it replaces." }
-        p { button { "Confirm" } " " (close) }
-    };
+    let run = |noun, verb, fixed| form(action(noun, verb), back, fill(group, fixed, &[]));
+    let subject = html! { strong class="subject" {} };
+    let path = [("path", "")];
+    let pattern = [("pattern", "")];
+    let pin = [("pattern", ""), ("time", "now")];
     html! {
         dialog id="menu" {
-            p { strong class="subject" {} }
+            p { (subject) }
             div class="suggestions" {}
             div class="choices" {
-                button type="button" data-open="rename" { "Rename…" }
-                button type="button" data-open="replace" { "Replace…" }
-                button type="button" data-open="add" { "Add file…" }
-                button type="button" data-open="delete" { "Delete…" }
-                form id="pin" method="post" action="/act/selection/pin" enctype="multipart/form-data" {
-                    (start) (hidden("pattern")) input type="hidden" name="time" value="now";
-                    button { "Pin now" }
+                @for (offer, label) in [("rename", "Rename…"), ("replace", "Replace…"), ("add", "Add file…"), ("delete", "Delete…")] {
+                    div data-offer=(offer) { button type="button" data-open=(offer) { (label) } }
                 }
-                form id="publish" method="post" action="/act/file/publish" enctype="multipart/form-data" {
-                    (start) (hidden("path")) button { "Publish now" }
-                }
-                a id="history" { "History" }
+                div data-offer="pin" { (run("selection", "pin", &pin)) }
+                div data-offer="publish" { (run("file", "publish", &path)) }
+                div data-offer="history" { a id="history" { "History" } }
             }
-            (close)
+            button type="button" class="close" { "Cancel" }
         }
-        dialog id="rename" {
-            form method="post" action="/act/file/rename" enctype="multipart/form-data" {
-                p { "Rename " strong class="subject" {} } (start) (hidden("from"))
-                label { span { "New path" } input type="text" name="to" required; }
-                (confirm)
-            }
-        }
-        dialog id="replace" {
-            form method="post" action="/act/file/write" enctype="multipart/form-data" {
-                p { "Replace " strong class="subject" {} } (start) (hidden("path"))
-                label { span { "New content" } input type="file" name="content" required; }
-                (confirm)
-            }
-        }
-        dialog id="add" {
-            form method="post" action="/act/file/write" enctype="multipart/form-data" {
-                p { "Add a file to " strong class="subject" {} } (start)
-                label { span { "Path" } input type="text" name="path" required; }
-                label { span { "Content" } input type="file" name="content" required; }
-                (confirm)
-            }
-        }
-        dialog id="delete" {
-            form method="post" action="/act/file/delete" enctype="multipart/form-data" {
-                p { "Delete " strong class="subject" {} "?" } (start) (hidden("path"))
-                (confirm)
-            }
-        }
-        dialog id="elsewhere" {
-            form method="post" action="/act/suggestion/validate" enctype="multipart/form-data" {
-                p { "Validate this suggestion of " strong class="subject" {} " at another path" } (start) (hidden("suggestions"))
-                label { span { "New path" } input type="text" name="to" required; }
-                (confirm)
-            }
-        }
+        (dialog("rename", &html! { "Rename " (subject) }, &ask("file", "rename", &[("from", "")], &[("to", "")])))
+        (dialog("replace", &html! { "Replace " (subject) }, &ask("file", "write", &path, &[])))
+        (dialog("add", &html! { "Add a file to " (subject) }, &ask("file", "write", &[], &path)))
+        (dialog("delete", &html! { "Delete " (subject) "?" }, &ask("file", "delete", &path, &[])))
         dialog id="unfollow" {
-            form method="dialog" {
-                p { "Stop following: pin the copy here as it is now, or free the space?" }
-                button value="pin" { "Pin the copy here" }
-                " " button value="free" { "Free the space" }
-                " " button value="" { "Cancel" }
-            }
+            p { "Stop following: pin the copy here as it is now, or free the space?" }
+            div data-in-place { (run("selection", "pin", &pin)) " " (run("selection", "free", &pattern)) }
+            form method="dialog" { button { "Cancel" } }
         }
+        div id="follow" data-in-place hidden { (run("selection", "follow", &pattern)) }
     }
 }
 
 /// One row of the tree, marked when it is the folder `under` the page
 /// shows.
-fn row(group: &str, under: &str, row: &Row<Entry>, open: &BTreeSet<String>) -> Markup {
+fn row(group: &str, back: &str, under: &str, row: &Row<Entry>, open: &BTreeSet<String>) -> Markup {
     let path = row.path();
     let target = (path == under).then_some("target");
     let hidden = file_tree::ancestors(path).any(|folder| !open.contains(folder));
@@ -318,7 +350,7 @@ fn row(group: &str, under: &str, row: &Row<Entry>, open: &BTreeSet<String>) -> M
                     td {}
                     td { @if let Some(time) = &summary.time { (short_time(time)) } }
                     td { (folder_status(summary.waiting, summary.suggested)) }
-                    td { (menu_button("folder", path, Some(folder), None)) }
+                    td { (menu(group, back, Place::Folder(folder))) }
                 }
             }
         }
@@ -348,7 +380,7 @@ fn row(group: &str, under: &str, row: &Row<Entry>, open: &BTreeSet<String>) -> M
                     }
                     td {
                         @if item.is_some() || !entry.suggested.is_empty() {
-                            (menu_button("file", path, None, Some(entry)))
+                            (menu(group, back, Place::File(entry)))
                         }
                     }
                 }
@@ -397,9 +429,9 @@ pub fn files(
                 td {}
                 td { @if let Some(time) = &tree.summary.time { (short_time(time)) } }
                 td { (folder_status(tree.summary.waiting, tree.summary.suggested)) }
-                td { (menu_button("root", "", Some(&tree), None)) }
+                td { (menu(group, &back, Place::Root(&tree))) }
             }
-            @for one in &rows { (row(group, under, one, &open)) }
+            @for one in &rows { (row(group, &back, under, one, &open)) }
         }
         @if tree.is_empty() { p { "Nothing yet." } }
         (legend())
@@ -420,7 +452,7 @@ mod tests {
     };
     use serde_json::json;
 
-    fn file(path: &str, cutoff: &Value) -> Value {
+    fn file(path: &str, cutoff: &str) -> Value {
         json!({"path": path, "owner": "alice", "author": "alice", "content": {"size": 1}, "cutoff": cutoff,
             "time": "2026-01-01T00:00:00Z", "held": true, "outdated": false})
     }
@@ -433,12 +465,12 @@ mod tests {
     #[test]
     fn a_box_is_checked_mixed_or_unchecked_as_the_files_under_it_are_followed() {
         let list = json!([
-            file("docs/a.txt", &json!("PlusInfinity")),
-            file("docs/all/b.txt", &json!("PlusInfinity")),
-            file("docs/some/c.txt", &json!("PlusInfinity")),
-            file("docs/some/d.txt", &json!({"At": 5})),
-            file("docs/none/e.txt", &json!("MinusInfinity")),
-            file("docs/[x].txt", &json!({"At": 5})),
+            file("docs/a.txt", "follow"),
+            file("docs/all/b.txt", "follow"),
+            file("docs/some/c.txt", "follow"),
+            file("docs/some/d.txt", "pin 2026-01-01T00:00:00Z"),
+            file("docs/none/e.txt", "free"),
+            file("docs/[x].txt", "pin 2026-01-01T00:00:00Z"),
         ]);
         let page = files(&BAR, "alice", "", &list, &json!([]), &json!([])).into_string();
         assert!(
@@ -460,10 +492,24 @@ mod tests {
         assert!(row_of(&page, "docs/all/b.txt").contains("hidden"));
         assert!(row_of(&page, "docs").contains("6 B"));
         let unfollow = &page[page.find(r#"<dialog id="unfollow">"#).unwrap()..];
-        assert!(unfollow.contains(r#"<button value="pin">"#), "{unfollow}");
-        assert!(unfollow.contains(r#"<button value="free">"#), "{unfollow}");
-        assert!(page.contains(r#"action="/act/selection/pin""#));
-        assert!(page.contains(r#"<input type="hidden" name="time" value="now">"#));
+        let in_place = &unfollow[unfollow.find("<div data-in-place>").unwrap()..];
+        assert!(
+            in_place.contains(r#"action="/act/selection/pin""#),
+            "{unfollow}"
+        );
+        assert!(in_place.contains(r#"<input type="hidden" name="time" value="now">"#));
+        assert!(
+            in_place.contains(r#"action="/act/selection/free""#),
+            "{unfollow}"
+        );
+        assert!(page.contains(r#"<div id="follow" data-in-place hidden><form class="action" method="post" action="/act/selection/follow""#), "{page}");
+        assert!(
+            row_of(&page, "docs/a.txt").contains(
+                r#"data-offers="rename replace delete pin history" data-link="/g/cheapmo/file?path=docs/a.txt">"#
+            )
+        );
+        assert!(row_of(&page, "docs/all").contains(r#"data-subject="docs/all/""#));
+        assert!(page.contains(r#"data-path="" data-subject="cheapmo" data-offers="add">"#));
         let at = |path: &str| page.find(&format!(r#"<tr data-path="{path}""#)).unwrap();
         assert!(at("docs/some") < at("docs/a.txt"), "folders come first");
     }
@@ -471,9 +517,9 @@ mod tests {
     #[test]
     fn under_and_the_members_own_folder_start_open() {
         let list = json!([
-            file("docs/deep/a.txt", &json!("PlusInfinity")),
-            file("team/+alice/b.txt", &json!("PlusInfinity")),
-            file("team/+bob/c.txt", &json!("PlusInfinity")),
+            file("docs/deep/a.txt", "follow"),
+            file("team/+alice/b.txt", "follow"),
+            file("team/+bob/c.txt", "follow"),
         ]);
         let page = files(&BAR, "alice", "docs/deep", &list, &json!([]), &json!([])).into_string();
         assert!(row_of(&page, "docs").contains("data-open"));
@@ -487,11 +533,11 @@ mod tests {
 
     #[test]
     fn waiting_edits_show_in_their_folder_with_the_time_left() {
-        let list = json!([file("+alice/a.txt", &json!("PlusInfinity"))]);
+        let list = json!([file("+alice/a.txt", "follow")]);
         let waiting = json!([
-            {"path": "+alice/a.txt", "here": true, "due_in": 2, "draft": false, "deleted": false, "cutoff": "PlusInfinity", "size": 3},
-            {"path": "+alice/new/b.txt", "here": true, "due_in": 3, "draft": false, "deleted": false, "cutoff": "PlusInfinity", "size": 4},
-            {"path": "+alice/c.txt", "here": true, "due_in": 192, "draft": false, "deleted": false, "cutoff": "MinusInfinity", "size": 5},
+            {"path": "+alice/a.txt", "here": true, "due_in": 2, "draft": false, "deleted": false, "cutoff": "follow", "size": 3},
+            {"path": "+alice/new/b.txt", "here": true, "due_in": 3, "draft": false, "deleted": false, "cutoff": "follow", "size": 4},
+            {"path": "+alice/c.txt", "here": true, "due_in": 192, "draft": false, "deleted": false, "cutoff": "free", "size": 5},
         ]);
         let page = files(&BAR, "alice", "", &list, &waiting, &json!([])).into_string();
         assert!(page.contains(r#"⏳ <span data-due="2">0:02</span>"#));
@@ -499,22 +545,26 @@ mod tests {
         assert!(row_of(&page, "+alice/new").contains("⏳ 1"));
         assert!(page.contains("3 edits wait to be published."));
         assert!(!page.contains("data-confirm="), "{page}");
-        assert!(row_of(&page, "+alice").contains(r#"data-waiting="3""#));
+        assert!(row_of(&page, "+alice").contains(r#"data-offers="rename add delete pin publish""#));
         assert!(
             row_of(&page, "+alice/c.txt")
                 .contains(r#"data-pattern="/+alice/c.txt" data-state="unchecked""#)
         );
-        assert!(row_of(&page, "+alice/c.txt").contains(r#"data-published="false""#));
+        let new = row_of(&page, "+alice/c.txt");
+        assert!(
+            new.contains(r#"data-offers="rename replace delete publish">"#),
+            "{new}"
+        );
     }
 
     #[test]
     fn rival_drafts_warn_and_tell_the_later_it_becomes_a_suggestion() {
         let waiting = json!([
             {"path": "inbox/Report.txt", "here": true, "author": "alice", "due_in": 200, "draft": true,
-             "deleted": false, "cutoff": "PlusInfinity", "size": 3,
+             "deleted": false, "cutoff": "follow", "size": 3,
              "rivals": [{"author": "bob", "path": "inbox/report.txt", "due_in": 42, "wins": true}]},
             {"path": "inbox/report.txt", "here": false, "author": "bob", "due_in": 42, "draft": true,
-             "deleted": false, "cutoff": "MinusInfinity", "size": 7,
+             "deleted": false, "cutoff": "free", "size": 7,
              "rivals": [{"author": "alice", "path": "inbox/Report.txt", "due_in": 200, "wins": false}]},
         ]);
         let page = files(&BAR, "alice", "", &json!([]), &waiting, &json!([])).into_string();
@@ -533,9 +583,9 @@ mod tests {
 
     #[test]
     fn suggestions_show_on_the_rows_they_change_with_what_decides_them() {
-        let list = json!([file("docs/list.txt", &json!("PlusInfinity"))]);
+        let list = json!([file("docs/list.txt", "follow")]);
         let suggestion = |time: u64, author: &str, changes: Value| {
-            json!({"id": format!("s{time}"), "author": author,
+            json!({"id": format!("s{time}"), "author": author, "placeable": time == 1,
                 "reason": "the rules leave it to the group", "changes": changes})
         };
         let suggestions = json!([
@@ -563,29 +613,42 @@ mod tests {
         );
         assert!(changed.contains("bob suggests a new version"), "{changed}");
         assert!(
-            changed.contains("&quot;id&quot;:&quot;s1&quot;"),
+            changed.contains(r#"<template><div class="change">"#),
             "{changed}"
         );
-        assert!(changed.contains("&quot;elsewhere&quot;:true"), "{changed}");
+        assert!(
+            changed.contains(r#"name="suggestions" value="s1""#),
+            "{changed}"
+        );
+        assert!(
+            changed.contains(r#"<input type="text" name="to" value="docs/list.txt""#),
+            "{changed}"
+        );
+        assert!(
+            changed.contains("Validate these 2 suggestions?"),
+            "{changed}"
+        );
         let moved = row_of(&page, "docs/Plan.txt");
         assert!(moved.contains(r#"class="draft""#), "{moved}");
         assert!(
             moved.contains("papy suggests a move from docs/list.txt"),
             "{moved}"
         );
-        assert!(moved.contains(r#"data-editable="false""#), "{moved}");
-        assert!(moved.contains("&quot;elsewhere&quot;:false"), "{moved}");
+        assert!(moved.contains(r#"data-offers="">"#), "{moved}");
+        assert!(!moved.contains(r#"name="to" value="docs"#), "{moved}");
         assert!(moved.contains("9 B"), "{moved}");
         let folder = row_of(&page, "docs");
         assert!(folder.contains("📬 3"), "{folder}");
-        let offered = folder.find("s1").unwrap();
+        let offered = folder.find(r#"value="s1""#).unwrap();
         assert!(
-            offered < folder.find("s2").unwrap(),
+            offered < folder.find(r#"value="s2""#).unwrap(),
             "oldest first: {folder}"
         );
-        assert_eq!(folder.matches("&quot;id&quot;").count(), 2, "{folder}");
-        assert!(page.contains(r#"<dialog id="elsewhere">"#), "{page}");
-        assert!(page.contains("It publishes at once"), "{page}");
-        assert!(!page.contains(r#"name="mode""#), "{page}");
+        assert!(
+            folder.contains(r#"name="suggestions" value="s1 s2""#),
+            "{folder}"
+        );
+        assert!(page.contains(PUBLISHES), "{page}");
+        assert!(!page.contains(r#"id="elsewhere""#), "{page}");
     }
 }

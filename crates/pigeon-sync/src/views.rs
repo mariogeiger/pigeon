@@ -18,9 +18,17 @@ use pigeon_core::selection::{Cutoff, Rule, compile, matches};
 use pigeon_core::statement::is_statement;
 use pigeon_net::hello::{Heard, Standing};
 use pigeon_store::index::IndexEntry;
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
 use crate::engine::{Engine, JoinState};
+
+/// `value` serialized as the text it reads as.
+pub(crate) fn as_text<S: Serializer>(
+    value: &impl std::fmt::Display,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(value)
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Status {
@@ -84,6 +92,8 @@ pub struct FileView {
     pub content: Content,
     pub stamp: Stamp,
     pub time: String,
+    /// The mode the selection gives the file, as a rule's line spells it.
+    #[serde(serialize_with = "as_text")]
     pub cutoff: Cutoff,
     /// Whether the disk shows some version of the file.
     pub held: bool,
