@@ -1,7 +1,8 @@
 //! Watching a group's root and the destinations of its placed folders: the
 //! operating system reports changed paths, which become the group paths
 //! whose subtrees pigeon rescans; a path only opened or read changed
-//! nothing, so that pigeon's own scans wake no other.
+//! nothing, so that pigeon's own scans wake no other, and events the system
+//! lost track of make one rescan of the whole root.
 
 use std::path::{Path, PathBuf};
 
@@ -99,6 +100,23 @@ fn changes_disk(kind: EventKind) -> bool {
     }
 }
 
+/// What to rescan after `event` under `watched`: the whole root when the
+/// system lost track of events, whatever the event says besides, and
+/// otherwise the paths of an event that may change the disk.
+fn rescans(watched: &[Watched], event: &notify::Event) -> Vec<Rescan> {
+    if event.need_rescan() {
+        return vec![Rescan::All];
+    }
+    if !changes_disk(event.kind) {
+        return Vec::new();
+    }
+    event
+        .paths
+        .iter()
+        .filter_map(|location| watched.iter().find_map(|one| rescan_of(one, location)))
+        .collect()
+}
+
 /// Starts watching every folder of `watched`, each followed to the folder
 /// it may link to, since some systems report changes under that folder's
 /// own path; the watcher stops when dropped.
@@ -113,15 +131,9 @@ pub fn watch(
     let locations: Vec<PathBuf> = watched.iter().map(|one| one.location.clone()).collect();
     let mut system =
         notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
-            Ok(event) if !changes_disk(event.kind) => {}
             Ok(event) => {
-                if event.need_rescan() {
-                    let _ = changes.send(Rescan::All);
-                }
-                for location in &event.paths {
-                    if let Some(rescan) = watched.iter().find_map(|one| rescan_of(one, location)) {
-                        let _ = changes.send(rescan);
-                    }
+                for rescan in rescans(&watched, &event) {
+                    let _ = changes.send(rescan);
                 }
             }
             Err(_) => {
@@ -165,6 +177,27 @@ mod tests {
             under("a/videos")
         );
         assert_eq!(rescan_of(disk, Path::new("/disk")), None);
+    }
+
+    #[test]
+    fn events_the_system_lost_track_of_rescan_the_whole_root() {
+        use notify::event::{CreateKind, Flag};
+        let watched = [Watched {
+            location: PathBuf::from("/g"),
+            folder: None,
+        }];
+        let event = |kind| notify::Event::new(kind).add_path(PathBuf::from("/g/a.txt"));
+        let read = EventKind::Access(AccessKind::Read);
+        let created = EventKind::Create(CreateKind::File);
+        for kind in [EventKind::Other, read, created] {
+            let lost = event(kind).set_flag(Flag::Rescan);
+            assert_eq!(rescans(&watched, &lost), [Rescan::All]);
+        }
+        let overflow = notify::Event::new(EventKind::Other).set_flag(Flag::Rescan);
+        assert_eq!(rescans(&watched, &overflow), [Rescan::All]);
+        assert_eq!(rescans(&watched, &event(read)), []);
+        let under = Rescan::Under(GroupPath::parse("a.txt").unwrap());
+        assert_eq!(rescans(&watched, &event(created)), [under]);
     }
 
     #[tokio::test]

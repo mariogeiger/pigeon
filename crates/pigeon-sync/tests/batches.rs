@@ -24,10 +24,6 @@ fn long_paths(folder: &str) -> Vec<String> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[cfg_attr(
-    windows,
-    ignore = "notify 8.2 on Windows drops a ReadDirectoryChangesW overflow, so a burst of new files waits for the next rescan"
-)]
 async fn edits_beyond_what_one_patch_carries_go_out_in_several_patches() {
     let mut machines = group(&["alice", "bob"]).await;
     joined(&machines).await;

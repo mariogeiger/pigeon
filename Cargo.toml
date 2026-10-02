@@ -33,7 +33,7 @@ iroh-blobs = "0.103"
 iroh-mdns-address-lookup = "0.6"
 iroh-relay = { version = "1.3", features = ["server"] }
 n0-future = "0.3"
-notify = "8.2"
+notify = "9.0.0-rc.5"
 maud = "0.27"
 similar = "3.2"
 iroh-base = { version = "1.3", default-features = false, features = ["key"] }
