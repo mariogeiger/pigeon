@@ -1,6 +1,6 @@
 # Setting up a group
 
-This guide founds a group, brings in its members and their machines, and
+This guide creates a group, brings in its members and their machines, and
 sets up an always-on server and the group's own relay. Everything below can
 also be done in the web interface the daemon links to. Each
 command asks for a missing argument when a terminal is attached, and
@@ -20,7 +20,7 @@ installs Rust with rustup if cargo is missing, builds pigeon the way
 [Rust](https://rustup.rs), then run
 `cargo install --git https://github.com/mariogeiger/pigeon pigeon` and
 `pigeon setup`. The setup asks, step by step, the questions the commands
-below answer: start at login, join or found a group, where its root folder
+below answer: start at login, join or create a group, where its root folder
 goes, and what to follow. Running it again resumes where the machine
 stands.
 
@@ -88,7 +88,7 @@ on macOS, in place of a daemon started by hand. `--linger` starts it at
 boot too, without a login, as a server needs. On Windows, add
 `pigeon daemon` to the programs started at login.
 
-## 3. Found the group
+## 3. Create the group
 
 ```sh
 pigeon group create --name cheapmo --member mario

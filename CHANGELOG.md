@@ -14,6 +14,11 @@ number, and any other change the third.
   with what `list` shows of it. `pigeon completions <shell>` prints the
   script to source.
 
+### Changed
+
+- `pigeon setup`, the help and the docs say "create a group" rather than
+  "found a group".
+
 ## 0.7.1 — 2026-10-02
 
 ### Changed

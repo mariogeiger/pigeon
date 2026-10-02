@@ -244,7 +244,7 @@ pub fn diff(old: &Side, new: &Side) -> Markup {
     }
 }
 
-/// The groups on this machine, and the forms to found or join one.
+/// The groups on this machine, and the forms to create or join one.
 #[must_use]
 pub fn home(groups: &Value) -> Markup {
     let link = |item: &Value| item["name"].as_str().map(|name| format!("/g/{name}"));

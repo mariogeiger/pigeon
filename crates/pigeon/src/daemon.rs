@@ -1,6 +1,6 @@
 //! The groups running on this machine: one engine per group, started from
 //! each group's folders, restarted from them when the user reloads their
-//! configurations or applies one, and created when the user founds or joins a group,
+//! configurations or applies one, and created when the user creates or joins a group,
 //! which then waits for the group's verdict on the member's name; the
 //! groups heard before joining, to show the names one may join under; and
 //! why the daemon stops, which a restart onto a newly installed program is
@@ -146,7 +146,7 @@ impl Daemon {
         self.groups.read().await
     }
 
-    /// Founds the group `name` with this machine as its first, and joins
+    /// Creates the group `name` with this machine as its first, and joins
     /// it as `member`; returns the group key to share.
     ///
     /// # Errors

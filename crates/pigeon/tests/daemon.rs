@@ -675,7 +675,7 @@ async fn editor_preview(peer: &Peer, text: &str) -> (u16, Value) {
     (answer.status, serde_json::from_str(&answer.body).unwrap())
 }
 
-/// A daemon whose member alice founded cheapmo and wrote a note of 6
+/// A daemon whose member alice created cheapmo and wrote a note of 6
 /// bytes, which is on disk, and the note's path there.
 async fn alice_with_notes(lookup: &MemoryLookup) -> (Peer, PathBuf) {
     let peer = Peer::start(lookup).await;

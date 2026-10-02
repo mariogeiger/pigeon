@@ -16,7 +16,7 @@ curl -sSf https://raw.githubusercontent.com/mariogeiger/pigeon/main/install.sh |
 ```
 
 It installs Rust if needed, builds pigeon, and runs `pigeon setup`, which
-joins or founds a group step by step and opens the web interface. Run
+joins or creates a group step by step and opens the web interface. Run
 `pigeon setup` again at any time, and `pigeon update` to update.
 
 An always-on server of a group asks nothing:

@@ -205,7 +205,7 @@ const fn on_machine(action: Action) -> Action {
 
 /// What each noun's actions act on.
 pub const NOUNS: &[(&str, &str)] = &[
-    ("group", "Found, join and inspect groups"),
+    ("group", "Create, join and inspect groups"),
     ("member", "The group's members"),
     (
         "file",
@@ -238,7 +238,7 @@ pub const ACTIONS: &[Action] = &[
     on_machine(action(
         "group",
         "create",
-        "Found a new group, of which you are the first member",
+        "Create a new group, of which you are the first member",
         &[
             required(
                 "name",

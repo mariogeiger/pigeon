@@ -111,7 +111,7 @@ pub fn command() -> Command {
     )
     .subcommand(
         Command::new("setup")
-            .about("Set up pigeon on this machine step by step: start at login, join or found a group, choose what to follow"),
+            .about("Set up pigeon on this machine step by step: start at login, join or create a group, choose what to follow"),
     )
     .subcommand(
         Command::new("service")

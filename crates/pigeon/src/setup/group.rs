@@ -1,7 +1,7 @@
 //! The group step of `pigeon setup`: keep a group this machine is in, join
 //! one with its key, hearing it first to offer its members' names and
-//! refuse the names taken, or found one; the root folder is chosen before
-//! the daemon joins or founds, since it creates the folder then.
+//! refuse the names taken, or create one; the root folder is chosen before
+//! the daemon joins or creates the group, since it creates the folder then.
 
 use anyhow::{Result, anyhow};
 use pigeon_core::name::MemberName;
@@ -21,7 +21,7 @@ pub enum Origin {
     Joined {
         heard: bool,
     },
-    Founded,
+    Created,
 }
 
 /// The group this machine is set up in.
@@ -31,7 +31,7 @@ pub struct Membership {
     pub origin: Origin,
 }
 
-/// Keeps, joins or founds a group, as one chooses.
+/// Keeps, joins or creates a group, as one chooses.
 ///
 /// # Errors
 ///
@@ -50,7 +50,7 @@ pub fn step(home: &Home, list: &mut Checklist) -> Result<Membership> {
         })
         .collect();
     choices.push("Join a group (key)".into());
-    choices.push("Found a group".into());
+    choices.push("Create a new group".into());
     let term = list.term().clone();
     let chosen = ask::choose(&term, "Group", &choices)?;
     if let Some(group) = groups.get(chosen) {
@@ -67,7 +67,7 @@ pub fn step(home: &Home, list: &mut Checklist) -> Result<Membership> {
     if chosen == groups.len() {
         join(home, list)
     } else {
-        found(home, list)
+        create(home, list)
     }
 }
 
@@ -156,8 +156,8 @@ fn join(home: &Home, list: &mut Checklist) -> Result<Membership> {
     }
 }
 
-/// Founds a group, of which one becomes the first member.
-fn found(home: &Home, list: &mut Checklist) -> Result<Membership> {
+/// Creates a group, of which one becomes the first member.
+fn create(home: &Home, list: &mut Checklist) -> Result<Membership> {
     let term = list.term().clone();
     let group = ask::text(&term, "Group name", "", |text| {
         MemberName::parse(text)
@@ -185,7 +185,7 @@ fn found(home: &Home, list: &mut Checklist) -> Result<Membership> {
             Ok(Membership {
                 group,
                 member,
-                origin: Origin::Founded,
+                origin: Origin::Created,
             })
         }
         Err(error) => {

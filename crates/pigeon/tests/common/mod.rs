@@ -161,8 +161,8 @@ impl Machine {
         }
     }
 
-    /// Founds the group as `member` and returns its key.
-    pub async fn found(&self, member: &str) -> String {
+    /// Creates the group as `member` and returns its key.
+    pub async fn create(&self, member: &str) -> String {
         let created = self
             .run(
                 "group",
@@ -360,11 +360,11 @@ impl Machine {
     }
 }
 
-/// A family whose alice founded the group on her machine and whose papy
+/// A family whose alice created the group on her machine and whose papy
 /// joined on his desktop and his laptop.
 pub async fn family(internet: &MemoryLookup) -> (Machine, Machine, Machine) {
     let alice = Machine::start("alice's machine", internet).await;
-    let key = alice.found("alice").await;
+    let key = alice.create("alice").await;
     let desktop = Machine::start("papy's desktop", internet).await;
     desktop.join(&key, "papy").await;
     let laptop = Machine::start("papy's laptop", internet).await;

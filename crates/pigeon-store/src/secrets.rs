@@ -31,7 +31,7 @@ pub struct Secrets {
     /// The renewal that made the key's secret, none for the first secret.
     pub renewal: Option<Renewal>,
     /// The certificate of this machine by a member whose key does not
-    /// derive from their name, as for members of groups founded before
+    /// derive from their name, as for members of groups created before
     /// keys did; none when the name gives the key.
     pub cert: Option<MachineCert>,
 }

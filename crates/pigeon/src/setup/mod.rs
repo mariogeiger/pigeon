@@ -2,7 +2,7 @@
 //! redrawing a checklist that each step marks from the machine's real
 //! state, so that running it again resumes. It is a client of the daemon's
 //! API like the command line, each step a command one may run alone:
-//! start at login, run the daemon, keep, join or found a group, choose
+//! start at login, run the daemon, keep, join or create a group, choose
 //! what to follow, as a server follows everything, and open the web UI.
 
 mod ask;
@@ -183,7 +183,7 @@ fn follow(home: &Home, list: &mut Checklist, membership: &Membership) -> Result<
     let tag = format!("+{}", membership.member);
     let own = format!("{tag}/");
     match membership.origin {
-        Origin::Founded | Origin::Joined { heard: false } => {
+        Origin::Created | Origin::Joined { heard: false } => {
             return list.set(
                 FOLLOW,
                 Mark::Skipped,
