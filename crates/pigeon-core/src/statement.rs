@@ -101,8 +101,6 @@ pub enum Reason {
     /// A change the rules leave to the group: any change but its own
     /// member's in a personal path, and but a new file elsewhere.
     OutsideRules,
-    /// A name no portable path can hold, or one that collides by case.
-    Unportable(String),
     /// A patch the ledger rejected, such as a lost claim.
     Rejected(String),
     /// The losing side of concurrent changes.
@@ -113,19 +111,17 @@ impl std::fmt::Display for Reason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::OutsideRules => f.write_str("the rules leave it to the group"),
-            Self::Unportable(why) => write!(f, "a name not every machine can hold: {why}"),
             Self::Rejected(why) => write!(f, "the group rejected it: {why}"),
             Self::Superseded => f.write_str("another change of the same file came in meanwhile"),
         }
     }
 }
 
-/// One change of a suggestion, at a path that is not always a valid group
-/// path, its content, or `None` for a deletion, and the versions it
-/// replaces and continues.
+/// One change of a suggestion: its path, its content, or `None` for a
+/// deletion, and the versions it replaces and continues.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct SuggestedChange {
-    pub path: String,
+    pub path: GroupPath,
     pub content: Option<Content>,
     pub replaces: Option<Stamp>,
     pub continues: Option<VersionRef>,
@@ -134,7 +130,7 @@ pub struct SuggestedChange {
 impl From<&Change> for SuggestedChange {
     fn from(change: &Change) -> Self {
         Self {
-            path: change.path.as_str().to_owned(),
+            path: change.path.clone(),
             content: change.content,
             replaces: change.replaces,
             continues: change.continues.clone(),
@@ -196,10 +192,6 @@ mod tests {
         assert_eq!(
             Reason::OutsideRules.to_string(),
             "the rules leave it to the group"
-        );
-        assert_eq!(
-            Reason::Unportable("a colon".into()).to_string(),
-            "a name not every machine can hold: a colon"
         );
         assert_eq!(
             Reason::Rejected("the name is taken".into()).to_string(),

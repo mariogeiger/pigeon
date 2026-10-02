@@ -246,7 +246,7 @@ async fn suggestion_cards(engine: &Engine, path: &str) -> Vec<(Value, Value, Mar
         for change in suggestion
             .changes
             .iter()
-            .filter(|change| change.path == path)
+            .filter(|change| change.path.as_str() == path)
         {
             let diff = change_diff(engine, current.as_ref(), change.content.as_ref()).await;
             let change = serde_json::to_value(change).unwrap_or(Value::Null);

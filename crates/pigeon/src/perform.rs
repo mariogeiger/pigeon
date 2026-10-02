@@ -224,6 +224,14 @@ pub(crate) fn publish<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
     })
 }
 
+pub(crate) fn list_unportable<'a>(engine: &'a Engine, _: &'a Args) -> Reply<'a> {
+    Box::pin(async move { to_json(engine.unportable().await) })
+}
+
+pub(crate) fn make_portable<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move { to_json(engine.make_portable(args.required("path")?).await?) })
+}
+
 /// Makes the one edit `edit`, and gives what it made.
 async fn apply_edit(engine: &Engine, edit: Edit) -> Result<Value> {
     to_json(engine.edit(vec![edit]).await?)

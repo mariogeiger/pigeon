@@ -1,8 +1,8 @@
 //! A member who never looks at pigeon: while the family is apart, papy's
 //! laptop and desktop pile up every kind of suggestion, an edit that lost
-//! to a later one, a save over alice's file, a new file at a path he took
-//! after alice and a name Windows cannot hold; alice decides them all from
-//! her machine, and papy's machines carry it out alone.
+//! to a later one, a save over alice's file and a new file at a path he
+//! took after alice; alice decides them all from her machine, and papy's
+//! machines carry it out alone.
 
 mod common;
 
@@ -20,8 +20,7 @@ async fn suggestion_id(machine: &Machine, path: &str, author: &str) -> Value {
 
 /// Plays the family apart: alice adds a plan first, papy's laptop edits
 /// his budget, then his desktop adds his own plan under the same name,
-/// edits the budget later, saves over alice's recipe and writes an invoice
-/// whose name Windows cannot hold.
+/// edits the budget later and saves over alice's recipe.
 async fn apart(alice: &mut Machine, desktop: &mut Machine, laptop: &mut Machine) {
     alice.go_offline().await;
     desktop.go_offline().await;
@@ -35,25 +34,22 @@ async fn apart(alice: &mut Machine, desktop: &mut Machine, laptop: &mut Machine)
     desktop.write("+papy/budget.txt", "from home, later\n");
     published(desktop, "+papy/budget.txt", 2).await;
     desktop.save_atomically("+alice/recipe.txt", "flour, sugar\n");
-    desktop.write("+papy/Facture: mars.txt", "42 €\n");
     settle().await;
     alice.go_online().await;
     desktop.go_online().await;
     laptop.go_online().await;
 }
 
-/// Alice decides the four suggestions from her machine: she places his
-/// laptop's budget, her own plan and his invoice under new names,
-/// validates his recipe, and follows his folder and the plans.
+/// Alice decides the three suggestions from her machine: she places his
+/// laptop's budget and her own plan under new names, validates his recipe,
+/// and follows his folder and the plans.
 async fn resolve_for_papy(alice: &Machine) {
     let superseded = suggestion_id(alice, "+papy/budget.txt", "papy").await;
     let recipe = suggestion_id(alice, "+alice/recipe.txt", "papy").await;
     let plan = suggestion_id(alice, "docs/plan.txt", "alice").await;
-    let unportable = suggestion_id(alice, "+papy/Facture: mars.txt", "papy").await;
     for (id, to) in [
         (&superseded, "+papy/budget (laptop).txt"),
         (&plan, "docs/plan (alice).txt"),
-        (&unportable, "+papy/Facture - mars.txt"),
     ] {
         alice.validate(&[id], Some(to)).await;
     }
@@ -86,8 +82,8 @@ async fn a_passive_members_conflicts_are_all_resolved_by_another_from_her_machin
     apart(&mut alice, &mut desktop, &mut laptop).await;
 
     let all = [&alice, &desktop, &laptop];
-    eventually("alice sees the four suggestions", &all, async || {
-        alice.suggestions().await.len() == 4
+    eventually("alice sees the three suggestions", &all, async || {
+        alice.suggestions().await.len() == 3
     })
     .await;
     resolve_for_papy(&alice).await;
@@ -102,12 +98,9 @@ async fn a_passive_members_conflicts_are_all_resolved_by_another_from_her_machin
             machine.shows("+alice/recipe.txt", "flour, sugar\n")
                 && machine.shows("+papy/budget.txt", "from home, later\n")
                 && machine.shows("+papy/budget (laptop).txt", "from the train\n")
-                && machine.shows("+papy/Facture - mars.txt", "42 €\n")
         }) && laptop.shows("+papy/budget (laptop).txt", "from the train\n")
-            && laptop.shows("+papy/Facture - mars.txt", "42 €\n")
             && alice.shows("docs/Plan.txt", "papy's plan\n")
             && alice.shows("docs/plan (alice).txt", "alice's plan\n")
-            && desktop.read("+papy/Facture: mars.txt").is_none()
     })
     .await;
 
@@ -115,6 +108,5 @@ async fn a_passive_members_conflicts_are_all_resolved_by_another_from_her_machin
     desktop.switch_on().await;
     settle().await;
     assert_eq!(desktop.suggestions().await, Vec::<Value>::new());
-    assert!(desktop.read("+papy/Facture: mars.txt").is_none());
-    assert!(desktop.shows("+papy/Facture - mars.txt", "42 €\n"));
+    assert!(desktop.shows("+alice/recipe.txt", "flour, sugar\n"));
 }

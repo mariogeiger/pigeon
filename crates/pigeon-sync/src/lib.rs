@@ -22,6 +22,7 @@ mod root;
 mod selection_change;
 mod statements;
 pub mod suggestions;
+mod unportable;
 pub mod views;
 pub mod watch;
 
@@ -34,3 +35,4 @@ pub use selection_change::{
     Amount, Changed, Delta, DeltaFiles, LISTED, OwnFreed, Preview, RuleEffect,
 };
 pub use suggestions::{SuggestedChangeView, SuggestionView};
+pub use unportable::UnportableView;

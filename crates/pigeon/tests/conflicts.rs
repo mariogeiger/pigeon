@@ -1,9 +1,11 @@
 //! Conflicts as a family meets them: machines that go offline and come
 //! back, edits of someone else's files, two people adding a file at the
-//! same path while apart, names one system cannot hold, actions that reach an owner
-//! who edited meanwhile, and files moved or deleted by someone who does
-//! not own them; each becomes a suggestion that anyone decides, played on
-//! daemons driven through the command line's client and edited on disk.
+//! same path while apart, actions that reach an owner who edited
+//! meanwhile, and files moved or deleted by someone who does not own them,
+//! each of which becomes a suggestion that anyone decides; and names one
+//! system cannot hold, which stay out until their machine renames them;
+//! played on daemons driven through the command line's client and edited
+//! on disk.
 
 mod common;
 
@@ -188,48 +190,54 @@ async fn two_members_adding_one_path_while_apart_both_keep_their_content() {
 }
 
 #[tokio::test]
-async fn a_name_windows_cannot_hold_is_suggested_and_validated_under_one_it_can() {
+async fn a_name_windows_cannot_hold_stays_out_until_its_machine_renames_it_as_proposed() {
     let internet = MemoryLookup::new();
-    let (alice, mut desktop, laptop) = family(&internet).await;
+    let (alice, desktop, laptop) = family(&internet).await;
     desktop.write("+papy/Facture: mars.txt", "42 €\n");
     let all = [&alice, &desktop, &laptop];
-    let suggestion = desktop.suggestion_at("+papy/Facture: mars.txt").await;
+    let unportable = async || desktop.run("file", "unportable", json!({})).await;
+    eventually("papy's desktop keeps the invoice out", &all, async || {
+        unportable()
+            .await
+            .as_array()
+            .is_some_and(|names| names.len() == 1)
+    })
+    .await;
+    let names = unportable().await;
+    assert_eq!(names[0]["path"], "+papy/Facture: mars.txt", "{names}");
+    assert_eq!(names[0]["proposal"], "+papy/Facture_ mars.txt", "{names}");
     assert!(
-        suggestion["reason"]
+        names[0]["reason"]
             .as_str()
-            .is_some_and(|reason| reason.starts_with("a name not every machine can hold")),
-        "{suggestion}"
+            .is_some_and(|reason| reason.contains("Windows forbids")),
+        "{names}"
     );
-    let refused = desktop
-        .call(
-            "suggestion",
-            "validate",
-            json!({"suggestions": suggestion["id"]}),
+    settle().await;
+    assert_eq!(desktop.suggestions().await, Vec::<Value>::new());
+    assert!(desktop.history("+papy/Facture_ mars.txt").await.is_empty());
+    let renamed = desktop
+        .run(
+            "file",
+            "make-portable",
+            json!({"path": "+papy/Facture: mars.txt"}),
         )
         .await;
-    assert!(refused.is_err(), "{refused:?}");
-    desktop
-        .validate(&[&suggestion["id"]], Some("+papy/Facture - mars.txt"))
-        .await;
+    assert_eq!(renamed, "+papy/Facture_ mars.txt");
     alice
         .run("selection", "follow", json!({"pattern": "/+papy/"}))
         .await;
     eventually(
-        "alice holds the invoice and papy's disk only its portable name",
+        "alice holds the invoice under its portable name",
         &all,
         async || {
-            alice.shows("+papy/Facture - mars.txt", "42 €\n")
-                && desktop.shows("+papy/Facture - mars.txt", "42 €\n")
+            alice.shows("+papy/Facture_ mars.txt", "42 €\n")
+                && desktop.shows("+papy/Facture_ mars.txt", "42 €\n")
                 && desktop.read("+papy/Facture: mars.txt").is_none()
-                && desktop.suggestions().await.is_empty()
         },
     )
     .await;
-    desktop.switch_off().await;
-    desktop.switch_on().await;
-    settle().await;
+    assert_eq!(unportable().await, json!([]));
     assert_eq!(desktop.suggestions().await, Vec::<Value>::new());
-    assert!(desktop.read("+papy/Facture: mars.txt").is_none());
 }
 
 #[tokio::test]

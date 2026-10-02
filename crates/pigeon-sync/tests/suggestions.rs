@@ -4,8 +4,7 @@
 //! one brings the group's version back and stays in history, a folder's
 //! suggestions are decided together, an outdated one stays decidable, the
 //! loser of concurrent edits is suggested, a move is one suggestion that
-//! keeps the file's history, and an unportable file is validated at
-//! another path, as only one suggestion of one file's content can be.
+//! keeps the file's history.
 
 mod common;
 
@@ -65,7 +64,7 @@ async fn an_edit_outside_the_rules_waits_on_its_disk_until_anyone_validates_it_o
     let [change] = &suggestion.changes[..] else {
         panic!("one change: {suggestion:?}")
     };
-    assert_eq!(change.path, "+alice/plan.txt");
+    assert_eq!(change.path, path("+alice/plan.txt"));
     assert!(!change.outdated);
     assert_eq!(bob.read("+alice/plan.txt").as_deref(), Some("bob's plan"));
     assert_eq!(
@@ -294,7 +293,7 @@ async fn a_move_outside_the_rules_is_one_suggestion_that_keeps_the_history() {
     let moved = views[0]
         .changes
         .iter()
-        .find(|change| change.path == "+alice/new.txt")
+        .find(|change| change.path == path("+alice/new.txt"))
         .unwrap();
     assert_eq!(
         moved.continues.as_ref().map(|from| from.path.as_str()),
@@ -315,36 +314,5 @@ async fn a_move_outside_the_rules_is_one_suggestion_that_keeps_the_history() {
     let history = alice.engine.history(&path("+alice/new.txt"));
     assert_eq!(history.len(), 2, "{history:?}");
     assert_eq!(history[0].path, path("+alice/old.txt"));
-    shut_down(machines).await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn an_unportable_file_is_validated_at_another_path() {
-    let machines = group(&["alice"]).await;
-    joined(&machines).await;
-    let alice = &machines[0];
-    alice.edit("shared/what?.txt", "odd");
-    eventually("the unportable file is suggested", || async {
-        alice
-            .engine
-            .suggestions()
-            .await
-            .first()
-            .is_some_and(|view| matches!(view.reason, Reason::Unportable(_)))
-    })
-    .await;
-    let statement = shown(alice).await;
-    assert_eq!(
-        alice.engine.suggestions().await[0].changes[0].path,
-        "shared/what?.txt"
-    );
-    assert!(alice.engine.validate(&statement, None).await.is_err());
-    let to = path("shared/what.txt");
-    alice.engine.validate(&statement, Some(&to)).await.unwrap();
-    eventually("the file moves to its portable path", || async {
-        alice.read("shared/what.txt").as_deref() == Some("odd")
-            && alice.read("shared/what?.txt").is_none()
-    })
-    .await;
     shut_down(machines).await;
 }

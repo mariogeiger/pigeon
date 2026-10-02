@@ -34,6 +34,7 @@ use pigeon_store::config::ConfigFile;
 use pigeon_store::disk::Stat;
 use pigeon_store::group_dirs::GroupDirs;
 use pigeon_store::group_key::GroupKey;
+use pigeon_store::probe::Unportable;
 use pigeon_store::state::State;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{JoinHandle, JoinSet};
@@ -207,6 +208,8 @@ pub(crate) struct Work {
     pub announced: Option<Vec<(PathKey, u64, Instant)>>,
     /// The live suggestions read so far, by their statements' keys.
     pub suggestions: BTreeMap<PathKey, Live>,
+    /// The names the scans kept out of the group, by path.
+    pub unportable: BTreeMap<String, Unportable>,
 }
 
 pub(crate) struct Inner {
@@ -542,6 +545,7 @@ impl Engine {
                 watched: Vec::new(),
                 announced: None,
                 suggestions: BTreeMap::new(),
+                unportable: BTreeMap::new(),
             }),
             wake,
             rescans,

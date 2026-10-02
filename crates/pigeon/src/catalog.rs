@@ -396,6 +396,26 @@ pub const ACTIONS: &[Action] = &[
         ],
         Handler::Engine(perform::rename_file),
     ),
+    view(
+        "file",
+        "unportable",
+        "List the names on this machine's disk that some machine cannot hold, which stay out of the group, each with the portable name proposed",
+        &[],
+        &["path", "reason", "proposal"],
+        Handler::Engine(perform::list_unportable),
+    ),
+    action(
+        "file",
+        "make-portable",
+        "Rename on this machine's disk a name some machine cannot hold to the portable name proposed, which brings what it holds into the group",
+        &[required(
+            "path",
+            "The name, as `pigeon file unportable` lists it",
+            Kind::Text,
+        )
+        .listed_by("file", "unportable")],
+        Handler::Engine(perform::make_portable),
+    ),
     action(
         "file",
         "restore",

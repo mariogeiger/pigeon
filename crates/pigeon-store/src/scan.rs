@@ -1,11 +1,13 @@
 //! Walking a group's root as a [`Prober`] sees it: every regular file in
 //! sight with its metadata, the names no portable path holds, the folders
 //! that could not be read and the files pigeon was writing when it stopped.
+//! A walk under a path also sees the names its folder holds that differ
+//! from the path's last name only by case or spelling.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use pigeon_core::path::{GroupPath, PathKey};
+use pigeon_core::path::{GroupPath, PathKey, name_key};
 
 use crate::probe::{Found, Probe, Prober, Stop, Unportable, file_at, leads_into};
 
@@ -27,25 +29,42 @@ impl Prober {
         match names.split_last() {
             None => self.walk(self.root.clone(), Vec::new(), &mut scan),
             Some((last, folders)) => match self.descend(folders) {
-                Ok((folder, mut spelled)) => match self.find(&folder, last, true) {
-                    Ok(Some(entry)) => {
-                        spelled.push(entry.name.clone());
-                        let location = folder.join(&entry.written);
-                        if leads_into(&self.placed, &spelled, &entry) {
-                            self.walk(location, spelled, &mut scan);
-                        } else {
-                            scan.take(file_at(&spelled, &location, &entry));
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(probe) => scan.take(probe),
-                },
+                Ok((folder, spelled)) => self.scan_entry(&folder, spelled, last, &mut scan),
                 Err(Stop::Told(probe)) => scan.take(probe),
                 Err(Stop::Missing(..)) => {}
             },
         }
         scan.errors.extend(self.rules.errors().iter().cloned());
         scan
+    }
+
+    /// Walks the entry `name` of `folder`, at `spelled`, with the names of
+    /// the folder that no group path holds and that differ from `name`
+    /// only by case or spelling.
+    fn scan_entry(&mut self, folder: &Path, mut spelled: Vec<String>, name: &str, scan: &mut Scan) {
+        if let Ok(listing) = self.listing(folder) {
+            let key = name_key(name);
+            scan.unportable.extend(
+                listing
+                    .unportable
+                    .iter()
+                    .filter(|unportable| name_key(&unportable.name) == key)
+                    .map(|unportable| unportable.in_folder(&spelled)),
+            );
+        }
+        match self.find(folder, name, true) {
+            Ok(Some(entry)) => {
+                spelled.push(entry.name.clone());
+                let location = folder.join(&entry.written);
+                if leads_into(&self.placed, &spelled, &entry) {
+                    self.walk(location, spelled, scan);
+                } else {
+                    scan.take(file_at(&spelled, &location, &entry));
+                }
+            }
+            Ok(None) => {}
+            Err(probe) => scan.take(probe),
+        }
     }
 
     /// Walks every folder pigeon goes into from `folder`, at `spelled`.
@@ -65,7 +84,12 @@ impl Prober {
                     continue;
                 }
             };
-            scan.unportable.extend(listing.unportable.iter().cloned());
+            scan.unportable.extend(
+                listing
+                    .unportable
+                    .iter()
+                    .map(|unportable| unportable.in_folder(&spelled)),
+            );
             scan.temporaries.extend(listing.temporaries.iter().cloned());
             for entry in listing.entries.values() {
                 let mut names = spelled.clone();
@@ -159,19 +183,37 @@ mod tests {
         assert!(scan(dir.path(), Some(&missing), &[]).files.is_empty());
     }
 
+    fn proposals(scan: &Scan) -> Vec<(String, String)> {
+        let mut proposals: Vec<(String, String)> = scan
+            .unportable
+            .iter()
+            .map(|unportable| {
+                let proposed = unportable.proposed().unwrap().to_string();
+                (unportable.path(), proposed)
+            })
+            .collect();
+        proposals.sort();
+        proposals
+    }
+
     #[test]
-    fn skips_unportable_names() {
+    fn keeps_out_unportable_names_each_with_a_free_portable_name() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "ok.txt", "");
         if cfg!(unix) {
-            write(dir.path(), "what?.txt", "");
+            write(dir.path(), "sub/what?.txt", "");
+            write(dir.path(), "sub/what_.txt", "");
             write(dir.path(), "aux/file", "");
             write(dir.path(), "aux/other", "");
         }
         let scan = scan(dir.path(), None, &[]);
-        assert_eq!(paths(&scan), ["ok.txt"]);
         if cfg!(unix) {
-            assert_eq!(scan.unportable.len(), 2);
+            assert_eq!(paths(&scan), ["ok.txt", "sub/what_.txt"]);
+            let expected = [("aux", "aux_"), ("sub/what?.txt", "sub/what_ (2).txt")];
+            let expected = expected.map(|(path, to)| (path.to_owned(), to.to_owned()));
+            assert_eq!(proposals(&scan), expected);
+        } else {
+            assert_eq!(paths(&scan), ["ok.txt"]);
         }
     }
 
@@ -182,11 +224,41 @@ mod tests {
         write(dir.path(), "README.md", "b");
         write(dir.path(), "Docs/a", "a");
         write(dir.path(), "docs/b", "b");
-        let scan = scan(dir.path(), None, &[]);
-        if scan.unportable.len() == 2 {
-            assert_eq!(paths(&scan), ["Docs/a", "README.md"]);
-            assert!(scan.unportable[0].reason.contains("differs only by case"));
+        let all = scan(dir.path(), None, &[]);
+        if all.unportable.len() == 2 {
+            assert_eq!(paths(&all), ["Docs/a", "README.md"]);
+            assert!(all.unportable[0].reason.contains("differs only by case"));
+            let expected = [("Readme.md", "Readme (2).md"), ("docs", "docs (2)")];
+            let expected = expected.map(|(path, to)| (path.to_owned(), to.to_owned()));
+            assert_eq!(proposals(&all), expected);
+            let file = GroupPath::parse("readme.md").unwrap();
+            let under = scan(dir.path(), Some(&file), &[]);
+            assert_eq!(paths(&under), ["README.md"]);
+            assert_eq!(proposals(&under), expected[..1]);
+            assert!(under.unportable.iter().all(|one| one.lies_within(&file)));
+            let docs = GroupPath::parse("DOCS").unwrap();
+            assert_eq!(
+                proposals(&scan(dir.path(), Some(&docs), &[])),
+                expected[1..]
+            );
+            let readme = all.unportable.iter().find(|one| one.name == "Readme.md");
+            assert!(!readme.unwrap().lies_within(&docs));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_name_spelled_otherwise_than_in_nfc_is_proposed_in_nfc() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "notes/caf\u{65}\u{301}.txt", "");
+        if dir.path().join("notes/caf\u{e9}.txt").exists() {
+            return;
+        }
+        let file = GroupPath::parse("notes/caf\u{e9}.txt").unwrap();
+        let scan = scan(dir.path(), Some(&file), &[]);
+        assert!(scan.files.is_empty());
+        let proposed = [("notes/caf\u{65}\u{301}.txt".to_owned(), file.to_string())];
+        assert_eq!(proposals(&scan), proposed);
     }
 
     #[cfg(unix)]

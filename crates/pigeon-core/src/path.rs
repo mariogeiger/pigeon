@@ -1,6 +1,7 @@
 //! Group paths: `/`-separated, NFC-normalized names relative to a group's
 //! root, each valid on Windows, Linux, and macOS, with the caseless key under
-//! which two paths are the same claim.
+//! which two paths are the same claim, and the portable spelling closest to
+//! a name that breaks the rules.
 
 use std::fmt;
 
@@ -37,6 +38,8 @@ pub enum PathError {
 
 const FORBIDDEN: &[char] = &['<', '>', ':', '"', '\\', '|', '?', '*'];
 const RESERVED: &[&str] = &["con", "prn", "aux", "nul"];
+/// The longest portable spelling proposed, which leaves room for a number.
+const PROPOSED_BYTES: usize = 240;
 
 fn check_name(name: &str) -> Result<(), PathError> {
     if name.is_empty() || name == "." || name == ".." {
@@ -79,6 +82,43 @@ pub fn check_disk_name(name: &str) -> Result<(), PathError> {
         return Err(PathError::Unnormalized(name.to_owned()));
     }
     check_name(name)
+}
+
+/// The caseless key of `name` however it is spelled: its NFC form in
+/// lower case, as a path key holds each name.
+#[must_use]
+pub fn name_key(name: &str) -> String {
+    name.nfc().collect::<String>().to_lowercase()
+}
+
+/// The portable spelling closest to `name`: in NFC, each character Windows
+/// forbids and each control character turned into `_`, cut to 240 bytes,
+/// without trailing spaces and dots, and a reserved stem followed by `_`.
+#[must_use]
+pub fn portable_name(name: &str) -> String {
+    let replaced: String = name
+        .nfc()
+        .map(|c| {
+            if FORBIDDEN.contains(&c) || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let mut end = replaced.len().min(PROPOSED_BYTES);
+    while !replaced.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut portable: String = replaced[..end].trim_end_matches([' ', '.']).nfc().collect();
+    if portable.is_empty() {
+        portable.push('_');
+    }
+    if let Err(PathError::Reserved(_)) = check_name(&portable) {
+        let stem = portable.find('.').unwrap_or(portable.len());
+        portable.insert(stem, '_');
+    }
+    portable
 }
 
 impl GroupPath {
@@ -214,6 +254,32 @@ mod tests {
             Err(PathError::Unnormalized("caf\u{65}\u{301}.txt".into()))
         );
         assert!(check_disk_name("a:b").is_err());
+    }
+
+    #[test]
+    fn the_portable_spelling_of_a_name_is_the_closest_one_the_rules_allow() {
+        for (name, portable) in [
+            ("what?.txt", "what_.txt"),
+            ("a\tb:c", "a_b_c"),
+            ("con.txt", "con_.txt"),
+            ("LPT1", "LPT1_"),
+            ("dot. .", "dot"),
+            ("...", "_"),
+            ("caf\u{65}\u{301}", "caf\u{e9}"),
+            ("fine.txt", "fine.txt"),
+        ] {
+            assert_eq!(portable_name(name), portable, "{name:?}");
+        }
+        let long = format!("{}.txt", "\u{e9}".repeat(200));
+        for name in [long.as_str(), "nul. ", " ", "\u{fffd}x|"] {
+            let portable = portable_name(name);
+            assert!(
+                check_disk_name(&portable).is_ok(),
+                "{name:?} gave {portable:?}"
+            );
+            assert!(portable.len() <= PROPOSED_BYTES + 1);
+        }
+        assert_eq!(name_key("CAF\u{45}\u{301}"), "caf\u{e9}");
     }
 
     #[test]

@@ -14,7 +14,7 @@ use pigeon_core::ledger::{Ledger, Version};
 use pigeon_core::patch::{Change, Content, ContentHash};
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::selection::Cutoff;
-use pigeon_core::statement::{Reason, SuggestedChange, is_statement};
+use pigeon_core::statement::{Reason, is_statement};
 use pigeon_store::disk::{self, Stat, fs_path};
 use pigeon_store::index::{IndexEntry, Seen, now_nanos, observe};
 use pigeon_store::probe::{Probe, Prober};
@@ -228,14 +228,7 @@ impl Inner {
                 sought.entry(key.clone()).or_insert(None);
             }
         }
-        for unportable in found.unportable {
-            if let Err(error) = self
-                .suggest_unportable(work, &unportable.location, unportable.reason)
-                .await
-            {
-                self.report(error);
-            }
-        }
+        work.note_unportable(under.as_ref(), found.unportable);
         for (key, probe) in sought {
             if let Err(error) = self.sync_key(work, &mut prober, &key, probe).await {
                 self.report(format!("{}: {error:#}", key.as_str()));
@@ -421,41 +414,6 @@ impl Inner {
         } else {
             KeptSuggestion::Decided
         })
-    }
-
-    /// Suggests a file the scan could not name, once for each content the
-    /// disk shows at its location.
-    async fn suggest_unportable(
-        &self,
-        work: &mut Work,
-        location: &Path,
-        reason: String,
-    ) -> Result<()> {
-        let path = location
-            .strip_prefix(&self.root)
-            .unwrap_or(location)
-            .to_string_lossy()
-            .replace('\\', "/");
-        let Some(stat) = file_stat(location) else {
-            return Ok(());
-        };
-        if let Some(record) = self.state.kept_at(&path)? {
-            let unchanged = record.content.is_some_and(|content| {
-                pigeon_store::index::hash_file(location).is_ok_and(|hash| hash == content.hash)
-            });
-            if unchanged {
-                return Ok(());
-            }
-        }
-        let content = self.import(work, location, &stat).await?;
-        let change = SuggestedChange {
-            path,
-            content: Some(content),
-            replaces: None,
-            continues: None,
-        };
-        self.suggest(work, vec![change], Reason::Unportable(reason))
-            .await
     }
 
     /// Carries out the step of `reconcile` at `key`.

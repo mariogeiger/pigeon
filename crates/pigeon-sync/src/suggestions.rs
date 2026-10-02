@@ -19,8 +19,8 @@ use pigeon_core::selection::Cutoff;
 use pigeon_core::statement::{
     Reason, SuggestedChange, Suggestion, is_statement, is_suggestion_path, suggestion_path,
 };
-use pigeon_store::disk::{self, fs_path};
-use pigeon_store::index::{IndexEntry, hash_file};
+use pigeon_store::disk::fs_path;
+use pigeon_store::index::IndexEntry;
 use pigeon_store::state::Kept;
 use serde::Serialize;
 
@@ -56,8 +56,7 @@ pub struct SuggestionView {
 /// One change of a suggestion.
 #[derive(Clone, Debug, Serialize)]
 pub struct SuggestedChangeView {
-    /// The path it changes, not always portable.
-    pub path: String,
+    pub path: GroupPath,
     /// What it is, as text: a new file, a new version, a move from a path
     /// or a deletion.
     pub what: String,
@@ -91,18 +90,14 @@ enum Decision<'a> {
     Discard,
 }
 
-/// What a suggested path is compared by: its key when it is portable.
-fn path_key(path: &str) -> String {
-    GroupPath::parse(path).map_or_else(|_| path.to_owned(), |path| path.key().as_str().to_owned())
-}
-
 /// Whether `suggestion` holds exactly `changes`, by path and content.
 fn holds(suggestion: &Suggestion, changes: &[SuggestedChange]) -> bool {
     suggestion.changes.len() == changes.len()
         && changes.iter().all(|change| {
-            suggestion.changes.iter().any(|held| {
-                path_key(&held.path) == path_key(&change.path) && held.content == change.content
-            })
+            suggestion
+                .changes
+                .iter()
+                .any(|held| held.path.key() == change.path.key() && held.content == change.content)
         })
 }
 
@@ -111,7 +106,7 @@ fn touches(suggestion: &Suggestion, changes: &[SuggestedChange]) -> bool {
     suggestion.changes.iter().any(|held| {
         changes
             .iter()
-            .any(|change| path_key(&held.path) == path_key(&change.path))
+            .any(|change| held.path.key() == change.path.key())
     })
 }
 
@@ -157,15 +152,14 @@ impl Inner {
             match self.read_statement::<Suggestion>(&content).await {
                 Ok(suggestion) => {
                     for change in &suggestion.changes {
-                        let (Some(content), Ok(path)) =
-                            (change.content, GroupPath::parse(&change.path))
-                        else {
+                        let Some(content) = change.content else {
                             continue;
                         };
-                        if work.config.selection.cutoff(&path) == Cutoff::PlusInfinity
+                        if work.config.selection.cutoff(&change.path) == Cutoff::PlusInfinity
                             && !self.blobs.has(&content.hash).await?
                         {
-                            self.fetch(work, content.hash, version.stamp.machine, path.key());
+                            let key = change.path.key();
+                            self.fetch(work, content.hash, version.stamp.machine, key);
                         }
                     }
                     work.suggestions.insert(
@@ -184,8 +178,8 @@ impl Inner {
 
     /// The keys where the disk keeps a suggestion someone decided, and
     /// those its validation placed elsewhere, which the disk holds from
-    /// then on; a file no portable path names goes at once, unless it
-    /// changed since.
+    /// then on; a record of no portable path, which older versions kept,
+    /// is forgotten.
     fn decided_kept(&self) -> Result<Vec<PathKey>> {
         let mut keys = Vec::new();
         for (path, kept) in self.state.kept()? {
@@ -197,11 +191,12 @@ impl Inner {
             if !decided {
                 continue;
             }
-            let portable = GroupPath::parse(&path).ok();
+            let Ok(path) = GroupPath::parse(&path) else {
+                self.state.unkeep(&path)?;
+                continue;
+            };
             if let Some(placed) = self.placed(&kept)
-                && portable
-                    .as_ref()
-                    .is_none_or(|path| path.key() != placed.key())
+                && path.key() != placed.key()
             {
                 let key = placed.key();
                 if self.state.index_entry(&key)?.is_none() {
@@ -214,17 +209,7 @@ impl Inner {
                 }
                 keys.push(key);
             }
-            if let Some(path) = portable {
-                keys.push(path.key());
-                continue;
-            }
-            let location = self.root.join(&path);
-            if let Some(content) = kept.content
-                && hash_file(&location).is_ok_and(|hash| hash == content.hash)
-            {
-                disk::remove(&self.root, &location)?;
-            }
-            self.state.unkeep(&path)?;
+            keys.push(path.key());
         }
         Ok(keys)
     }
@@ -276,7 +261,7 @@ impl Inner {
                         .filter(|held| {
                             !changes
                                 .iter()
-                                .any(|change| path_key(&held.path) == path_key(&change.path))
+                                .any(|change| held.path.key() == change.path.key())
                         })
                         .cloned()
                         .collect(),
@@ -307,7 +292,7 @@ impl Inner {
                 statement: statement.clone(),
                 content: change.content,
             };
-            self.state.keep(&change.path, &kept)?;
+            self.state.keep(change.path.as_str(), &kept)?;
         }
         work.protect_due = true;
         Ok(())
@@ -351,13 +336,7 @@ impl Inner {
                 self.ensure_free(to)?;
                 (to.clone(), None)
             }
-            None => match GroupPath::parse(&change.path) {
-                Ok(path) => (path, change.continues),
-                Err(error) => bail!(
-                    "{} is no portable path ({error}): validate it at another path",
-                    change.path
-                ),
-            },
+            None => (change.path, change.continues),
         };
         let replaces = self.ledger.lock().head(&path.key()).map(|head| head.stamp);
         Ok(Change {
@@ -447,9 +426,8 @@ impl Engine {
                         content: change.content,
                         replaces: change.replaces,
                         continues: change.continues.clone(),
-                        outdated: GroupPath::parse(&change.path).is_ok_and(|path| {
-                            ledger.head(&path.key()).map(|head| head.stamp) != change.replaces
-                        }),
+                        outdated: ledger.head(&change.path.key()).map(|head| head.stamp)
+                            != change.replaces,
                     })
                     .collect(),
             })

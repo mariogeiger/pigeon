@@ -2,13 +2,15 @@
 //! listed once, a name matched whatever its case, the smallest portable
 //! spelling winning among the names of one key, no link followed but those
 //! of placed folders, and what `.pigeonignore` files exclude out of sight.
-//! A file is absent only where a folder that could be read lists none.
+//! A file is absent only where a folder that could be read lists none. A
+//! name no group path holds is kept out, with the portable name closest to
+//! it that its folder leaves free.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, FileType};
 use std::path::{Path, PathBuf};
 
-use pigeon_core::path::{GroupPath, PathError, PathKey, check_disk_name};
+use pigeon_core::path::{GroupPath, PathError, PathKey, check_disk_name, name_key, portable_name};
 
 use crate::disk::{Stat, TEMPORARY_PREFIX};
 use crate::ignore_rules::IgnoreRules;
@@ -35,11 +37,62 @@ pub enum Probe {
     Ignored,
 }
 
-/// A name on disk that no group path holds as it is spelled.
+/// A name on disk that no group path holds as it is spelled, which pigeon
+/// keeps out of the group.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Unportable {
+    /// The folder that holds it, as the disk spells it; `None` for the
+    /// root.
+    pub folder: Option<GroupPath>,
+    /// The name as the disk spells it, any invalid Unicode replaced.
+    pub name: String,
     pub location: PathBuf,
     pub reason: String,
+    /// The portable name closest to it that no other name of the folder
+    /// takes, whatever its case.
+    pub proposal: String,
+}
+
+impl Unportable {
+    /// Where it lies in the group: its folder's path, then its name.
+    #[must_use]
+    pub fn path(&self) -> String {
+        match &self.folder {
+            Some(folder) => format!("{folder}/{}", self.name),
+            None => self.name.clone(),
+        }
+    }
+
+    /// The path it takes once renamed to the proposal.
+    ///
+    /// # Errors
+    /// Returns the rule the path breaks, which no proposal does.
+    pub fn proposed(&self) -> Result<GroupPath, PathError> {
+        let folder = self.folder.iter().flat_map(GroupPath::names);
+        GroupPath::from_names(folder.chain([self.proposal.as_str()]))
+    }
+
+    /// Whether a scan of `under` sees it: it lies in that folder, or is
+    /// named as `under`, whatever the case and spelling, in its folder.
+    #[must_use]
+    pub fn lies_within(&self, under: &GroupPath) -> bool {
+        let folder = self.folder.as_ref().map(GroupPath::key);
+        let names: Vec<&str> = under.names().collect();
+        let parent = GroupPath::from_names(names[..names.len() - 1].iter().copied()).ok();
+        folder
+            .as_ref()
+            .is_some_and(|folder| folder.is_within(&under.key()))
+            || (folder == parent.as_ref().map(GroupPath::key)
+                && name_key(&self.name) == name_key(under.file_name()))
+    }
+
+    /// This name, of the folder at `spelled`.
+    pub(crate) fn in_folder(&self, spelled: &[String]) -> Self {
+        Self {
+            folder: GroupPath::from_names(spelled.iter().map(String::as_str)).ok(),
+            ..self.clone()
+        }
+    }
 }
 
 /// An entry of a folder under a portable name.
@@ -140,6 +193,19 @@ impl Prober {
         (spelled, location, grows)
     }
 
+    /// The name `name` of the folder `folder`, or of the root, if it is
+    /// still one no group path holds, as the disk shows it now.
+    pub fn unportable_at(&mut self, folder: Option<&GroupPath>, name: &str) -> Option<Unportable> {
+        let names: Vec<&str> = folder.iter().flat_map(|folder| folder.names()).collect();
+        let (location, spelled) = self.descend(&names).ok()?;
+        let listing = self.listing(&location).ok()?;
+        listing
+            .unportable
+            .iter()
+            .find(|unportable| unportable.name == name)
+            .map(|unportable| unportable.in_folder(&spelled))
+    }
+
     /// Forgets what `folder` listed, which changed.
     pub fn forget(&mut self, folder: &Path) {
         self.listings.remove(folder);
@@ -184,7 +250,7 @@ impl Prober {
         Ok(found)
     }
 
-    fn listing(&mut self, folder: &Path) -> Result<&Listing, &String> {
+    pub(crate) fn listing(&mut self, folder: &Path) -> Result<&Listing, &String> {
         listing(&mut self.listings, &mut self.rules, folder)
     }
 }
@@ -233,22 +299,21 @@ pub(crate) fn file_at(spelled: &[String], location: &Path, entry: &Entry) -> Pro
 
 /// Lists `folder`: each name in sight under its portable spelling, the
 /// smallest spelling of each caseless name, and the names that are no
-/// portable spelling, with why.
+/// portable spelling, with why and a free portable name for each.
 fn list(folder: &Path, rules: &mut IgnoreRules) -> Result<Listing, String> {
     let unreadable =
         |error: std::io::Error| format!("{} cannot be read: {error}", folder.display());
     let mut listing = Listing::default();
+    let mut names: BTreeMap<String, usize> = BTreeMap::new();
+    let mut out: Vec<(PathBuf, String, String)> = Vec::new();
     let mut spellings: BTreeMap<String, Vec<Entry>> = BTreeMap::new();
     for entry in fs::read_dir(folder).map_err(unreadable)? {
         let entry = entry.map_err(unreadable)?;
         let kind = entry.file_type().map_err(unreadable)?;
         let location = entry.path();
-        let Some(written) = entry.file_name().to_str().map(str::to_owned) else {
-            let reason = "the name is not valid Unicode".to_owned();
-            listing.unportable.push(Unportable { location, reason });
-            continue;
-        };
-        if written.starts_with(TEMPORARY_PREFIX) {
+        let lossy = entry.file_name().to_string_lossy().into_owned();
+        *names.entry(name_key(&lossy)).or_default() += 1;
+        if lossy.starts_with(TEMPORARY_PREFIX) {
             listing.temporaries.push(location);
             continue;
         }
@@ -256,6 +321,10 @@ fn list(folder: &Path, rules: &mut IgnoreRules) -> Result<Listing, String> {
         if rules.excludes(&location, is_folder) {
             continue;
         }
+        let Some(written) = entry.file_name().to_str().map(str::to_owned) else {
+            out.push((location, lossy, "the name is not valid Unicode".to_owned()));
+            continue;
+        };
         let name = match check_disk_name(&written) {
             Ok(()) => written.clone(),
             Err(error) => {
@@ -264,8 +333,7 @@ fn list(folder: &Path, rules: &mut IgnoreRules) -> Result<Listing, String> {
                 {
                     name
                 } else {
-                    let reason = error.to_string();
-                    listing.unportable.push(Unportable { location, reason });
+                    out.push((location, written, error.to_string()));
                     continue;
                 }
             }
@@ -285,14 +353,48 @@ fn list(folder: &Path, rules: &mut IgnoreRules) -> Result<Listing, String> {
         let mut entries = entries.into_iter();
         let first = entries.next().expect("a caseless name has a spelling");
         for other in entries {
-            listing.unportable.push(Unportable {
-                reason: format!("{} differs only by case from {}", other.name, first.name),
-                location: folder.join(&other.written),
-            });
+            let reason = format!("{} differs only by case from {}", other.name, first.name);
+            out.push((folder.join(&other.written), other.written, reason));
         }
         listing.entries.insert(caseless, first);
     }
+    listing.unportable = out
+        .into_iter()
+        .map(|(location, name, reason)| Unportable {
+            folder: None,
+            proposal: free_name(&name, &mut names),
+            name,
+            location,
+            reason,
+        })
+        .collect();
     Ok(listing)
+}
+
+/// The portable name closest to `name` that no other of the folder's
+/// `names`, counted by key, takes, numbered when it must be; it takes it.
+fn free_name(name: &str, names: &mut BTreeMap<String, usize>) -> String {
+    let own = name_key(name);
+    let base = portable_name(name);
+    let mut proposal = base.clone();
+    for number in 2.. {
+        let key = name_key(&proposal);
+        let taken = names.get(&key).copied().unwrap_or(0);
+        if taken == usize::from(key == own) {
+            *names.entry(key).or_default() += 1;
+            break;
+        }
+        proposal = numbered(&base, number);
+    }
+    proposal
+}
+
+/// `name` with `number` in brackets before its extension.
+fn numbered(name: &str, number: usize) -> String {
+    match name.rfind('.') {
+        Some(dot) if dot > 0 => format!("{} ({number}){}", &name[..dot], &name[dot..]),
+        _ => format!("{name} ({number})"),
+    }
 }
 
 /// The NFC spelling of `written`, the name of the file at `location`,
