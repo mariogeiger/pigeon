@@ -46,6 +46,9 @@ number, and any other change the third.
 
 ### Removed
 
+- `pigeon selection download` and `unfollow`, and the Files menu's
+  Download: `pin --time now` keeps a copy as it is now, and `free` frees
+  it.
 - Excluding a member: `pigeon member exclude`, the Overview's Exclude
   and the renewal of the group key it made. The exclusions in a group's
   history are ignored.

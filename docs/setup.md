@@ -130,14 +130,15 @@ with the same name on all of them. `pigeon group names` hears the group
 without joining it and lists its members, to add a machine of theirs, and
 the names taken. Keep the machine that gave the key
 online until the newcomer has joined. `pigeon group join` waits for the
-group's answer. If the name was excluded or a folder claims it, it says so
-and prints the `pigeon member claim` command that claims another name.
+group's answer. If another key holds the name or a folder claims it, it
+says so and prints the `pigeon member claim` command that claims another
+name.
 
-To remove members, `pigeon member exclude --member alice` excludes alice,
-and `pigeon group leave` excludes yourself. The name stays taken. Excluding
-renews the group key: machines already in the group keep working, but the
-old key admits no new machine, so run `pigeon group key` again for the next
-newcomer.
+`pigeon group leave` takes this machine out of the group: it stops syncing
+the group and forgets its key, secrets and state, keeping the files on
+disk, and tells the group nothing, so the member's name stays taken and
+their other machines go on. Whoever holds the group key may join, so share
+it only with those meant to.
 
 ## 5. Organize the files
 
