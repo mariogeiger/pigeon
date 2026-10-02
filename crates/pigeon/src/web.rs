@@ -10,6 +10,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::Router;
+use axum::body::{Body, Bytes};
 use axum::extract::{Form, Multipart, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -22,6 +23,7 @@ use pigeon_core::patch::Content;
 use pigeon_core::path::GroupPath;
 use pigeon_sync::Engine;
 use serde_json::{Map, Value, json};
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::api::{App, Refusal, call};
 use crate::catalog::{Kind, find};
@@ -214,6 +216,7 @@ async fn file(
 async fn side(engine: &Engine, content: Option<&Content>) -> Side {
     match content {
         None => Side::NoFile,
+        Some(content) if content.size > pages::DIFF_LIMIT => Side::TooLarge,
         Some(content) => match engine.read(content).await {
             Ok(Some(bytes)) => Side::Bytes(bytes),
             _ => Side::Unavailable,
@@ -301,12 +304,13 @@ async fn raw(
         return Failure::new(StatusCode::BAD_REQUEST, "Which file?", &back).into_response();
     };
     let time = query.get("time").and_then(|time| time.parse().ok());
-    let bytes = with_engine(&app, &group, async |engine| {
+    let download = with_engine(&app, &group, async |engine| {
         let content = version_content(engine, &path, time)?;
-        engine.read(&content).await.ok().flatten()
+        let stream = engine.stream(&content).await.ok().flatten()?;
+        Some((stream, content.size))
     })
     .await;
-    match bytes {
+    match download {
         Err(failure) => failure.into_response(),
         Ok(None) => Failure::new(
             StatusCode::NOT_FOUND,
@@ -314,20 +318,42 @@ async fn raw(
             &back,
         )
         .into_response(),
-        Ok(Some(bytes)) => {
+        Ok(Some((stream, size))) => {
             let name = path.file_name().replace('"', "");
             let disposition = format!("attachment; filename=\"{name}\"");
             (
                 [
                     (header::CONTENT_TYPE, "application/octet-stream".to_owned()),
                     (header::CONTENT_DISPOSITION, disposition),
+                    (header::CONTENT_LENGTH, size.to_string()),
                 ],
-                bytes,
+                Body::from_stream(chunks(stream)),
             )
                 .into_response()
         }
     }
 }
+
+/// What `reader` holds, in chunks as it is read, so that a file of any size
+/// is sent without being held in memory.
+fn chunks(
+    reader: impl AsyncRead + Unpin + Send + 'static,
+) -> impl futures_util::Stream<Item = std::io::Result<Bytes>> {
+    futures_util::stream::unfold(reader, |mut reader| async {
+        let mut chunk = vec![0; DOWNLOAD_CHUNK];
+        match reader.read(&mut chunk).await {
+            Ok(0) => None,
+            Ok(read) => {
+                chunk.truncate(read);
+                Some((Ok(Bytes::from(chunk)), reader))
+            }
+            Err(error) => Some((Err(error), reader)),
+        }
+    })
+}
+
+/// The most a download reads at once.
+const DOWNLOAD_CHUNK: usize = 1 << 16;
 
 /// Sends the hash of the program the daemon runs, for pages to notice a
 /// restart onto another, then an event each time what the engine of

@@ -253,7 +253,7 @@ fn as_text(bytes: &[u8]) -> Option<&str> {
 }
 
 /// The largest file whose difference the web UI shows.
-const DIFF_LIMIT: usize = 1 << 20;
+pub const DIFF_LIMIT: u64 = 1 << 20;
 
 /// One side of a comparison.
 pub enum Side {
@@ -261,6 +261,8 @@ pub enum Side {
     NoFile,
     /// Content this machine does not hold.
     Unavailable,
+    /// Content too large to read for a comparison.
+    TooLarge,
     Bytes(Vec<u8>),
 }
 
@@ -268,7 +270,7 @@ impl Side {
     fn bytes(&self) -> Option<&[u8]> {
         match self {
             Self::NoFile => Some(&[]),
-            Self::Unavailable => None,
+            Self::Unavailable | Self::TooLarge => None,
             Self::Bytes(bytes) => Some(bytes),
         }
     }
@@ -277,13 +279,16 @@ impl Side {
 /// What changes from `old` to `new`, as a line diff for text.
 #[must_use]
 pub fn diff(old: &Side, new: &Side) -> Markup {
+    if matches!((old, new), (Side::TooLarge, _) | (_, Side::TooLarge)) {
+        return html! { p { "Too large to compare." } };
+    }
     let (Some(old), Some(new)) = (old.bytes(), new.bytes()) else {
         return html! { p { "The content is not on this machine yet." } };
     };
     let (Some(old), Some(new)) = (as_text(old), as_text(new)) else {
         return html! { p { "Binary content." } };
     };
-    if old.len() + new.len() > DIFF_LIMIT {
+    if (old.len() + new.len()) as u64 > DIFF_LIMIT {
         return html! { p { "Too large to compare." } };
     }
     let diff = TextDiff::from_lines(old, new);
@@ -340,6 +345,15 @@ mod tests {
     fn query_values_are_percent_encoded() {
         assert_eq!(encode("+alice/a b&c.txt"), "%2Balice/a%20b%26c.txt");
         assert_eq!(encode("é"), "%C3%A9");
+    }
+
+    #[test]
+    fn a_content_too_large_to_read_is_not_compared() {
+        let text = Side::Bytes(b"a\n".to_vec());
+        for (old, new) in [(&Side::TooLarge, &text), (&text, &Side::TooLarge)] {
+            let shown = diff(old, new).into_string();
+            assert_eq!(shown, "<p>Too large to compare.</p>");
+        }
     }
 
     #[test]

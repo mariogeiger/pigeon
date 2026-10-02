@@ -19,6 +19,7 @@ use pigeon_core::statement::is_statement;
 use pigeon_net::hello::{Heard, Standing};
 use pigeon_store::index::IndexEntry;
 use serde::{Serialize, Serializer};
+use tokio::io::AsyncRead;
 
 use crate::engine::{Engine, JoinState};
 
@@ -243,6 +244,22 @@ impl Engine {
             return Ok(None);
         }
         Ok(Some(blobs.read(&content.hash).await?))
+    }
+
+    /// The content as a stream, if this machine holds it.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the blob store cannot be read.
+    pub async fn stream(
+        &self,
+        content: &Content,
+    ) -> Result<Option<impl AsyncRead + Unpin + Send + use<>>> {
+        let blobs = &self.inner.blobs;
+        if !blobs.has(&content.hash).await? {
+            return Ok(None);
+        }
+        Ok(Some(blobs.stream(&content.hash)))
     }
 
     /// Every file of the group at `under` or inside it, but the

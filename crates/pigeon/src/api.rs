@@ -9,7 +9,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -210,12 +210,14 @@ async fn api(
     }
 }
 
-/// The whole server.
+/// The whole server, which takes a body of any size: the size of a file is
+/// not for the server to limit.
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/api/{noun}/{verb}", post(api))
         .route("/open", get(open))
         .merge(web::routes())
+        .layer(DefaultBodyLimit::disable())
         .layer(middleware::from_fn_with_state(app.clone(), guard))
         .with_state(app)
 }

@@ -89,22 +89,44 @@ impl Machine {
 
     /// Posts a web form of `fields` to `/act/<action>`, as a browser does.
     pub async fn post_form(&self, action: &str, fields: &[(&str, &str)]) -> Answer {
+        self.post_upload(action, fields, None).await
+    }
+
+    /// Posts a web form of `fields` and, when given, the file `(name,
+    /// content)` chosen in it, to `/act/<action>`.
+    pub async fn post_upload(
+        &self,
+        action: &str,
+        fields: &[(&str, &str)],
+        file: Option<(&str, &[u8])>,
+    ) -> Answer {
         let boundary = "pigeonboundary";
-        let parts: Vec<String> = fields
-            .iter()
-            .map(|(name, value)| {
+        let mut form = Vec::new();
+        for (name, value) in fields {
+            form.extend(
                 format!(
                     "--{boundary}\r\ncontent-disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
                 )
-            })
-            .collect();
-        let form = format!("{}--{boundary}--\r\n", parts.concat());
+                .bytes(),
+            );
+        }
+        if let Some((name, content)) = file {
+            form.extend(
+                format!(
+                    "--{boundary}\r\ncontent-disposition: form-data; name=\"{name}\"; filename=\"upload\"\r\ncontent-type: application/octet-stream\r\n\r\n"
+                )
+                .bytes(),
+            );
+            form.extend(content);
+            form.extend(b"\r\n");
+        }
+        form.extend(format!("--{boundary}--\r\n").bytes());
         let kind = format!("multipart/form-data; boundary={boundary}");
         self.send(
             "POST",
             &format!("/act/{action}"),
             vec![self.cookie()],
-            Some((kind, form.into_bytes())),
+            Some((kind, form)),
         )
         .await
     }

@@ -269,7 +269,10 @@ of a folder is. Unchecking asks whether to pin the current copy here, as
 it is now, or free the space. A rule set this way replaces the earlier rules for the
 paths inside it; hand-written patterns such as `*.pdf` stay. Each row's ⋯
 renames, replaces, adds, deletes, pins now or publishes now; each
-change asks to be confirmed, then publishes at once.
+change asks to be confirmed, then publishes at once. A file of any size
+can be added or replaced from the page or the command line, and a file's
+download is sent in chunks; the page compares the versions of a file only
+up to 1 MiB, and says so beyond.
 Each status is one emoji, which a legend under the tree explains: ⏬ on
 its way, 📌 pinned copy, ⏳ and 🗑️ an edit or a deletion waiting, ✍️
 another member's draft, ⚠️ and 🛑 rival drafts, 📬 a suggestion.

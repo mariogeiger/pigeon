@@ -15,6 +15,7 @@ use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::store::fs::options::Options;
 use iroh_blobs::store::{GcConfig, ProtectOutcome};
 use pigeon_core::patch::ContentHash;
+use tokio::io::AsyncRead;
 
 use crate::disk;
 use crate::error::{Result, StoreError};
@@ -213,6 +214,12 @@ impl Blobs {
             .await
             .map_err(blob_error)?;
         Ok(bytes.to_vec())
+    }
+
+    /// Reads a content as a stream, for files too large to hold in memory.
+    #[must_use]
+    pub fn stream(&self, hash: &ContentHash) -> impl AsyncRead + Unpin + Send + use<> {
+        self.store.blobs().reader(blob_hash(hash))
     }
 
     /// Stores bytes, such as a statement pigeon writes itself.
