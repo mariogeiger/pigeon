@@ -319,8 +319,11 @@ impl Inner {
         });
     }
 
-    /// Signs, stores, folds and sends a patch of this machine.
-    pub(crate) fn publish_at(&self, stamp: Stamp, changes: Vec<Change>) -> Result<()> {
+    /// Signs, stores, folds and sends a patch of this machine, once the
+    /// blobs it names are on the disk for good, so that no stored patch
+    /// names content this machine lost.
+    pub(crate) async fn publish_at(&self, stamp: Stamp, changes: Vec<Change>) -> Result<()> {
+        self.blobs.store().sync_db().await?;
         let patch = Patch { stamp, changes };
         let signed = SignedPatch::sign(&self.group, patch, self.cert.clone(), &self.machine);
         self.state.add_patch(&signed)?;

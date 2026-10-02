@@ -7,6 +7,7 @@
 //! that hears a group before its machine chooses a member name.
 
 mod actions;
+mod batches;
 mod disk_sync;
 pub mod edit;
 pub mod engine;

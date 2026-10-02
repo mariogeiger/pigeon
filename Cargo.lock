@@ -3193,6 +3193,7 @@ dependencies = [
  "pigeon-core",
  "pigeon-net",
  "pigeon-store",
+ "postcard",
  "serde",
  "serde_json",
  "tempfile",

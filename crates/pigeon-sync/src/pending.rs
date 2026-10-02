@@ -3,7 +3,8 @@
 //! same path, whatever its case, and which of them are published first,
 //! which makes this one a suggestion. The engine announces this machine's
 //! drafts, the new files at paths no member owns, whenever one appears,
-//! changes or goes.
+//! changes or goes: those published soonest, as many as one announcement
+//! carries.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -14,6 +15,7 @@ use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::selection::Cutoff;
 use serde::Serialize;
 
+use crate::batches::{BATCH_BYTES, batches, encoded_size};
 use crate::engine::{Engine, Inner, Pending, Work};
 use crate::views::as_text;
 
@@ -88,32 +90,38 @@ fn left(settle: Duration, elapsed: Duration) -> u64 {
 }
 
 impl Inner {
-    /// Announces this machine's drafts, signed, when they changed since
-    /// they were last announced.
+    /// Announces this machine's drafts published soonest, as many as one
+    /// announcement carries, signed, when they changed since they were
+    /// last announced.
     pub(crate) fn announce_drafts(&self, work: &mut Work) {
-        let mut drafts: Vec<&Pending> = work
+        let mut drafts: Vec<(&Pending, Draft)> = work
             .pending
             .values()
             .filter(|pending| self.is_draft(pending))
+            .map(|pending| {
+                let draft = Draft {
+                    path: pending.path.clone(),
+                    size: pending.size(),
+                    due_in: left(self.settle_time(pending), pending.since.elapsed()),
+                };
+                (pending, draft)
+            })
             .collect();
-        drafts.sort_by(|a, b| a.path.cmp(&b.path));
+        drafts.sort_by(|(a, _), (b, _)| (a.since, &a.path).cmp(&(b.since, &b.path)));
+        let drafts = batches(drafts, |(_, draft)| encoded_size(draft), BATCH_BYTES)
+            .into_iter()
+            .next()
+            .unwrap_or_default();
         let announced: Vec<(PathKey, u64, Instant)> = drafts
             .iter()
-            .map(|pending| (pending.path.key(), pending.size(), pending.since))
+            .map(|(pending, _)| (pending.path.key(), pending.size(), pending.since))
             .collect();
         if work.announced.as_ref() == Some(&announced) {
             return;
         }
         let drafts = Drafts {
             machine: self.me(),
-            drafts: drafts
-                .iter()
-                .map(|pending| Draft {
-                    path: pending.path.clone(),
-                    size: pending.size(),
-                    due_in: left(self.settle_time(pending), pending.since.elapsed()),
-                })
-                .collect(),
+            drafts: drafts.into_iter().map(|(_, draft)| draft).collect(),
         };
         let signed = SignedDrafts::sign(&self.group, drafts, self.cert.clone(), &self.machine);
         self.node.announce(signed);

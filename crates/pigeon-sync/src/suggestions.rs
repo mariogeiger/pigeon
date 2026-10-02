@@ -402,7 +402,7 @@ impl Inner {
             .lock()
             .check(&self.member, &self.cert.member, &decisions)?;
         let keys: Vec<PathKey> = decisions.iter().map(|change| change.path.key()).collect();
-        self.publish_at(self.clock.stamp(), decisions)?;
+        self.publish_at(self.clock.stamp(), decisions).await?;
         work.protect_due = true;
         self.refresh_keys(work, &keys).await;
         self.follow_suggestions(work).await;

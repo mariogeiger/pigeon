@@ -1,7 +1,8 @@
 //! Publishing the edits that settled: importing their files, pairing each
 //! file that vanished with one of the same content that appeared, as its
-//! move, publishing as one patch what the rules let this machine publish by
-//! itself, and suggesting the rest to the group.
+//! move, publishing what the rules let this machine publish by itself, in
+//! patches of bounded size that keep each move whole, and suggesting the
+//! rest to the group.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -18,6 +19,7 @@ use pigeon_core::statement::{Reason, SuggestedChange, is_statement};
 use pigeon_store::disk::Stat;
 use pigeon_store::index::{IndexEntry, hash_file, observe};
 
+use crate::batches::{BATCH_BYTES, batches, encoded_size};
 use crate::disk_sync::{change_at, probed, stat_time};
 use crate::engine::{Inner, JoinState, Pending, Work, now};
 
@@ -59,6 +61,10 @@ struct Settled {
     edited: u64,
     shape: Shape,
 }
+
+/// Edits published or suggested whole: the two halves of a move, or one
+/// edit.
+type Unit = Vec<Settled>;
 
 /// What an edit does to the content the disk last matched.
 enum Shape {
@@ -155,19 +161,34 @@ impl Inner {
             self.suggest_settled(work, unit, Reason::Rejected(rejection))
                 .await;
         }
-        if accepted.is_empty() {
-            return;
+        let size = |unit: &Unit| {
+            unit.iter()
+                .map(|settled| encoded_size(&settled.change))
+                .sum()
+        };
+        for batch in batches(accepted, size, BATCH_BYTES) {
+            if !self
+                .publish_batch(batch.into_iter().flatten().collect())
+                .await
+            {
+                return;
+            }
         }
+    }
+
+    /// Publishes `settled` as one patch and records what the disk now
+    /// matches: `false` when it could not.
+    async fn publish_batch(&self, settled: Vec<Settled>) -> bool {
         let stamp = self.clock.stamp();
-        let changes = accepted
+        let changes = settled
             .iter()
             .map(|settled| settled.change.clone())
             .collect();
-        if let Err(error) = self.publish_at(stamp, changes) {
+        if let Err(error) = self.publish_at(stamp, changes).await {
             self.report(format!("publishing: {error:#}"));
-            return;
+            return false;
         }
-        let entries: Vec<(PathKey, IndexEntry)> = accepted
+        let entries: Vec<(PathKey, IndexEntry)> = settled
             .into_iter()
             .map(|settled| {
                 let synced = Some(stamp);
@@ -186,6 +207,7 @@ impl Inner {
         {
             self.report(error);
         }
+        true
     }
 
     /// The stamp and change of the version the disk last matched at `key`.
@@ -310,7 +332,7 @@ impl Inner {
     }
 
     /// Suggests `unit` for `reason`; the disk keeps what it holds.
-    async fn suggest_settled(&self, work: &mut Work, unit: Vec<Settled>, reason: Reason) {
+    async fn suggest_settled(&self, work: &mut Work, unit: Unit, reason: Reason) {
         let changes = unit
             .iter()
             .map(|settled| SuggestedChange::from(&settled.change))
@@ -333,12 +355,9 @@ impl Inner {
 
     /// Keeps the units the ledger accepts together, and the others with
     /// why it refuses each.
-    fn keep_acceptable(
-        &self,
-        units: Vec<Vec<Settled>>,
-    ) -> (Vec<Settled>, Vec<(Vec<Settled>, String)>) {
+    fn keep_acceptable(&self, units: Vec<Unit>) -> (Vec<Unit>, Vec<(Unit, String)>) {
         let ledger = self.ledger.lock();
-        let check = |units: &[&Vec<Settled>]| {
+        let check = |units: &[&Unit]| {
             let changes: Vec<Change> = units
                 .iter()
                 .flat_map(|unit| unit.iter().map(|settled| settled.change.clone()))
@@ -346,13 +365,13 @@ impl Inner {
             ledger.check(&self.member, &self.cert.member, &changes)
         };
         if check(&units.iter().collect::<Vec<_>>()).is_ok() {
-            return (units.into_iter().flatten().collect(), Vec::new());
+            return (units, Vec::new());
         }
         let mut accepted = Vec::new();
         let mut refused = Vec::new();
         for unit in units {
             match check(&[&unit]) {
-                Ok(()) => accepted.extend(unit),
+                Ok(()) => accepted.push(unit),
                 Err(rejection) => refused.push((unit, rejection.to_string())),
             }
         }
@@ -428,7 +447,7 @@ impl Inner {
 /// Groups the settled edits into units published or suggested whole: each
 /// vanished file with a file of its content that appeared, which continues
 /// it, and every other edit alone.
-fn pair_moves(settled: Vec<Settled>) -> Vec<Vec<Settled>> {
+fn pair_moves(settled: Vec<Settled>) -> Vec<Unit> {
     let (mut vanished, others): (Vec<Settled>, Vec<Settled>) = settled
         .into_iter()
         .partition(|settled| settled.shape.vanished().is_some());

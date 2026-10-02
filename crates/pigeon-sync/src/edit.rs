@@ -219,7 +219,7 @@ impl Inner {
             .lock()
             .check(&self.member, &self.cert.member, &changes)?;
         let keys: Vec<PathKey> = changes.iter().map(|change| change.path.key()).collect();
-        self.publish_at(self.clock.stamp(), changes)?;
+        self.publish_at(self.clock.stamp(), changes).await?;
         work.protect_due = true;
         self.refresh_keys(work, &keys).await;
         Ok(())

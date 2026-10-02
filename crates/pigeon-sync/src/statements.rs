@@ -35,7 +35,7 @@ impl Inner {
             replaces,
             continues: None,
         };
-        self.publish_at(stamp, vec![change])?;
+        self.publish_at(stamp, vec![change]).await?;
         let _ = self.wake.send(vec![path.key()]);
         Ok(())
     }
