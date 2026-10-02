@@ -5,7 +5,7 @@ folders that the whole group sees, anyone may add files elsewhere, and
 every other change waits as a suggestion that anyone in the group
 validates or discards, with every version kept in the history.
 
-![Three machines keep one tree in sync: an owner's edit reaches every machine, a locked file's change travels to its owner as a request she accepts, and a file dropped in inbox/ spreads and freezes](assets/pigeon.gif)
+![Three machines keep one tree in sync: an owner's edit reaches every machine; another member's edit of her file becomes a suggestion every machine sees, which a third member validates; a file dropped in inbox/ spreads to every machine; a deletion of it on one machine becomes a suggestion, which another member discards, bringing the file back](assets/pigeon.gif)
 
 ## Install
 
