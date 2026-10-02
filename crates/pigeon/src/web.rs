@@ -65,11 +65,21 @@ impl IntoResponse for Failure {
 
 type Page = Result<Html<String>, Failure>;
 
+/// The arguments of a call, from pairs of a name and its text.
+fn arguments<const N: usize>(pairs: [(&str, &str); N]) -> Map<String, Value> {
+    pairs
+        .into_iter()
+        .map(|(name, text)| (name.to_owned(), Value::String(text.to_owned())))
+        .collect()
+}
+
 /// Runs a view for a page.
-async fn view(app: &App, noun: &str, verb: &str, args: Value) -> Result<Value, Failure> {
-    let Value::Object(args) = args else {
-        unreachable!("views take objects")
-    };
+async fn view(
+    app: &App,
+    noun: &str,
+    verb: &str,
+    args: Map<String, Value>,
+) -> Result<Value, Failure> {
     call(app, noun, verb, args)
         .await
         .map_err(|refusal| Failure::new(refusal.status, refusal.message, "/"))
@@ -93,7 +103,7 @@ fn html_page(markup: &Markup) -> Html<String> {
 }
 
 async fn home(State(app): State<Arc<App>>) -> Page {
-    let groups = view(&app, "group", "list", json!({})).await?;
+    let groups = view(&app, "group", "list", Map::new()).await?;
     Ok(html_page(&pages::home(&groups)))
 }
 
@@ -109,12 +119,12 @@ fn bar_with<'a>(group: &'a str, tab: Option<Tab>, suggestions: &Value) -> Bar<'a
 
 /// The bar of `group`'s page at `tab`.
 async fn bar<'a>(app: &App, group: &'a str, tab: Option<Tab>) -> Result<Bar<'a>, Failure> {
-    let suggestions = view(app, "suggestion", "list", json!({ "group": group })).await?;
+    let suggestions = view(app, "suggestion", "list", arguments([("group", group)])).await?;
     Ok(bar_with(group, tab, &suggestions))
 }
 
 async fn overview(State(app): State<Arc<App>>, Path(group): Path<String>) -> Page {
-    let of_group = || json!({ "group": group });
+    let of_group = || arguments([("group", &group)]);
     let status = view(&app, "group", "status", of_group()).await?;
     let members = view(&app, "member", "list", of_group()).await?;
     let key = view(&app, "group", "key", of_group()).await?;
@@ -139,11 +149,11 @@ async fn files(
     let under = query
         .get("under")
         .map_or("", |under| under.trim_matches('/'));
-    let status = view(&app, "group", "status", json!({ "group": group })).await?;
-    let list = view(&app, "file", "list", json!({ "group": group })).await?;
-    let waiting = view(&app, "file", "pending", json!({ "group": group })).await?;
-    let suggestions = view(&app, "suggestion", "list", json!({ "group": group })).await?;
-    let unportable = view(&app, "file", "unportable", json!({ "group": group })).await?;
+    let status = view(&app, "group", "status", arguments([("group", &group)])).await?;
+    let list = view(&app, "file", "list", arguments([("group", &group)])).await?;
+    let waiting = view(&app, "file", "pending", arguments([("group", &group)])).await?;
+    let suggestions = view(&app, "suggestion", "list", arguments([("group", &group)])).await?;
+    let unportable = view(&app, "file", "unportable", arguments([("group", &group)])).await?;
     let member = status["member"].as_str().unwrap_or_default();
     let bar = bar_with(&group, Some(Tab::Files), &suggestions);
     Ok(html_page(&files_page::files(
@@ -167,7 +177,7 @@ async fn file(
         &app,
         "file",
         "list",
-        json!({ "group": group, "under": path }),
+        arguments([("group", &group), ("under", path)]),
     )
     .await?;
     let current = list
@@ -179,14 +189,14 @@ async fn file(
         &app,
         "file",
         "history",
-        json!({ "group": group, "path": path }),
+        arguments([("group", &group), ("path", path)]),
     )
     .await?;
     let waiting = view(
         &app,
         "file",
         "pending",
-        json!({ "group": group, "under": path }),
+        arguments([("group", &group), ("under", path)]),
     )
     .await?;
     let waiting = waiting
@@ -274,10 +284,7 @@ async fn config_preview(
     Form(form): Form<HashMap<String, String>>,
 ) -> Response {
     let text = form.get("text").cloned().unwrap_or_default();
-    let args = json!({ "group": group, "text": &text });
-    let Value::Object(args) = args else {
-        unreachable!("the arguments are an object")
-    };
+    let args = arguments([("group", &group), ("text", &text)]);
     match call(&app, "config", "preview", args).await {
         Ok(preview) => Json(overview_page::preview_parts(&group, &preview)).into_response(),
         Err(Refusal {
