@@ -317,24 +317,29 @@ mod tests {
 
     #[test]
     fn flags_become_the_api_arguments() {
-        let matches = command()
-            .try_get_matches_from([
+        let given = |line: &[&str]| {
+            let matches = command().try_get_matches_from(line).unwrap();
+            let (noun, nouns) = matches.subcommand().unwrap();
+            let (verb, verbs) = nouns.subcommand().unwrap();
+            Value::Object(arguments(find(noun, verb).unwrap(), verbs, false).unwrap())
+        };
+        assert_eq!(
+            given(&[
                 "pigeon",
                 "selection",
-                "unfollow",
+                "pin",
                 "-g",
                 "cheapmo",
                 "--pattern",
                 "/docs/",
-                "--free",
-            ])
-            .unwrap();
-        let (_, nouns) = matches.subcommand().unwrap();
-        let (_, verbs) = nouns.subcommand().unwrap();
-        let args = arguments(find("selection", "unfollow").unwrap(), verbs, false).unwrap();
+                "--time",
+                "now"
+            ]),
+            serde_json::json!({"group": "cheapmo", "pattern": "/docs/", "time": "now"})
+        );
         assert_eq!(
-            Value::Object(args),
-            serde_json::json!({"group": "cheapmo", "pattern": "/docs/", "free": true})
+            given(&["pigeon", "daemon", "reload", "--yes"]),
+            serde_json::json!({"yes": true})
         );
     }
 

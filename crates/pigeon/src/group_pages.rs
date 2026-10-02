@@ -141,8 +141,8 @@ pub fn file(bar: &Bar<'_>, path: &str, shown: &Shown) -> Markup {
         (form(action("file", "write"), &back, fill(group, &[("path", path)], &[])))
         (form(action("file", "rename"), &back, fill(group, &[("from", path)], &[("to", path)])))
         (form(action("file", "delete"), &back, fill(group, &[("path", path)], &[])))
-        @for verb in ["follow", "download", "unfollow", "pin"] {
-            (form(action("selection", verb), &back, fill(group, &[("pattern", &pattern)], &[])))
+        @for verb in ["follow", "pin", "free"] {
+            (form(action("selection", verb), &back, fill(group, &[("pattern", &pattern)], &[("time", "now")])))
         }
     };
     layout(path, Some(bar), &body)

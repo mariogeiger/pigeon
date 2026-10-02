@@ -109,11 +109,11 @@ mod tests {
         };
         let markup = form(rename, "/", fill).into_string();
         assert!(markup.contains(r#"<input type="text" name="to" value="b" required>"#));
-        let download = find("selection", "download").unwrap();
+        let follow = find("selection", "follow").unwrap();
         let fill = Fill {
             fixed: &[("pattern", "/docs/")],
             ..Fill::default()
         };
-        assert!(!form(download, "/", fill).into_string().contains("<details"));
+        assert!(!form(follow, "/", fill).into_string().contains("<details"));
     }
 }

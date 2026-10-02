@@ -17,6 +17,11 @@ pub struct Args {
     values: Map<String, Value>,
 }
 
+/// `text`, the value of `name`, as a group path.
+fn group_path(name: &str, text: &str) -> Result<GroupPath> {
+    GroupPath::parse(text.trim_matches('/')).with_context(|| format!("--{name} {text:?}"))
+}
+
 /// `value` as `kind` holds it, or why it cannot be.
 fn normalize(param: &Param, value: Value) -> Result<Value, String> {
     let name = param.name;
@@ -75,11 +80,12 @@ impl Args {
         self.values.get(name).and_then(Value::as_str)
     }
 
-    /// The text of the required argument `name`.
+    /// The text of `name`, which the call must give.
     ///
     /// # Errors
     ///
-    /// Fails if it is missing, which a checked call rules out.
+    /// Fails if it is missing: a checked call gives every argument its
+    /// action requires, but may leave out an optional one.
     pub fn required(&self, name: &str) -> Result<&str> {
         self.text(name)
             .ok_or_else(|| anyhow!("{} needs --{name}", self.action.command()))
@@ -91,8 +97,18 @@ impl Args {
     ///
     /// Fails if it is missing or not a portable path.
     pub fn path(&self, name: &str) -> Result<GroupPath> {
-        let text = self.required(name)?;
-        GroupPath::parse(text.trim_matches('/')).with_context(|| format!("--{name} {text:?}"))
+        group_path(name, self.required(name)?)
+    }
+
+    /// The group path in `name`, if given.
+    ///
+    /// # Errors
+    ///
+    /// Fails if it is not a portable path.
+    pub fn optional_path(&self, name: &str) -> Result<Option<GroupPath>> {
+        self.text(name)
+            .map(|text| group_path(name, text))
+            .transpose()
     }
 
     /// The bytes in `name`, sent as base64.
@@ -112,13 +128,18 @@ impl Args {
         self.values.get(name).and_then(Value::as_bool) == Some(true)
     }
 
-    /// The time in `name`, in NTP64.
+    /// The time in `name`, in NTP64: an RFC 3339 time, or `now` for the
+    /// time `now` reads.
     ///
     /// # Errors
     ///
-    /// Fails if it is missing or not an RFC 3339 time.
-    pub fn time(&self, name: &str) -> Result<u64> {
-        parse_rfc3339(self.required(name)?).map_err(|error| anyhow!("--{name}: {error}"))
+    /// Fails if it is missing, or neither `now` nor an RFC 3339 time.
+    pub fn time(&self, name: &str, now: impl FnOnce() -> u64) -> Result<u64> {
+        match self.required(name)? {
+            "now" => Ok(now()),
+            text => parse_rfc3339(text)
+                .map_err(|error| anyhow!("--{name} is now or an RFC 3339 time: {error}")),
+        }
     }
 
     /// The versions in `name`, as texts separated by spaces.
@@ -149,21 +170,33 @@ mod tests {
 
     #[test]
     fn form_strings_become_typed_values() {
-        let unfollow = args(
-            "selection",
-            "unfollow",
-            json!({"pattern": "/a/", "free": "on"}),
-        )
-        .unwrap();
-        assert!(unfollow.flag("free"));
+        let reload = args("daemon", "reload", json!({"yes": "on"})).unwrap();
+        assert!(reload.flag("yes"));
         let restore = args(
             "file",
             "restore",
             json!({"pattern": "/docs/", "time": "1970-01-01T00:00:01Z", "group": "g"}),
         )
         .unwrap();
-        assert_eq!(restore.time("time").unwrap(), 1 << 32);
+        assert_eq!(restore.time("time", || 7).unwrap(), 1 << 32);
         assert_eq!(restore.text("group"), Some("g"));
+    }
+
+    #[test]
+    fn now_is_the_time_the_clock_reads() {
+        let pin = args("selection", "pin", json!({"pattern": "/a/", "time": "now"})).unwrap();
+        assert_eq!(pin.time("time", || 7).unwrap(), 7);
+        let never = args(
+            "selection",
+            "pin",
+            json!({"pattern": "/a/", "time": "never"}),
+        )
+        .unwrap();
+        let error = never.time("time", || 7).unwrap_err().to_string();
+        assert!(
+            error.starts_with("--time is now or an RFC 3339 time: "),
+            "{error}"
+        );
     }
 
     #[test]
@@ -175,21 +208,25 @@ mod tests {
         );
         let unknown = args("group", "list", json!({"group": "g"})).unwrap_err();
         assert!(unknown.to_string().contains("takes no --group"));
-        let mistyped = args(
-            "selection",
-            "unfollow",
-            json!({"pattern": "a", "free": "maybe"}),
-        )
-        .unwrap_err();
+        let mistyped = args("daemon", "reload", json!({"yes": "maybe"})).unwrap_err();
         assert!(mistyped.to_string().contains("on or off"));
     }
 
     #[test]
-    fn paths_drop_surrounding_slashes_and_must_be_portable() {
+    fn paths_drop_surrounding_slashes_and_must_be_portable_when_given() {
         let delete = args("file", "delete", json!({"path": "/docs/a.txt"})).unwrap();
         assert_eq!(delete.path("path").unwrap().as_str(), "docs/a.txt");
         let bad = args("file", "delete", json!({"path": "a?b"})).unwrap();
         assert!(bad.path("path").is_err());
+        let everything = args("file", "list", json!({})).unwrap();
+        assert_eq!(everything.optional_path("under").unwrap(), None);
+        let docs = args("file", "list", json!({"under": "/docs/"})).unwrap();
+        assert_eq!(
+            docs.optional_path("under").unwrap().unwrap().as_str(),
+            "docs"
+        );
+        let bad = args("file", "list", json!({"under": "a?b"})).unwrap();
+        assert!(bad.optional_path("under").is_err());
     }
 
     #[test]

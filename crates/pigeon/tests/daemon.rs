@@ -9,17 +9,17 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use data_encoding::BASE64;
 use iroh::address_lookup::MemoryLookup;
 use pigeon::api::{App, serve};
-use pigeon::catalog::{ACTIONS, Kind};
 use pigeon::client::{Unconfirmed, call_at};
 use pigeon::daemon::{Daemon, Stop};
 use pigeon::home::Home;
+use pigeon_core::clock::{ntp_time, parse_rfc3339};
 use pigeon_sync::{Network, Options};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use tempfile::TempDir;
 
 struct Peer {
@@ -427,51 +427,6 @@ async fn web_forms_run_their_action_and_return() {
     assert!(page.contains("follow /docs/"), "{page}");
 }
 
-fn dummy(kind: Kind, peer: &Peer) -> Value {
-    match kind {
-        Kind::Text => json!("x"),
-        Kind::Path => json!("+alice/dummy.txt"),
-        Kind::Pattern => json!("/dummy/"),
-        Kind::Folder => json!(peer.root("dummy")),
-        Kind::Bytes => json!(base64("dummy")),
-        Kind::Document => json!("member = \"alice\"\n"),
-        Kind::Time => json!("2026-01-01T00:00:00Z"),
-        Kind::Flag => json!(false),
-    }
-}
-
-#[tokio::test]
-async fn every_action_of_the_catalog_is_carried_out() {
-    let lookup = MemoryLookup::new();
-    let peer = Peer::start(&lookup).await;
-    peer.call(
-        "group",
-        "create",
-        json!({"name": "cheapmo", "member": "alice", "root": peer.root("cheapmo")}),
-    )
-    .await
-    .unwrap();
-    for action in ACTIONS {
-        let mut args = Map::new();
-        for param in action.params {
-            args.insert(param.name.to_owned(), dummy(param.kind, &peer));
-        }
-        if action.scope == pigeon::catalog::Scope::Group {
-            args.insert("group".to_owned(), json!("cheapmo"));
-        }
-        let result = peer
-            .call(action.noun, action.verb, Value::Object(args))
-            .await;
-        if let Err(error) = result {
-            assert!(
-                !error.contains("not implemented"),
-                "{}: {error}",
-                action.command()
-            );
-        }
-    }
-}
-
 #[tokio::test]
 async fn leaving_forgets_the_group_here_and_keeps_its_files_even_when_it_does_not_start() {
     let lookup = MemoryLookup::new();
@@ -606,19 +561,31 @@ async fn group_pages_follow_files_and_hear_each_change() {
         page.contains(r#"data-pattern="/+alice/notes.txt" data-state="checked" checked"#),
         "{page}"
     );
+    let before = ntp_time(SystemTime::now());
     peer.call(
         "selection",
-        "unfollow",
-        json!({"pattern": "/+alice/notes.txt"}),
+        "pin",
+        json!({"pattern": "/+alice/notes.txt", "time": "now"}),
     )
     .await
     .unwrap();
+    let after = ntp_time(SystemTime::now());
     drop(next_event(lines).await);
     let page = peer.page("/g/cheapmo/files?under=%2Balice").await;
     assert!(
         page.contains(r#"title="a copy kept here, pinned at a time: it no longer syncs">📌"#),
         "{page}"
     );
+    let rules = selection(&peer).await;
+    let pinned = rules.last().unwrap().strip_prefix("pin ").unwrap();
+    let time = parse_rfc3339(pinned.strip_suffix(" /+alice/notes.txt").unwrap()).unwrap();
+    assert!((before..=after).contains(&time), "pinned at now: {rules:?}");
+    let notes = peer.root("cheapmo").join("+alice/notes.txt");
+    eventually("the notes are on disk", async || notes.exists()).await;
+    peer.call("selection", "free", json!({"pattern": "/+alice/notes.txt"}))
+        .await
+        .unwrap();
+    eventually("the notes are freed", async || !notes.exists()).await;
     let page = peer.page("/g/cheapmo/files").await;
     assert!(page.contains(r#"data-pattern="/+alice/" data-state="unchecked">"#));
     peer.call("selection", "follow", json!({"pattern": "/+alice/"}))

@@ -3,9 +3,10 @@
 // reading an open form or answering a question, keeping the parts marked
 // data-keep, and tells the page through a groupchange event, and through
 // a mainswap event once it swapped; follow boxes post the selection,
-// asking first whether an unfollowed copy stays; countdowns tick; forms
-// marked data-confirm ask before they publish; once the daemon restarts
-// onto another program, a banner offers to reload the page.
+// asking first whether to pin an unfollowed copy here as it is now or to
+// free it; countdowns tick; forms marked data-confirm ask before they
+// publish; once the daemon restarts onto another program, a banner offers
+// to reload the page.
 "use strict";
 (() => {
   const group = document.body.dataset.group;
@@ -79,12 +80,11 @@
     if (stale) setTimeout(refresh, 0);
   };
 
-  const post = async (verb, pattern, free) => {
+  const post = async (verb, fields) => {
     const body = new FormData();
     body.set("group", group);
-    body.set("pattern", pattern);
     body.set("back", location.pathname + location.search);
-    if (free) body.set("free", "true");
+    for (const [name, value] of Object.entries(fields)) body.set(name, value);
     const response = await fetch(`/act/selection/${verb}`, { method: "POST", body });
     const text = await response.text();
     if (response.ok) {
@@ -106,8 +106,9 @@
   document.addEventListener("change", async (event) => {
     const box = event.target;
     if (!(box instanceof HTMLInputElement) || box.dataset.pattern === undefined) return;
+    const { pattern } = box.dataset;
     if (box.checked) {
-      await post("follow", box.dataset.pattern, false);
+      await post("follow", { pattern });
       return;
     }
     const answer = await ask(document.getElementById("unfollow"));
@@ -116,7 +117,7 @@
       retry();
       return;
     }
-    await post("unfollow", box.dataset.pattern, answer === "free");
+    await post(answer, answer === "pin" ? { pattern, time: "now" } : { pattern });
   });
 
   document.addEventListener("submit", (event) => {

@@ -165,7 +165,7 @@
       choice.hidden = !offered[choice.dataset.open];
     }
     menu.querySelector(".suggestions").replaceChildren(...suggestionLines());
-    menu.querySelector("#download").hidden = !(file || folder);
+    menu.querySelector("#pin").hidden = !(file || folder);
     const publish = menu.querySelector("#publish");
     publish.hidden = Number(waiting) === 0;
     const history = menu.querySelector("#history");

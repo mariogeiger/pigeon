@@ -235,8 +235,9 @@ fn dialogs(group: &str, back: &str) -> Markup {
                 button type="button" data-open="replace" { "Replace…" }
                 button type="button" data-open="add" { "Add file…" }
                 button type="button" data-open="delete" { "Delete…" }
-                form id="download" method="post" action="/act/selection/download" enctype="multipart/form-data" {
-                    (start) (hidden("pattern")) button { "Download once" }
+                form id="pin" method="post" action="/act/selection/pin" enctype="multipart/form-data" {
+                    (start) (hidden("pattern")) input type="hidden" name="time" value="now";
+                    button { "Pin now" }
                 }
                 form id="publish" method="post" action="/act/file/publish" enctype="multipart/form-data" {
                     (start) (hidden("path")) button { "Publish now" }
@@ -283,7 +284,7 @@ fn dialogs(group: &str, back: &str) -> Markup {
         dialog id="unfollow" {
             form method="dialog" {
                 p { "Stop following: pin the copy here as it is now, or free the space?" }
-                button value="keep" { "Keep the copy" }
+                button value="pin" { "Pin the copy here" }
                 " " button value="free" { "Free the space" }
                 " " button value="" { "Cancel" }
             }
@@ -458,7 +459,11 @@ mod tests {
         assert!(row_of(&page, "docs/all").contains("hidden"));
         assert!(row_of(&page, "docs/all/b.txt").contains("hidden"));
         assert!(row_of(&page, "docs").contains("6 B"));
-        assert!(page.contains(r#"<dialog id="unfollow">"#));
+        let unfollow = &page[page.find(r#"<dialog id="unfollow">"#).unwrap()..];
+        assert!(unfollow.contains(r#"<button value="pin">"#), "{unfollow}");
+        assert!(unfollow.contains(r#"<button value="free">"#), "{unfollow}");
+        assert!(page.contains(r#"action="/act/selection/pin""#));
+        assert!(page.contains(r#"<input type="hidden" name="time" value="now">"#));
         let at = |path: &str| page.find(&format!(r#"<tr data-path="{path}""#)).unwrap();
         assert!(at("docs/some") < at("docs/a.txt"), "folders come first");
     }

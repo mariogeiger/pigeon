@@ -1,6 +1,8 @@
-//! Every action pigeon offers, defined once with its name, arguments and
-//! what its results show: the command line, the JSON API and the web UI
-//! forms are all generated from this table.
+//! Every action pigeon offers, defined once with its name, arguments, what
+//! its results show and the handler that carries it out: the command line,
+//! the JSON API and the web UI forms are all generated from this table.
+
+use crate::perform::{self, Handler};
 
 /// What an argument holds, which says how each interface asks for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,7 +17,8 @@ pub enum Kind {
     /// A file's content: a local file on the command line, an upload in
     /// the web UI, base64 in the API.
     Bytes,
-    /// An RFC 3339 time, such as `2026-10-01T12:00:00Z`.
+    /// An RFC 3339 time, such as `2026-10-01T12:00:00Z`, or `now`, the
+    /// time at which the action is carried out.
     Time,
     /// On or off, off by default.
     Flag,
@@ -80,6 +83,7 @@ pub struct Action {
     pub changes: bool,
     /// The fields a list result shows, as dotted paths into each item.
     pub columns: &'static [&'static str],
+    pub handler: Handler,
 }
 
 impl Action {
@@ -129,7 +133,7 @@ const PATTERN: Param = required(
 );
 const VERSION_TIME: Param = required(
     "time",
-    "The time, such as 2026-10-01T12:00:00Z; `pigeon selection times` lists those of the versions",
+    "The time, such as 2026-10-01T12:00:00Z, or now; `pigeon selection times` lists those of the versions",
     Kind::Time,
 )
 .listed_by("selection", "times");
@@ -165,6 +169,7 @@ const fn action(
     verb: &'static str,
     about: &'static str,
     params: &'static [Param],
+    handler: Handler,
 ) -> Action {
     Action {
         noun,
@@ -174,6 +179,7 @@ const fn action(
         params,
         changes: true,
         columns: &[],
+        handler,
     }
 }
 
@@ -183,6 +189,7 @@ const fn view(
     about: &'static str,
     params: &'static [Param],
     columns: &'static [&'static str],
+    handler: Handler,
 ) -> Action {
     Action {
         noun,
@@ -192,6 +199,7 @@ const fn view(
         params,
         changes: false,
         columns,
+        handler,
     }
 }
 
@@ -233,6 +241,7 @@ pub const ACTIONS: &[Action] = &[
         "List the groups on this machine",
         &[],
         &["name", "member", "join.state", "peers", "root"],
+        Handler::Daemon(perform::list_groups),
     )),
     on_machine(action(
         "group",
@@ -247,6 +256,7 @@ pub const ACTIONS: &[Action] = &[
             MEMBER,
             ROOT,
         ],
+        Handler::Daemon(perform::create_group),
     )),
     on_machine(view(
         "group",
@@ -254,12 +264,14 @@ pub const ACTIONS: &[Action] = &[
         "Hear a group with its key, without joining it, and list the names to join under: a member's, to add a machine of theirs, or any name not taken",
         &[KEY],
         &[],
+        Handler::Daemon(perform::hear_names),
     )),
     on_machine(action(
         "group",
         "join",
         "Join a group with the key a member shared",
         &[KEY, MEMBER, ROOT],
+        Handler::Daemon(perform::join_group),
     )),
     view(
         "group",
@@ -267,6 +279,7 @@ pub const ACTIONS: &[Action] = &[
         "Show how the group stands on this machine",
         &[],
         &[],
+        Handler::Engine(perform::show_status),
     ),
     view(
         "group",
@@ -274,6 +287,7 @@ pub const ACTIONS: &[Action] = &[
         "Show the group key, which admits a new member's machine",
         &[],
         &[],
+        Handler::Engine(perform::show_key),
     ),
     action(
         "group",
@@ -284,12 +298,14 @@ pub const ACTIONS: &[Action] = &[
             "The URL `pigeon relay` printed; leave it out for iroh's public relays",
             Kind::Text,
         )],
+        Handler::Engine(perform::set_relay),
     ),
     action(
         "group",
         "leave",
         "Leave the group on this machine: it stops syncing and forgets the group's key, secrets and state, keeping its files; your name stays a member's",
         &[],
+        Handler::Daemon(perform::leave_group),
     ),
     view(
         "member",
@@ -297,12 +313,14 @@ pub const ACTIONS: &[Action] = &[
         "List the members",
         &[],
         &["name", "machines", "online", "joined"],
+        Handler::Engine(perform::list_members),
     ),
     action(
         "member",
         "claim",
         "Claim a name for this machine after losing one",
         &[MEMBER],
+        Handler::Daemon(perform::claim_name),
     ),
     view(
         "file",
@@ -314,6 +332,7 @@ pub const ACTIONS: &[Action] = &[
             Kind::Path,
         )],
         FILE_COLUMNS,
+        Handler::Engine(perform::list_files),
     ),
     view(
         "file",
@@ -321,6 +340,7 @@ pub const ACTIONS: &[Action] = &[
         "List a file's versions, oldest first, back through the paths it moved from",
         &[required("path", "The file", Kind::Path)],
         &["time", "path", "content.size", "author"],
+        Handler::Engine(perform::list_history),
     ),
     view(
         "file",
@@ -332,6 +352,7 @@ pub const ACTIONS: &[Action] = &[
             Kind::Path,
         )],
         &["path", "author", "due_in", "draft", "deleted"],
+        Handler::Engine(perform::list_pending),
     ),
     action(
         "file",
@@ -342,6 +363,7 @@ pub const ACTIONS: &[Action] = &[
             "The file or folder whose edits to publish; leave it out for every edit",
             Kind::Path,
         )],
+        Handler::Engine(perform::publish),
     ),
     action(
         "file",
@@ -355,12 +377,14 @@ pub const ACTIONS: &[Action] = &[
                 Kind::Bytes,
             ),
         ],
+        Handler::Engine(perform::write_file),
     ),
     action(
         "file",
         "delete",
         "Delete a file or a folder; their history keeps them",
         &[required("path", "The file or folder to delete", Kind::Path)],
+        Handler::Engine(perform::delete_file),
     ),
     action(
         "file",
@@ -370,43 +394,35 @@ pub const ACTIONS: &[Action] = &[
             required("from", "The file or folder to rename", Kind::Path),
             required("to", "Its new path", Kind::Path),
         ],
+        Handler::Engine(perform::rename_file),
     ),
     action(
         "file",
         "restore",
         "Bring files back as they were at a past time, as new versions that undo nothing of the history",
         &[PATTERN, VERSION_TIME],
+        Handler::Engine(perform::restore),
     ),
     action(
         "selection",
         "follow",
         "Keep files in sync on this machine",
         &[PATTERN],
-    ),
-    action(
-        "selection",
-        "download",
-        "Download the current version of files once, or refresh it",
-        &[PATTERN],
-    ),
-    action(
-        "selection",
-        "unfollow",
-        "Stop following files, keeping their current version unless freed",
-        &[
-            PATTERN,
-            optional(
-                "free",
-                "Remove them from this machine to free the space",
-                Kind::Flag,
-            ),
-        ],
+        Handler::Engine(perform::follow),
     ),
     action(
         "selection",
         "pin",
-        "Hold files as they were at a past time",
+        "Hold files as they were at a time: a past one, or now to keep their current version",
         &[PATTERN, VERSION_TIME],
+        Handler::Engine(perform::pin),
+    ),
+    action(
+        "selection",
+        "free",
+        "Stop holding files on this machine, freeing the space",
+        &[PATTERN],
+        Handler::Engine(perform::free),
     ),
     view(
         "selection",
@@ -414,6 +430,7 @@ pub const ACTIONS: &[Action] = &[
         "List the times at which pinning files holds something new: those of their versions",
         &[PATTERN],
         &["time", "files"],
+        Handler::Engine(perform::list_pin_times),
     ),
     view(
         "selection",
@@ -421,6 +438,7 @@ pub const ACTIONS: &[Action] = &[
         "List the folders this machine keeps elsewhere, and why any waits",
         &[],
         &["folder", "destination", "problem"],
+        Handler::Engine(perform::list_places),
     ),
     action(
         "selection",
@@ -434,12 +452,14 @@ pub const ACTIONS: &[Action] = &[
                 Kind::Folder,
             ),
         ],
+        Handler::Engine(perform::place),
     ),
     action(
         "selection",
         "unplace",
         "Bring a placed folder back into the root",
         &[FOLDER],
+        Handler::Engine(perform::unplace),
     ),
     view(
         "config",
@@ -447,6 +467,7 @@ pub const ACTIONS: &[Action] = &[
         "Show the group's config.toml as it is now, with its version",
         &[],
         &[],
+        Handler::Daemon(perform::show_config),
     ),
     view(
         "config",
@@ -458,6 +479,7 @@ pub const ACTIONS: &[Action] = &[
             Kind::Document,
         )],
         &[],
+        Handler::Daemon(perform::preview_config),
     ),
     action(
         "config",
@@ -476,6 +498,7 @@ pub const ACTIONS: &[Action] = &[
             ),
             YES,
         ],
+        Handler::Daemon(perform::set_config),
     ),
     view(
         "suggestion",
@@ -483,6 +506,7 @@ pub const ACTIONS: &[Action] = &[
         "List the suggestions, oldest first: the changes the rules leave to the group, with why each waits",
         &[],
         &["id", "author", "time", "reason", "changes.path"],
+        Handler::Engine(perform::list_suggestions),
     ),
     action(
         "suggestion",
@@ -496,12 +520,14 @@ pub const ACTIONS: &[Action] = &[
                 Kind::Path,
             ),
         ],
+        Handler::Engine(perform::validate),
     ),
     action(
         "suggestion",
         "discard",
         "Discard suggestions: the group keeps its versions, and the history keeps theirs",
         &[SUGGESTIONS],
+        Handler::Engine(perform::discard),
     ),
     on_machine(Action {
         columns: &["group", "download", "free", "pin"],
@@ -510,14 +536,22 @@ pub const ACTIONS: &[Action] = &[
             "reload",
             "Restart every group from its files, applying the edits of each group's config.toml, unless one does not read; tell what they download, free and pin here",
             &[YES],
+            Handler::Daemon(perform::reload),
         )
     }),
-    on_machine(action("daemon", "stop", "Stop the daemon", &[])),
+    on_machine(action(
+        "daemon",
+        "stop",
+        "Stop the daemon",
+        &[],
+        Handler::Daemon(perform::stop),
+    )),
     on_machine(action(
         "daemon",
         "restart",
         "Restart the daemon onto the program now installed where it came from, unless that is the program it runs",
         &[],
+        Handler::Daemon(perform::restart),
     )),
 ];
 
@@ -558,6 +592,17 @@ mod tests {
                 let listing = find(noun, verb).expect("a listing action");
                 assert!(!listing.changes && !listing.columns.is_empty());
             }
+        }
+    }
+
+    #[test]
+    fn an_action_on_a_group_engine_takes_the_group() {
+        for action in ACTIONS {
+            assert!(
+                action.scope == Scope::Group || matches!(action.handler, Handler::Daemon(_)),
+                "{} acts on a group it cannot name",
+                action.command()
+            );
         }
     }
 }

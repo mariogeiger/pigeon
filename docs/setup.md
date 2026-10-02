@@ -65,7 +65,7 @@ base directories put configuration, data and state. On macOS one folder,
   `groups/<group>/config.toml` holds the member, the root, the selection,
   the retention and the places. Edit it by hand, then apply it with
   `pigeon daemon reload`, which changes nothing if a group's file does not
-  read, tells what the edits download, free and freeze on this machine,
+  read, tells what the edits download, free and pin on this machine,
   and asks first when they free space; `--yes` skips the question. The
   Overview page of the web interface edits the same file. pigeon rewrites the file whole, without your comments, whenever it
   changes a setting, and refuses to while the file holds edits it has not
@@ -197,14 +197,14 @@ selection follows: at first, the member's own folders. Patterns use the
 
 ```sh
 pigeon selection follow --pattern /docs/
-pigeon selection download --pattern /photos/2024/
-pigeon selection unfollow --pattern /docs/old/ --free
+pigeon selection pin --pattern /photos/2024/ --time now
+pigeon selection free --pattern /docs/old/
 pigeon selection pin --pattern /report/ --time 2026-10-01T12:00:00Z
 ```
 
-`follow` keeps files in sync, `download` takes their current version once,
-and `unfollow` stops syncing them, keeping the files unless `--free`
-removes them. `pin` holds files as they were at a past time.
+`follow` keeps files in sync, `pin` holds them as they were at a time,
+`now` keeping their current version, and `free` removes them from this
+machine.
 
 To edit every rule at once, edit the `selection` list of the group's
 `config.toml`, one rule per line, the last matching rule winning:
@@ -218,10 +218,12 @@ selection = [
 ```
 
 Each pin names its time in RFC 3339, so that the file says the same
-whenever it is applied, and `pigeon selection times --pattern /report/` lists the times of the versions
-of the files a pattern matches: pinning at each holds something new.
+whenever it is applied; `pigeon selection pin --time now` writes the time
+it ran at. `pigeon selection times --pattern /report/` lists the times of
+the versions of the files a pattern matches: pinning at each holds
+something new.
 `pigeon config preview` counts the files and bytes held now and after
-applying the file, and what applying it would download, free and freeze,
+applying the file, and what applying it would download, free and pin,
 with the rule that decides each file; `pigeon daemon reload` applies it. A
 modified copy not yet published is never removed.
 
@@ -238,13 +240,13 @@ The Files page shows the whole group as one tree whose folders open and
 close in place, as `pigeon setup` does, with each folder's size, latest
 time and waiting edits; `?under=docs/report` opens it down to a folder.
 Each file and folder has a box: checked when followed, mixed when only part
-of a folder is. Unchecking asks whether to keep the current copy, frozen,
-or free the space. A rule set this way replaces the earlier rules for the
+of a folder is. Unchecking asks whether to pin the current copy here, as
+it is now, or free the space. A rule set this way replaces the earlier rules for the
 paths inside it; hand-written patterns such as `*.pdf` stay. Each row's ⋯
-renames, replaces, adds, deletes, downloads once or publishes now; each
+renames, replaces, adds, deletes, pins now or publishes now; each
 change asks to be confirmed, then publishes at once.
 Each status is one emoji, which a legend under the tree explains: ⏬ on
-its way, 🧊 frozen copy, ⏳ and 🗑️ an edit or a deletion waiting, ✍️
+its way, 📌 pinned copy, ⏳ and 🗑️ an edit or a deletion waiting, ✍️
 another member's draft, ⚠️ and 🛑 rival drafts, 📬 a suggestion.
 Drafts other members are adding show greyed, with their author and the
 time left; when two members add the same path, both are warned, and the

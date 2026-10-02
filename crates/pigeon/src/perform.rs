@@ -1,229 +1,319 @@
-//! What each action does: the one place where an action's checked
-//! arguments become a call on the daemon or on one group's engine, and its
-//! result becomes JSON.
+//! What each action does: the handler the catalog gives each action, which
+//! turns the call's checked arguments into a call on the daemon or on one
+//! group's engine and its result into JSON, and the dispatch of a call to
+//! its action's handler.
 
-use std::path::PathBuf;
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result};
 use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_sync::{Edit, Engine};
 use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::args::Args;
-use crate::catalog::{GROUP, Scope};
+use crate::catalog::GROUP;
 use crate::config_preview;
 use crate::daemon::{Daemon, Stop, choose};
 
-fn to_json(value: impl Serialize) -> Result<Value> {
-    Ok(serde_json::to_value(value)?)
+/// The result of an action as JSON, once it is carried out.
+pub type Reply<'a> = Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>>;
+
+/// What carries an action out, given the call's checked arguments.
+#[derive(Clone, Copy, Debug)]
+pub enum Handler {
+    /// Acts on the daemon.
+    Daemon(for<'a> fn(&'a Daemon, &'a Args) -> Reply<'a>),
+    /// Acts on the engine of the group the call names, or of the
+    /// machine's single group.
+    Engine(for<'a> fn(&'a Engine, &'a Args) -> Reply<'a>),
 }
 
-/// Carries out the call `args` and returns its result.
+/// Carries out the call `args` with its action's handler.
 ///
 /// # Errors
 ///
 /// Fails with a message for the user if the action cannot be done.
 pub async fn perform(daemon: &Daemon, args: &Args) -> Result<Value> {
-    let action = args.action;
-    let root = || args.text("root").map(PathBuf::from);
-    match (action.noun, action.verb) {
-        ("group", "list") => {
-            let groups = daemon.groups().await;
-            let mut list = Vec::new();
-            for (name, engine) in groups.iter() {
-                let status = engine.status().await;
-                list.push(json!({
-                    "name": name,
-                    "member": status.member,
-                    "join": status.join,
-                    "peers": status.peers.len(),
-                    "root": status.root,
-                }));
-            }
-            Ok(Value::Array(list))
-        }
-        ("group", "create") => {
-            let key = daemon
-                .create(args.required("name")?, args.required("member")?, root())
-                .await?;
-            Ok(json!({ "key": key }))
-        }
-        ("group", "names") => to_json(daemon.hear(args.required("key")?).await?),
-        ("group", "join") => {
-            let key = daemon
-                .join(args.required("key")?, args.required("member")?, root())
-                .await?;
-            Ok(json!({ "key": key }))
-        }
-        ("member", "claim") => {
-            let group = {
-                let groups = daemon.groups().await;
-                choose(&groups, args.text(GROUP.name))?.0.to_owned()
-            };
-            daemon.claim(&group, args.required("member")?).await?;
-            Ok(Value::Null)
-        }
-        ("daemon", "stop") => {
-            daemon.stop(Stop::Quit);
-            Ok(Value::Null)
-        }
-        ("daemon", "restart") => Ok(json!({ "restarts": daemon.restart()? })),
-        ("daemon", "reload") => Ok(Value::Array(daemon.reload(args.flag("yes")).await?)),
-        ("group", "leave") => {
-            let group = match args.text(GROUP.name) {
-                Some(group) => group.to_owned(),
-                None => choose(&*daemon.groups().await, None)?.0.to_owned(),
-            };
-            daemon.leave(&group).await?;
-            Ok(Value::Null)
-        }
-        ("config", verb) => on_config(daemon, args, verb).await,
-        _ if action.scope == Scope::Group => {
+    match args.action.handler {
+        Handler::Daemon(handler) => handler(daemon, args).await,
+        Handler::Engine(handler) => {
             let groups = daemon.groups().await;
             let (_, engine) = choose(&groups, args.text(GROUP.name))?;
-            perform_in_group(engine, args).await
+            handler(engine, args).await
         }
-        _ => bail!("{} is not implemented", action.command()),
     }
 }
 
-/// Shows, previews or replaces a group's `config.toml`.
-async fn on_config(daemon: &Daemon, args: &Args, verb: &str) -> Result<Value> {
-    let group = {
+fn to_json(value: impl Serialize) -> Result<Value> {
+    Ok(serde_json::to_value(value)?)
+}
+
+fn root(args: &Args) -> Option<PathBuf> {
+    args.text("root").map(PathBuf::from)
+}
+
+/// The group the call names, or the machine's single group.
+async fn chosen_group(daemon: &Daemon, args: &Args) -> Result<String> {
+    let groups = daemon.groups().await;
+    Ok(choose(&groups, args.text(GROUP.name))?.0.to_owned())
+}
+
+pub(crate) fn list_groups<'a>(daemon: &'a Daemon, _: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
         let groups = daemon.groups().await;
-        choose(&groups, args.text(GROUP.name))?.0.to_owned()
-    };
-    if verb == "set" {
+        let mut list = Vec::new();
+        for (name, engine) in groups.iter() {
+            let status = engine.status().await;
+            list.push(json!({
+                "name": name,
+                "member": status.member,
+                "join": status.join,
+                "peers": status.peers.len(),
+                "root": status.root,
+            }));
+        }
+        Ok(Value::Array(list))
+    })
+}
+
+pub(crate) fn create_group<'a>(daemon: &'a Daemon, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
+        let key = daemon
+            .create(args.required("name")?, args.required("member")?, root(args))
+            .await?;
+        Ok(json!({ "key": key }))
+    })
+}
+
+pub(crate) fn hear_names<'a>(daemon: &'a Daemon, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move { to_json(daemon.hear(args.required("key")?).await?) })
+}
+
+pub(crate) fn join_group<'a>(daemon: &'a Daemon, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
+        let key = daemon
+            .join(args.required("key")?, args.required("member")?, root(args))
+            .await?;
+        Ok(json!({ "key": key }))
+    })
+}
+
+pub(crate) fn leave_group<'a>(daemon: &'a Daemon, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
+        let group = match args.text(GROUP.name) {
+            Some(group) => group.to_owned(),
+            None => choose(&*daemon.groups().await, None)?.0.to_owned(),
+        };
+        daemon.leave(&group).await?;
+        Ok(Value::Null)
+    })
+}
+
+pub(crate) fn claim_name<'a>(daemon: &'a Daemon, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
+        let group = chosen_group(daemon, args).await?;
+        daemon.claim(&group, args.required("member")?).await?;
+        Ok(Value::Null)
+    })
+}
+
+/// The path and the text of the `config.toml` of `group`.
+fn read_config(daemon: &Daemon, group: &str) -> Result<(PathBuf, String)> {
+    let path = daemon.home().group(group).config_path();
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    Ok((path, text))
+}
+
+pub(crate) fn show_config<'a>(daemon: &'a Daemon, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
+        let (path, text) = read_config(daemon, &chosen_group(daemon, args).await?)?;
+        let version = config_preview::version(&text);
+        Ok(json!({ "path": path, "version": version, "text": text }))
+    })
+}
+
+pub(crate) fn preview_config<'a>(daemon: &'a Daemon, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
+        let groups = daemon.groups().await;
+        let (group, engine) = choose(&groups, args.text(GROUP.name))?;
+        let (_, current) = read_config(daemon, group)?;
+        let text = args.text("text").unwrap_or(&current);
+        let mut preview = config_preview::preview(engine, text).await?;
+        preview["version"] = json!(config_preview::version(&current));
+        Ok(preview)
+    })
+}
+
+pub(crate) fn set_config<'a>(daemon: &'a Daemon, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
+        let group = chosen_group(daemon, args).await?;
         let text = args.required("text")?;
         daemon
             .apply_config(&group, text, args.text("version"), args.flag("yes"))
             .await?;
-        return Ok(Value::Null);
-    }
-    let path = daemon.home().group(&group).config_path();
-    let current =
-        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    let version = config_preview::version(&current);
-    match verb {
-        "show" => Ok(json!({ "path": path, "version": version, "text": current })),
-        "preview" => {
-            let groups = daemon.groups().await;
-            let (_, engine) = choose(&groups, Some(&group))?;
-            let text = args.text("text").unwrap_or(&current);
-            let mut preview = config_preview::preview(engine, text).await?;
-            preview["version"] = json!(version);
-            Ok(preview)
-        }
-        _ => bail!("{} is not implemented", args.action.command()),
-    }
+        Ok(Value::Null)
+    })
 }
 
-/// Carries out a call on one group.
-async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
-    let action = args.action;
-    let rule = |cutoff| -> Result<Rule> {
-        Ok(Rule {
-            pattern: args.required("pattern")?.to_owned(),
-            cutoff,
-        })
-    };
-    match (action.noun, action.verb) {
-        ("group", "status") => to_json(engine.status().await),
-        ("group", "key") => Ok(json!({ "key": engine.group_key() })),
-        ("member", "list") => to_json(engine.members()),
-        ("group", "relay") => {
-            engine.set_relay(args.text("url")).await?;
-            Ok(Value::Null)
-        }
-        ("file", verb) => on_files(engine, args, verb).await,
-        ("selection", "times") => to_json(engine.pin_times(args.required("pattern")?)?),
-        ("selection", verb @ ("places" | "place" | "unplace")) => place(engine, args, verb).await,
-        ("selection", verb) => {
-            let cutoff = match verb {
-                "follow" => Cutoff::PlusInfinity,
-                "unfollow" if args.flag("free") => Cutoff::MinusInfinity,
-                "download" | "unfollow" => Cutoff::At(engine.now()),
-                "pin" => Cutoff::At(args.time("time")?),
-                _ => bail!("{} is not implemented", action.command()),
-            };
-            engine.set_rule(rule(cutoff)?).await?;
-            Ok(Value::Null)
-        }
-        ("suggestion", "list") => to_json(engine.suggestions().await),
-        ("suggestion", "validate") => {
-            let to = args.text("to").map(|_| args.path("to")).transpose()?;
-            engine
-                .validate(&args.versions("suggestions")?, to.as_ref())
-                .await?;
-            Ok(Value::Null)
-        }
-        ("suggestion", "discard") => {
-            engine.discard(&args.versions("suggestions")?).await?;
-            Ok(Value::Null)
-        }
-        _ => bail!("{} is not implemented", action.command()),
-    }
+pub(crate) fn reload<'a>(daemon: &'a Daemon, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move { Ok(Value::Array(daemon.reload(args.flag("yes")).await?)) })
 }
 
-/// Lists, shows, publishes, writes, deletes, renames or restores files.
-async fn on_files(engine: &Engine, args: &Args, verb: &str) -> Result<Value> {
-    match verb {
-        "list" => {
-            let under = args.text("under").map(|_| args.path("under")).transpose()?;
-            to_json(engine.list(under.as_ref()).await?)
-        }
-        "history" => to_json(engine.history(&args.path("path")?)),
-        "pending" => {
-            let under = args.text("under").map(|_| args.path("under")).transpose()?;
-            to_json(engine.pending(under.as_ref()).await)
-        }
-        "publish" => {
-            let path = args.text("path").map(|_| args.path("path")).transpose()?;
-            engine.publish(path.as_ref()).await?;
-            Ok(Value::Null)
-        }
-        "write" | "delete" | "rename" => {
-            let edit = match verb {
-                "write" => Edit::Write {
-                    path: args.path("path")?,
-                    bytes: args.bytes("content")?,
-                },
-                "delete" => Edit::Delete {
-                    path: args.path("path")?,
-                },
-                _ => Edit::Rename {
-                    from: args.path("from")?,
-                    to: args.path("to")?,
-                },
-            };
-            to_json(engine.edit(vec![edit]).await?)
-        }
-        "restore" => to_json(
-            engine
-                .restore(args.required("pattern")?, args.time("time")?)
-                .await?,
-        ),
-        _ => bail!("{} is not implemented", args.action.command()),
-    }
+pub(crate) fn stop<'a>(daemon: &'a Daemon, _: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
+        daemon.stop(Stop::Quit);
+        Ok(Value::Null)
+    })
 }
 
-/// Lists, places or unplaces folders kept at other destinations.
-async fn place(engine: &Engine, args: &Args, verb: &str) -> Result<Value> {
-    match verb {
-        "places" => to_json(engine.places().await),
-        "place" => {
-            let destination = args
-                .text("destination")
-                .ok_or_else(|| anyhow!("which destination?"))?;
-            engine
-                .place(args.path("folder")?, std::path::Path::new(destination))
-                .await?;
-            Ok(Value::Null)
-        }
-        _ => {
-            engine.unplace(&args.path("folder")?).await?;
-            Ok(Value::Null)
-        }
-    }
+pub(crate) fn restart<'a>(daemon: &'a Daemon, _: &'a Args) -> Reply<'a> {
+    Box::pin(async move { Ok(json!({ "restarts": daemon.restart()? })) })
+}
+
+pub(crate) fn show_status<'a>(engine: &'a Engine, _: &'a Args) -> Reply<'a> {
+    Box::pin(async move { to_json(engine.status().await) })
+}
+
+pub(crate) fn show_key<'a>(engine: &'a Engine, _: &'a Args) -> Reply<'a> {
+    Box::pin(async move { Ok(json!({ "key": engine.group_key() })) })
+}
+
+pub(crate) fn set_relay<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
+        engine.set_relay(args.text("url")).await?;
+        Ok(Value::Null)
+    })
+}
+
+pub(crate) fn list_members<'a>(engine: &'a Engine, _: &'a Args) -> Reply<'a> {
+    Box::pin(async move { to_json(engine.members()) })
+}
+
+pub(crate) fn list_files<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
+        let under = args.optional_path("under")?;
+        to_json(engine.list(under.as_ref()).await?)
+    })
+}
+
+pub(crate) fn list_history<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move { to_json(engine.history(&args.path("path")?)) })
+}
+
+pub(crate) fn list_pending<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
+        let under = args.optional_path("under")?;
+        to_json(engine.pending(under.as_ref()).await)
+    })
+}
+
+pub(crate) fn publish<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
+        engine.publish(args.optional_path("path")?.as_ref()).await?;
+        Ok(Value::Null)
+    })
+}
+
+/// Makes the one edit `edit`, and gives what it made.
+async fn apply_edit(engine: &Engine, edit: Edit) -> Result<Value> {
+    to_json(engine.edit(vec![edit]).await?)
+}
+
+pub(crate) fn write_file<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
+        let path = args.path("path")?;
+        let bytes = args.bytes("content")?;
+        apply_edit(engine, Edit::Write { path, bytes }).await
+    })
+}
+
+pub(crate) fn delete_file<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
+        let path = args.path("path")?;
+        apply_edit(engine, Edit::Delete { path }).await
+    })
+}
+
+pub(crate) fn rename_file<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
+        let (from, to) = (args.path("from")?, args.path("to")?);
+        apply_edit(engine, Edit::Rename { from, to }).await
+    })
+}
+
+pub(crate) fn restore<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
+        let time = args.time("time", || engine.now())?;
+        to_json(engine.restore(args.required("pattern")?, time).await?)
+    })
+}
+
+/// Holds the files of the call's pattern at `cutoff`.
+async fn set_cutoff(engine: &Engine, args: &Args, cutoff: Cutoff) -> Result<Value> {
+    let pattern = args.required("pattern")?.to_owned();
+    engine.set_rule(Rule { pattern, cutoff }).await?;
+    Ok(Value::Null)
+}
+
+pub(crate) fn follow<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
+    Box::pin(set_cutoff(engine, args, Cutoff::PlusInfinity))
+}
+
+pub(crate) fn pin<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
+        let time = args.time("time", || engine.now())?;
+        set_cutoff(engine, args, Cutoff::At(time)).await
+    })
+}
+
+pub(crate) fn free<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
+    Box::pin(set_cutoff(engine, args, Cutoff::MinusInfinity))
+}
+
+pub(crate) fn list_pin_times<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move { to_json(engine.pin_times(args.required("pattern")?)?) })
+}
+
+pub(crate) fn list_places<'a>(engine: &'a Engine, _: &'a Args) -> Reply<'a> {
+    Box::pin(async move { to_json(engine.places().await) })
+}
+
+pub(crate) fn place<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
+        let destination = Path::new(args.required("destination")?);
+        engine.place(args.path("folder")?, destination).await?;
+        Ok(Value::Null)
+    })
+}
+
+pub(crate) fn unplace<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
+        engine.unplace(&args.path("folder")?).await?;
+        Ok(Value::Null)
+    })
+}
+
+pub(crate) fn list_suggestions<'a>(engine: &'a Engine, _: &'a Args) -> Reply<'a> {
+    Box::pin(async move { to_json(engine.suggestions().await) })
+}
+
+pub(crate) fn validate<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
+        let to = args.optional_path("to")?;
+        engine
+            .validate(&args.versions("suggestions")?, to.as_ref())
+            .await?;
+        Ok(Value::Null)
+    })
+}
+
+pub(crate) fn discard<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
+    Box::pin(async move {
+        engine.discard(&args.versions("suggestions")?).await?;
+        Ok(Value::Null)
+    })
 }

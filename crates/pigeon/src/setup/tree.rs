@@ -1,9 +1,9 @@
 //! The tree in which `pigeon setup` lets one choose what this machine
 //! follows: folders open and close, a box checks a file or all those in a
 //! folder, the total shows what following them downloads, and each toggle
-//! becomes the follow or unfollow rule the web UI's Files page makes, on
-//! the same tree of folders that page draws, the member's own files marked
-//! as theirs.
+//! becomes the rule the web UI's Files page makes, follow or else pin or
+//! free, on the same tree of folders that page draws, the member's own
+//! files marked as theirs.
 
 use std::collections::BTreeSet;
 use std::fmt::Write;

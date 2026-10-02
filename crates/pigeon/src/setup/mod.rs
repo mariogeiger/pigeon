@@ -263,13 +263,18 @@ fn follow(home: &Home, list: &mut Checklist, membership: &Membership) -> Result<
             let choices = ["Pin them here".to_owned(), "Free the space".to_owned()];
             ask::choose(&term, &question, &choices)? == 1
         };
+    let unchecked = if free {
+        ("free", None)
+    } else {
+        ("pin", Some("now"))
+    };
     for (pattern, follows) in &chosen.toggles {
-        let args = if *follows {
-            json!({ "group": group, "pattern": pattern })
+        let (verb, time) = if *follows {
+            ("follow", None)
         } else {
-            json!({ "group": group, "pattern": pattern, "free": free })
+            unchecked
         };
-        let verb = if *follows { "follow" } else { "unfollow" };
+        let args = json!({ "group": group, "pattern": pattern, "time": time });
         call(home, "selection", verb, args)?;
     }
     list.set(
