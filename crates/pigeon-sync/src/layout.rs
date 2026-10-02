@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, bail};
 use pigeon_core::path::GroupPath;
 use pigeon_core::places::Place;
 use pigeon_store::config::Config;
@@ -25,34 +25,21 @@ pub struct PlaceView {
     pub problem: Option<String>,
 }
 
-/// `destination` as the system resolves it, though it need not exist yet.
+/// `destination` as the system resolves it, though only its parent folder
+/// need exist yet.
 fn resolve(destination: &Path) -> Result<PathBuf> {
     if !destination.is_absolute() {
         bail!("{} is not an absolute path", destination.display());
     }
-    if let Ok(resolved) = destination.canonicalize() {
-        return Ok(resolved);
+    let resolved = layout::resolved(destination);
+    match resolved.parent() {
+        Some(parent) if parent.is_dir() => Ok(resolved),
+        Some(parent) => bail!("{} is not there", parent.display()),
+        None => bail!("{} names no folder", destination.display()),
     }
-    let parent = destination
-        .parent()
-        .ok_or_else(|| anyhow!("{} has no parent folder", destination.display()))?;
-    let name = destination
-        .file_name()
-        .ok_or_else(|| anyhow!("{} names no folder", destination.display()))?;
-    let parent = parent
-        .canonicalize()
-        .with_context(|| format!("{} is not there", parent.display()))?;
-    Ok(parent.join(name))
 }
 
 impl Inner {
-    /// The root as the system resolves it.
-    fn resolved_root(&self) -> PathBuf {
-        self.root
-            .canonicalize()
-            .unwrap_or_else(|_| self.root.clone())
-    }
-
     /// Moves back the folders no longer wanted elsewhere, then moves the
     /// wanted ones to their destinations, as far as each destination
     /// allows; the folders left out of place pause, and the watcher
@@ -116,9 +103,10 @@ impl Inner {
         let mut placed = work.placed.clone();
         placed
             .set(
-                &self.resolved_root(),
+                &self.root,
                 place.folder.clone(),
                 place.destination.clone(),
+                layout::resolved,
             )
             .map_err(|error| format!("{error}, which has not moved back yet"))?;
         layout::place(location, &place.destination).map_err(|error| error.to_string())?;
@@ -193,7 +181,7 @@ impl Engine {
         let mut config = Config::clone(&work.config);
         config
             .places
-            .set(&inner.resolved_root(), folder.clone(), destination)?;
+            .set(&inner.root, folder.clone(), destination, layout::resolved)?;
         work.config.save(config)?;
         self.settle_layout(&mut work, &folder).await
     }

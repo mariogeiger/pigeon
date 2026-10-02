@@ -133,7 +133,12 @@ fn placed_folders_round_trip() {
     for folder in ["videos", "Photos 2026"] {
         let destination = std::env::temp_dir().join("disk").join(folder);
         places
-            .set(&root, GroupPath::parse(folder).unwrap(), destination)
+            .set(
+                &root,
+                GroupPath::parse(folder).unwrap(),
+                destination,
+                crate::layout::resolved,
+            )
             .unwrap();
     }
     state.set_placed(&places).unwrap();

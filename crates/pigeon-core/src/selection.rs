@@ -11,6 +11,7 @@ use std::fmt;
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use serde::{Deserialize, Serialize};
+use unicode_normalization::UnicodeNormalization;
 
 use crate::clock::{parse_rfc3339, rfc3339};
 use crate::name::MemberName;
@@ -123,7 +124,8 @@ pub enum PatternError {
     Syntax { pattern: String, reason: String },
 }
 
-/// Compiles one pattern in the gitignore syntax, to match without case.
+/// Compiles one pattern in the gitignore syntax, to match without case and
+/// however its names are spelled in Unicode, as paths are in NFC.
 ///
 /// # Errors
 /// Returns why the pattern is not valid.
@@ -137,7 +139,8 @@ pub fn compile(pattern: &str) -> Result<Gitignore, PatternError> {
     };
     let mut builder = GitignoreBuilder::new("");
     builder.case_insensitive(true).map_err(syntax)?;
-    builder.add_line(None, pattern).map_err(syntax)?;
+    let normalized: String = pattern.nfc().collect();
+    builder.add_line(None, &normalized).map_err(syntax)?;
     builder.build().map_err(syntax)
 }
 
@@ -413,6 +416,30 @@ mod tests {
             let reason = Rule::parse(line).unwrap_err();
             assert!(reason.contains(error), "{line}: {reason}");
         }
+    }
+
+    #[test]
+    fn a_pattern_matches_however_its_names_are_spelled_in_unicode() {
+        let decomposed = "/cafe\u{301}/*.pdf";
+        let selection = Selection::new([Rule {
+            pattern: decomposed.into(),
+            cutoff: Cutoff::PlusInfinity,
+        }])
+        .unwrap();
+        assert_eq!(
+            selection.cutoff(&path("caf\u{e9}/menu.pdf")),
+            Cutoff::PlusInfinity
+        );
+        assert_eq!(
+            selection.cutoff(&path("cafe\u{301}/menu.pdf")),
+            Cutoff::PlusInfinity
+        );
+        assert_eq!(
+            selection.cutoff(&path("cafe/menu.pdf")),
+            Cutoff::MinusInfinity
+        );
+        let exact = compile(&exact_pattern(&path("caf\u{e9}.txt"))).unwrap();
+        assert!(matches(&exact, &path("cafe\u{301}.txt")));
     }
 
     #[test]

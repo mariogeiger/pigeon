@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, StoreError};
 use crate::group_dirs::{GroupDirs, read_if_present, write_private};
+use crate::layout;
 
 /// What `config.toml` starts with.
 pub const HEADER: &str = "\
@@ -103,7 +104,12 @@ impl Config {
         let mut places = Places::default();
         for place in spelled.places {
             places
-                .set(&spelled.root, place.folder, place.destination)
+                .set(
+                    &spelled.root,
+                    place.folder,
+                    place.destination,
+                    layout::resolved,
+                )
                 .map_err(|error| format!("places: {error}"))?;
         }
         let config = Self {

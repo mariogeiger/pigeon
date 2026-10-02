@@ -41,7 +41,10 @@ fn sample() -> Config {
     config.retention.everything = true;
     let videos = GroupPath::parse("videos").unwrap();
     let destination = std::env::temp_dir().join("disk").join("videos");
-    config.places.set(&root, videos, destination).unwrap();
+    config
+        .places
+        .set(&root, videos, destination, layout::resolved)
+        .unwrap();
     config
 }
 
@@ -119,6 +122,39 @@ fn an_invalid_configuration_says_what_is_wrong() {
         let reason = Config::parse(&text).unwrap_err();
         assert!(reason.contains(error), "{text}: {reason}");
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_destination_nests_where_the_system_resolves_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    std::os::unix::fs::symlink(&root, dir.path().join("link")).unwrap();
+    let place = |folder: &str, at: &Path| {
+        format!(
+            "[[places]]\nfolder = {folder:?}\ndestination = {:?}\n",
+            at.to_str().unwrap()
+        )
+    };
+    for destination in [
+        dir.path().join("link/docs"),
+        dir.path().join("missing/../root/docs"),
+    ] {
+        let text = written(&root, &place("docs", &destination));
+        let reason = Config::parse(&text).unwrap_err();
+        assert!(reason.contains("the root"), "{reason}");
+    }
+    let disk = dir.path().join("disk");
+    let both = place("videos", &disk) + &place("docs", &dir.path().join("x/../disk/docs"));
+    let reason = Config::parse(&written(&root, &both)).unwrap_err();
+    assert!(reason.contains("the destination of videos"), "{reason}");
+    let apart = place("videos", &disk) + &place("docs", &dir.path().join("docs"));
+    let (config, _) = Config::parse(&written(&root, &apart)).unwrap();
+    assert_eq!(
+        config.places.get(&GroupPath::parse("docs").unwrap()),
+        Some(dir.path().join("docs").as_path())
+    );
 }
 
 #[test]

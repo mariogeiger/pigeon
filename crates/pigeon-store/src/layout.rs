@@ -2,11 +2,12 @@
 //! holds into the destination and leaving at its place a link, a junction
 //! on Windows, which needs no administrator, and the reverse. A move never
 //! overwrites a file, and a destination that is missing, such as a disk
-//! not plugged in, leaves every file where it is.
+//! not plugged in, leaves every file where it is. A destination lies where
+//! the system resolves it, as far as it exists.
 
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::error::{Result, StoreError};
 
@@ -60,6 +61,27 @@ fn unavailable(destination: &Path) -> StoreError {
         "{} is not there: is its disk plugged in?",
         destination.display()
     ))
+}
+
+/// Where `path` lies as the system resolves it: its longest existing
+/// ancestor with every link resolved, then the rest as written, which holds
+/// no link since none of it exists.
+#[must_use]
+pub fn resolved(path: &Path) -> PathBuf {
+    let (existing, mut lies) = path
+        .ancestors()
+        .find_map(|ancestor| Some((ancestor, ancestor.canonicalize().ok()?)))
+        .unwrap_or((Path::new(""), PathBuf::new()));
+    for component in path.strip_prefix(existing).unwrap_or(path).components() {
+        match component {
+            Component::ParentDir => {
+                lies.pop();
+            }
+            Component::CurDir => {}
+            name => lies.push(name),
+        }
+    }
+    lies
 }
 
 /// Moves the folder at `location` to `destination`, then links it there.
@@ -208,6 +230,27 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mode = if executable { 0o555 } else { 0o444 };
         fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[test]
+    fn a_destination_lies_where_its_links_lead_as_far_as_it_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().canonicalize().unwrap();
+        fs::create_dir(real.join("root")).unwrap();
+        std::os::unix::fs::symlink(real.join("root"), real.join("link")).unwrap();
+        assert_eq!(
+            resolved(&dir.path().join("link/docs/2026")),
+            real.join("root/docs/2026")
+        );
+        assert_eq!(
+            resolved(&dir.path().join("missing/../root/./docs")),
+            real.join("root/docs")
+        );
+        std::os::unix::fs::symlink(real.join("gone"), real.join("dangling")).unwrap();
+        assert_eq!(
+            resolved(&dir.path().join("dangling/docs")),
+            real.join("dangling/docs")
+        );
     }
 
     #[test]

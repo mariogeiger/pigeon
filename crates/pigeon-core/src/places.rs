@@ -1,7 +1,8 @@
 //! Places: the folders of the tree a machine keeps at other destinations on
 //! its disks, leaving a link at the folder's place in the root. Neither the
-//! folders nor the destinations nest, in each other or in the root, so that
-//! every file keeps its group path on every machine.
+//! folders nor the destinations nest, in each other or in the root, as the
+//! system resolves them, so that every file keeps its group path on every
+//! machine.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -65,7 +66,8 @@ impl Places {
     }
 
     /// Keeps `folder` at `destination` instead of under `root`, replacing
-    /// any destination the folder had.
+    /// any destination the folder had; the destinations and the root nest
+    /// as `resolve` gives where each lies.
     ///
     /// # Errors
     ///
@@ -75,6 +77,7 @@ impl Places {
         root: &Path,
         folder: GroupPath,
         destination: PathBuf,
+        resolve: impl Fn(&Path) -> PathBuf,
     ) -> Result<(), PlaceError> {
         if is_statement(&folder.key()) {
             return Err(PlaceError::Statements(folder));
@@ -82,7 +85,8 @@ impl Places {
         if !destination.is_absolute() {
             return Err(PlaceError::Relative(destination));
         }
-        if overlap(&destination, root) {
+        let lies = resolve(&destination);
+        if overlap(&lies, &resolve(root)) {
             return Err(PlaceError::Root {
                 destination,
                 root: root.to_path_buf(),
@@ -98,7 +102,7 @@ impl Places {
                     other: other.clone(),
                 });
             }
-            if overlap(&destination, taken) {
+            if overlap(&lies, &resolve(taken)) {
                 return Err(PlaceError::NestedDestination {
                     destination,
                     taken: taken.clone(),
@@ -171,7 +175,12 @@ mod tests {
     fn folders_and_destinations_never_nest() {
         let mut places = Places::default();
         places
-            .set(&root(), folder("videos"), absolute("/disk/videos"))
+            .set(
+                &root(),
+                folder("videos"),
+                absolute("/disk/videos"),
+                Path::to_path_buf,
+            )
             .unwrap();
         for (path, destination) in [
             ("videos/old", "/disk/other"),
@@ -187,7 +196,12 @@ mod tests {
             };
             assert!(
                 places
-                    .set(&root(), folder(path), destination.clone())
+                    .set(
+                        &root(),
+                        folder(path),
+                        destination.clone(),
+                        Path::to_path_buf
+                    )
                     .is_err(),
                 "{path} at {}",
                 destination.display()
@@ -195,23 +209,65 @@ mod tests {
         }
         let inside_root = root().join("docs");
         assert!(matches!(
-            places.set(&root(), folder("docs"), inside_root),
+            places.set(&root(), folder("docs"), inside_root, Path::to_path_buf),
             Err(PlaceError::Root { .. })
         ));
         places
-            .set(&root(), folder("docs"), absolute("/disk/docs"))
+            .set(
+                &root(),
+                folder("docs"),
+                absolute("/disk/docs"),
+                Path::to_path_buf,
+            )
             .unwrap();
         assert_eq!(places.iter().count(), 2);
+    }
+
+    #[test]
+    fn destinations_nest_where_they_resolve() {
+        let link = absolute("/home/link");
+        let resolve = |path: &Path| match path.strip_prefix(&link) {
+            Ok(rest) => root().join(rest),
+            Err(_) => path.to_path_buf(),
+        };
+        let mut places = Places::default();
+        assert!(matches!(
+            places.set(&root(), folder("docs"), link.join("docs"), resolve),
+            Err(PlaceError::Root { .. })
+        ));
+        places
+            .set(&root(), folder("videos"), absolute("/disk/videos"), resolve)
+            .unwrap();
+        let disk = absolute("/disk");
+        let through = |path: &Path| match path.strip_prefix(&link) {
+            Ok(rest) => disk.join(rest),
+            Err(_) => path.to_path_buf(),
+        };
+        assert!(matches!(
+            places.set(&root(), folder("docs"), link.join("videos/docs"), through),
+            Err(PlaceError::NestedDestination { .. })
+        ));
+        assert_eq!(places.iter().count(), 1);
     }
 
     #[test]
     fn a_folder_moves_and_returns() {
         let mut places = Places::default();
         places
-            .set(&root(), folder("videos"), absolute("/a/videos"))
+            .set(
+                &root(),
+                folder("videos"),
+                absolute("/a/videos"),
+                Path::to_path_buf,
+            )
             .unwrap();
         places
-            .set(&root(), folder("Videos"), absolute("/b/videos"))
+            .set(
+                &root(),
+                folder("Videos"),
+                absolute("/b/videos"),
+                Path::to_path_buf,
+            )
             .unwrap();
         assert_eq!(places.iter().count(), 1);
         assert_eq!(
