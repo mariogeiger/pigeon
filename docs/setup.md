@@ -81,7 +81,7 @@ base directories put configuration, data and state. On macOS one folder,
   patches, what the disk holds, and the files' contents.
 - The state, in `~/.local/state/pigeon`: `daemon.toml` holds the token that
   guards the API and the address the daemon listens on, `daemon.log` the
-  output of a daemon started by hand, and `relay/` the certificates of a
+  output, appended across starts, of a daemon started by hand, and `relay/` the certificates of a
   relay.
 
 ```sh
@@ -89,7 +89,9 @@ pigeon service install
 ```
 
 starts it at login, as a systemd user service on Linux or a launchd agent
-on macOS, in place of a daemon started by hand. `--linger` starts it at
+on macOS, in place of a daemon started by hand. The service starts the daemon
+again five seconds after it crashes, however many times, and the panic
+message stays in the journal (`journalctl --user -u pigeon`). `--linger` starts it at
 boot too, without a login, as a server needs. On Windows, add
 `pigeon daemon` to the programs started at login.
 

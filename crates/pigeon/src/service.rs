@@ -40,13 +40,14 @@ fn service_file() -> Result<PathBuf> {
 }
 
 /// The systemd user unit that runs `program`'s daemon on `home`, when it
-/// is not the default one.
+/// is not the default one, and starts it again five seconds after it
+/// fails, however many times.
 fn systemd_unit(program: &Path, home: Option<&Path>) -> String {
     let environment = home.map_or_else(String::new, |home| {
         format!("Environment=\"{HOME_VARIABLE}={}\"\n", home.display())
     });
     format!(
-        "[Unit]\nDescription=pigeon\nAfter=network-online.target\n\n[Service]\n{environment}ExecStart=\"{}\" daemon\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n",
+        "[Unit]\nDescription=pigeon\nAfter=network-online.target\nStartLimitIntervalSec=0\n\n[Service]\n{environment}ExecStart=\"{}\" daemon\nRestart=on-failure\nRestartSec=5s\n\n[Install]\nWantedBy=default.target\n",
         program.display()
     )
 }
@@ -204,7 +205,7 @@ pub fn install(home: &Home, linger: bool) -> Result<()> {
 }
 
 /// Starts the daemon of `home` once, detached from this terminal, its
-/// output kept in the pigeon folder, and waits until it answers.
+/// output appended to the log in the pigeon folder, and waits until it answers.
 ///
 /// # Errors
 ///
@@ -216,8 +217,11 @@ pub fn start_detached(home: &Home) -> Result<PathBuf> {
         std::fs::create_dir_all(folder)
             .with_context(|| format!("creating {}", folder.display()))?;
     }
-    let output =
-        std::fs::File::create(&log).with_context(|| format!("creating {}", log.display()))?;
+    let output = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+        .with_context(|| format!("opening {}", log.display()))?;
     let mut command = Command::new(program);
     command
         .arg("daemon")
@@ -241,6 +245,8 @@ mod tests {
         let unit = systemd_unit(program, None);
         assert!(unit.contains("ExecStart=\"/home/mario/.cargo/bin/pigeon\" daemon\n"));
         assert!(unit.contains("WantedBy=default.target"));
+        assert!(unit.contains("\nRestart=on-failure\nRestartSec=5s\n"));
+        assert!(unit.contains("\nStartLimitIntervalSec=0\n"));
         assert!(!unit.contains(HOME_VARIABLE));
         let moved = systemd_unit(program, Some(Path::new("/srv/pigeon")));
         assert!(moved.contains("Environment=\"PIGEON_HOME=/srv/pigeon\"\n"));
@@ -251,5 +257,8 @@ mod tests {
             )
         );
         assert!(agent.contains("<key>RunAtLoad</key><true/>"));
+        assert!(
+            agent.contains("<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>")
+        );
     }
 }

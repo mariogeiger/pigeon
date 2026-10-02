@@ -52,3 +52,6 @@ ureq = { version = "3.4", default-features = false, features = ["json"] }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
+
+[profile.release]
+panic = "abort"
