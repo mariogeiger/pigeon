@@ -159,7 +159,6 @@ impl Machine {
                 machine: self.key.public(),
             },
             changes,
-            applies: None,
         };
         SignedPatch::sign(&group(), patch, self.cert.clone(), &self.key)
     }
@@ -177,6 +176,7 @@ impl Machine {
                 executable: false,
             }),
             replaces: None,
+            continues: None,
         };
         self.signed(time, vec![change])
     }

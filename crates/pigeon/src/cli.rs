@@ -9,7 +9,7 @@ use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint, builder::PossibleValuesParser};
+use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint};
 use clap_complete::Shell;
 use data_encoding::BASE64;
 use serde_json::{Map, Value};
@@ -22,7 +22,6 @@ fn param_arg(param: &Param) -> Arg {
     let arg = Arg::new(param.name).long(param.name).help(param.about);
     match param.kind {
         Kind::Flag => arg.action(ArgAction::SetTrue),
-        Kind::Choice(choices) => arg.value_parser(PossibleValuesParser::new(choices)),
         Kind::Bytes | Kind::Document => arg.value_hint(ValueHint::FilePath).value_name("FILE"),
         Kind::Folder => arg.value_hint(ValueHint::DirPath).value_name("FOLDER"),
         Kind::Text | Kind::Path | Kind::Pattern | Kind::Time => arg,

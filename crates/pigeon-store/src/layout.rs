@@ -8,7 +8,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::disk::set_permissions;
+use crate::disk::unfreeze;
 use crate::error::{Result, StoreError};
 
 /// Where the link at `location` leads, if a link is there.
@@ -180,7 +180,7 @@ fn move_file(source: &Path, target: &Path, regular: bool) -> io::Result<()> {
         return Err(error);
     }
     if cfg!(windows) {
-        set_permissions(source, false, true).map_err(io::Error::other)?;
+        unfreeze(source).map_err(io::Error::other)?;
     }
     fs::remove_file(source)
 }
@@ -205,6 +205,21 @@ mod tests {
         fs::write(path, text).unwrap();
     }
 
+    fn read_only(path: &Path, executable: bool) {
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(if executable { 0o555 } else { 0o444 });
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = executable;
+            permissions.set_readonly(true);
+        }
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
     #[test]
     fn a_folder_moves_to_its_destination_and_back() {
         let dir = tempfile::tempdir().unwrap();
@@ -212,7 +227,7 @@ mod tests {
         let destination = dir.path().join("disk/videos");
         fs::create_dir(dir.path().join("disk")).unwrap();
         write(&location.join("2026/a.mp4"), "a");
-        set_permissions(&location.join("2026/a.mp4"), false, false).unwrap();
+        read_only(&location.join("2026/a.mp4"), false);
         place(&location, &destination).unwrap();
         assert!(is_in_place(&location, &destination));
         assert_eq!(
@@ -286,7 +301,7 @@ mod tests {
             .unwrap()
             .set_modified(time)
             .unwrap();
-        set_permissions(&source, true, false).unwrap();
+        read_only(&source, true);
         let before = crate::disk::Stat::read(&source).unwrap();
         let target = dir.path().join("b");
         copy_file(&source, &target).unwrap();

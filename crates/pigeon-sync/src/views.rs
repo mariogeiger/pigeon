@@ -1,6 +1,7 @@
 //! What the engine shows: its status, with which member owns each machine
 //! that runs another version of pigeon and which version, the group's
-//! files as this machine holds them, a file's history, the members with
+//! files as this machine holds them, a file's history across its moves,
+//! the members with
 //! their machines, the selection, the times a pin can choose and the
 //! retention, each as plain data for the command line and the API.
 
@@ -10,7 +11,7 @@ use anyhow::Result;
 use pigeon_core::clock::{MachineId, Stamp, rfc3339};
 use pigeon_core::ledger::Version;
 use pigeon_core::name::MemberName;
-use pigeon_core::patch::Content;
+use pigeon_core::patch::{Content, VersionRef};
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::retention::Retention;
 use pigeon_core::selection::{Cutoff, Rule, compile, matches};
@@ -76,7 +77,10 @@ impl IncompatibleMachine {
 #[derive(Clone, Debug, Serialize)]
 pub struct FileView {
     pub path: GroupPath,
-    pub owner: MemberName,
+    /// The member whose personal path holds the file, if any.
+    pub owner: Option<MemberName>,
+    /// The member who made its current version.
+    pub author: MemberName,
     pub content: Content,
     pub stamp: Stamp,
     pub time: String,
@@ -85,10 +89,8 @@ pub struct FileView {
     pub held: bool,
     /// Whether the disk shows a version other than the current one.
     pub outdated: bool,
-    pub writable: bool,
 }
 
-/// One accepted version of a file.
 /// A time at which some files a pattern matches have a version, and how
 /// many: pinning the pattern holds something else at each such time and
 /// the same between two of them.
@@ -98,15 +100,17 @@ pub struct PinTime {
     pub files: usize,
 }
 
+/// One accepted version of a file.
 #[derive(Clone, Debug, Serialize)]
 pub struct VersionView {
     pub stamp: Stamp,
     pub time: String,
     pub path: GroupPath,
     pub content: Option<Content>,
-    pub owner: MemberName,
+    pub author: MemberName,
     pub replaces: Option<Stamp>,
-    pub applies: Option<GroupPath>,
+    /// The version it moved, at another path.
+    pub continues: Option<VersionRef>,
 }
 
 impl From<&Version> for VersionView {
@@ -116,9 +120,9 @@ impl From<&Version> for VersionView {
             time: version.stamp.rfc3339(),
             path: version.path.clone(),
             content: version.content,
-            owner: version.owner.clone(),
+            author: version.author.clone(),
             replaces: version.replaces,
-            applies: version.applies.clone(),
+            continues: version.continues.clone(),
         }
     }
 }
@@ -250,14 +254,14 @@ impl Engine {
                 let held = entry.is_some_and(|entry| entry.seen.is_some());
                 Some(FileView {
                     path: version.path.clone(),
-                    owner: version.owner.clone(),
+                    owner: ledger.owner(&version.path),
+                    author: version.author.clone(),
                     content,
                     stamp: version.stamp,
                     time: version.stamp.rfc3339(),
                     cutoff: work.config.selection.cutoff(&version.path),
                     held,
                     outdated: held && entry.and_then(|entry| entry.synced) != Some(version.stamp),
-                    writable: inner.writable(&ledger, &work, &version.path),
                 })
             })
             .collect();
@@ -265,16 +269,18 @@ impl Engine {
         Ok(files)
     }
 
-    /// Every accepted version of `path`, oldest first.
+    /// The history of the file at `path`, oldest first: every version it
+    /// descends from, across the paths it moved from.
     #[must_use]
     pub fn history(&self, path: &GroupPath) -> Vec<VersionView> {
-        self.inner
-            .ledger
-            .lock()
-            .versions(&path.key())
-            .iter()
+        let ledger = self.inner.ledger.lock();
+        let mut history: Vec<VersionView> = ledger
+            .lineage(&path.key())
+            .into_iter()
             .map(VersionView::from)
-            .collect()
+            .collect();
+        history.reverse();
+        history
     }
 
     /// Every time at which pinning `pattern` holds something new, newest

@@ -1,6 +1,7 @@
 //! What to do at one path, given how the disk changed since pigeon last
-//! looked, which version the disk last matched, and which one the selection
-//! says it should show: the whole disk-to-ledger policy as a pure function.
+//! looked, which version the disk last matched, which one the selection
+//! says it should show, and whether the disk keeps a suggestion of this
+//! machine there: the whole disk-to-ledger policy as a pure function.
 
 use pigeon_core::clock::Stamp;
 use pigeon_core::statement::Reason;
@@ -11,10 +12,10 @@ pub enum Disk {
     /// The disk still shows what pigeon last saw, or nothing where pigeon
     /// saw nothing.
     Unchanged,
-    /// A file appeared or changed; `at` is its modification time in NTP64.
-    Changed { at: u64 },
-    /// The file pigeon last saw is gone; `at` is when pigeon noticed.
-    Removed { at: u64 },
+    /// A file appeared or changed.
+    Changed,
+    /// The file pigeon last saw is gone.
+    Removed,
 }
 
 /// How a version this machine published fell.
@@ -22,6 +23,17 @@ pub enum Disk {
 pub enum Lost {
     Rejected(String),
     Superseded,
+}
+
+/// Whether the disk shows what a suggestion of this machine holds.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kept {
+    /// It does not.
+    No,
+    /// It does, and the suggestion waits for the group.
+    Waiting,
+    /// It does, and the group decided the suggestion.
+    Decided,
 }
 
 /// What the path looks like to the ledger and the selection.
@@ -32,8 +44,10 @@ pub struct View {
     /// The version the disk should show, `None` when the machine holds
     /// nothing at the path.
     pub target: Option<Stamp>,
-    /// Whether this machine may publish a change at the path now.
-    pub writable: bool,
+    /// Whether the disk shows a suggestion of this machine.
+    pub kept: Kept,
+    /// Whether only pigeon writes the path, a statement's.
+    pub statement: bool,
     /// Why the synced version, if this machine published it, did not last.
     pub lost: Option<Lost>,
 }
@@ -41,58 +55,40 @@ pub struct View {
 /// One step toward agreement between disk and ledger.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Step {
-    /// Publish the disk's change once it stops changing.
+    /// Publish the disk's change, or suggest it, once it stops changing.
     Settle,
-    /// Keep the disk's content in the set-aside list.
-    SetAsideDisk(Reason),
-    /// Keep the synced version's content in the set-aside list.
-    SetAsideSynced(Reason),
+    /// Suggest the synced version's content, which the disk keeps.
+    SuggestSynced(Reason),
     /// Make the disk show the target.
     Materialize,
-    /// Stop holding the path: its file was deleted by a machine that may
-    /// not delete it for the group.
-    Exclude,
 }
 
 /// The steps that bring the path into agreement, in order.
 ///
-/// A change this machine may publish waits to settle, unless a version
-/// published elsewhere since the disk last matched is later than the
-/// change, in which case the later one wins. A change it may not publish is
-/// set aside and the target restored. A deletion it may not publish only
-/// stops the machine from holding the file.
+/// The disk keeps what a waiting suggestion of this machine holds, and
+/// shows the target again once the group decided it. A change of the disk
+/// waits to settle, and publishing decides whether the rules publish it or
+/// it becomes a suggestion; a change of a statement is undone. A version
+/// this machine published that fell becomes a suggestion, which the disk
+/// keeps.
 #[must_use]
 pub fn reconcile(disk: Disk, view: &View) -> Vec<Step> {
     let moved = view.target != view.synced;
-    match disk {
-        Disk::Changed { at } | Disk::Removed { at } if view.writable => {
-            match view.target.filter(|_| moved) {
-                Some(target) if at <= target.time => {
-                    let mut steps = Vec::new();
-                    if matches!(disk, Disk::Changed { .. }) {
-                        steps.push(Step::SetAsideDisk(Reason::Superseded));
-                    }
-                    steps.push(Step::Materialize);
-                    steps
-                }
-                _ => vec![Step::Settle],
-            }
-        }
-        Disk::Removed { .. } => vec![Step::Exclude],
-        Disk::Changed { .. } => vec![Step::SetAsideDisk(Reason::NotWritable), Step::Materialize],
-        Disk::Unchanged if moved => {
-            let mut steps = Vec::new();
-            match &view.lost {
+    match view.kept {
+        Kept::Waiting => Vec::new(),
+        Kept::Decided => vec![Step::Materialize],
+        Kept::No => match disk {
+            Disk::Changed | Disk::Removed if view.statement => vec![Step::Materialize],
+            Disk::Changed | Disk::Removed => vec![Step::Settle],
+            Disk::Unchanged if !moved => Vec::new(),
+            Disk::Unchanged => match &view.lost {
                 Some(Lost::Rejected(why)) => {
-                    steps.push(Step::SetAsideSynced(Reason::Rejected(why.clone())));
+                    vec![Step::SuggestSynced(Reason::Rejected(why.clone()))]
                 }
-                Some(Lost::Superseded) => steps.push(Step::SetAsideSynced(Reason::Superseded)),
-                None => {}
-            }
-            steps.push(Step::Materialize);
-            steps
-        }
-        Disk::Unchanged => Vec::new(),
+                Some(Lost::Superseded) => vec![Step::SuggestSynced(Reason::Superseded)],
+                None => vec![Step::Materialize],
+            },
+        },
     }
 }
 
@@ -108,90 +104,86 @@ mod tests {
         }
     }
 
-    fn view(synced: Option<u64>, target: Option<u64>, writable: bool) -> View {
+    fn view(synced: Option<u64>, target: Option<u64>) -> View {
         View {
             synced: synced.map(stamp),
             target: target.map(stamp),
-            writable,
+            kept: Kept::No,
+            statement: false,
             lost: None,
         }
     }
 
     #[test]
     fn an_agreeing_path_needs_nothing() {
-        assert!(reconcile(Disk::Unchanged, &view(Some(1), Some(1), true)).is_empty());
-        assert!(reconcile(Disk::Unchanged, &view(None, None, false)).is_empty());
+        assert!(reconcile(Disk::Unchanged, &view(Some(1), Some(1))).is_empty());
+        assert!(reconcile(Disk::Unchanged, &view(None, None)).is_empty());
     }
 
     #[test]
     fn a_remote_version_lands_on_an_untouched_disk() {
-        assert_eq!(
-            reconcile(Disk::Unchanged, &view(Some(1), Some(2), false)),
-            [Step::Materialize]
-        );
-        assert_eq!(
-            reconcile(Disk::Unchanged, &view(Some(1), None, false)),
-            [Step::Materialize]
-        );
+        for target in [Some(2), None] {
+            assert_eq!(
+                reconcile(Disk::Unchanged, &view(Some(1), target)),
+                [Step::Materialize]
+            );
+        }
     }
 
     #[test]
-    fn a_writable_change_settles_before_publication() {
-        let at = Disk::Changed { at: 5 };
-        assert_eq!(reconcile(at, &view(None, None, true)), [Step::Settle]);
-        assert_eq!(reconcile(at, &view(Some(1), Some(1), true)), [Step::Settle]);
-        let removed = Disk::Removed { at: 5 };
-        assert_eq!(
-            reconcile(removed, &view(Some(1), Some(1), true)),
-            [Step::Settle]
-        );
+    fn every_change_of_the_disk_settles_before_anything_else() {
+        for disk in [Disk::Changed, Disk::Removed] {
+            for (synced, target) in [(None, None), (Some(1), Some(1)), (Some(1), Some(5))] {
+                assert_eq!(reconcile(disk, &view(synced, target)), [Step::Settle]);
+            }
+        }
     }
 
     #[test]
-    fn between_concurrent_changes_of_one_member_the_later_wins() {
-        let mine_later = reconcile(Disk::Changed { at: 9 }, &view(Some(1), Some(5), true));
-        assert_eq!(mine_later, [Step::Settle]);
-        let mine_earlier = reconcile(Disk::Changed { at: 3 }, &view(Some(1), Some(5), true));
-        assert_eq!(
-            mine_earlier,
-            [Step::SetAsideDisk(Reason::Superseded), Step::Materialize]
-        );
-        let deletion_earlier = reconcile(Disk::Removed { at: 3 }, &view(Some(1), Some(5), true));
-        assert_eq!(deletion_earlier, [Step::Materialize]);
+    fn a_changed_statement_is_undone() {
+        let statement = View {
+            statement: true,
+            ..view(Some(1), Some(1))
+        };
+        assert_eq!(reconcile(Disk::Changed, &statement), [Step::Materialize]);
+        assert_eq!(reconcile(Disk::Removed, &statement), [Step::Materialize]);
     }
 
     #[test]
-    fn an_unwritable_edit_is_set_aside_and_the_version_restored() {
-        assert_eq!(
-            reconcile(Disk::Changed { at: 9 }, &view(Some(1), Some(1), false)),
-            [Step::SetAsideDisk(Reason::NotWritable), Step::Materialize]
-        );
+    fn the_disk_keeps_a_waiting_suggestion_until_the_group_decides() {
+        for disk in [Disk::Changed, Disk::Removed, Disk::Unchanged] {
+            for (synced, target) in [(Some(1), Some(1)), (Some(1), Some(5))] {
+                let waiting = View {
+                    kept: Kept::Waiting,
+                    ..view(synced, target)
+                };
+                assert!(reconcile(disk, &waiting).is_empty());
+                let decided = View {
+                    kept: Kept::Decided,
+                    ..view(synced, target)
+                };
+                assert_eq!(reconcile(disk, &decided), [Step::Materialize]);
+            }
+        }
     }
 
     #[test]
-    fn an_unwritable_deletion_only_stops_holding_the_file() {
-        assert_eq!(
-            reconcile(Disk::Removed { at: 9 }, &view(Some(1), Some(1), false)),
-            [Step::Exclude]
-        );
-    }
-
-    #[test]
-    fn a_fallen_version_of_this_machine_is_set_aside() {
-        let mut rejected = view(Some(1), Some(2), true);
-        rejected.lost = Some(Lost::Rejected("claimed".into()));
+    fn a_fallen_version_of_this_machine_becomes_a_suggestion_the_disk_keeps() {
+        let rejected = View {
+            lost: Some(Lost::Rejected("claimed".into())),
+            ..view(Some(1), Some(2))
+        };
         assert_eq!(
             reconcile(Disk::Unchanged, &rejected),
-            [
-                Step::SetAsideSynced(Reason::Rejected("claimed".into())),
-                Step::Materialize
-            ]
+            [Step::SuggestSynced(Reason::Rejected("claimed".into()))]
         );
-        let mut superseded = view(Some(1), None, true);
-        superseded.lost = Some(Lost::Superseded);
+        let superseded = View {
+            lost: Some(Lost::Superseded),
+            ..view(Some(1), None)
+        };
         assert_eq!(
             reconcile(Disk::Unchanged, &superseded),
-            [Step::SetAsideSynced(Reason::Superseded), Step::Materialize]
+            [Step::SuggestSynced(Reason::Superseded)]
         );
     }
 }

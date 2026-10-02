@@ -1,11 +1,11 @@
 //! The engine of one group on one machine: it opens the group's state,
 //! binds its endpoint, and runs the one loop that receives patches, follows
-//! the root's changes, publishes settled edits, joins the member to the
-//! group, renews and keeps the group secret, and keeps the blobs it needs
+//! the root's changes, publishes settled edits or suggests them, follows
+//! the suggestions, joins the member to the group, renews and keeps the group secret, and keeps the blobs it needs
 //! from garbage collection. After each turn it announces this machine's
 //! drafts and signals whether what the engine shows may have changed.
 
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
@@ -37,6 +37,7 @@ use pigeon_store::state::State;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
+use crate::suggestions::Live;
 use crate::watch::{Rescan, Watched};
 
 /// How the endpoint finds other machines.
@@ -73,7 +74,8 @@ pub struct Options {
     /// How long an edit in a personal folder must stay unchanged before it
     /// is published.
     pub settle_personal: Duration,
-    /// The same for a draft in a drop folder, which freezes once published.
+    /// The same for a new file at a path no member owns, a draft until
+    /// it is published.
     pub settle_drop: Duration,
     /// How often the whole root is compared with the ledger.
     pub rescan: Duration,
@@ -189,6 +191,10 @@ pub(crate) struct Work {
     pub watched: Vec<Watched>,
     /// The drafts last announced: each path, size, and when it last changed.
     pub announced: Option<Vec<(PathKey, u64, Instant)>>,
+    /// The live suggestions read so far, by their statements' keys.
+    pub suggestions: BTreeMap<PathKey, Live>,
+    /// Whether what pigeon 0.6 left in the state was taken up.
+    pub upgraded: bool,
 }
 
 /// Work for the loop from outside it.
@@ -291,17 +297,8 @@ impl Inner {
     }
 
     /// Signs, stores, folds and sends a patch of this machine.
-    pub(crate) fn publish_at(
-        &self,
-        stamp: Stamp,
-        changes: Vec<Change>,
-        applies: Option<GroupPath>,
-    ) -> Result<()> {
-        let patch = Patch {
-            stamp,
-            changes,
-            applies,
-        };
+    pub(crate) fn publish_at(&self, stamp: Stamp, changes: Vec<Change>) -> Result<()> {
+        let patch = Patch { stamp, changes };
         let signed = SignedPatch::sign(&self.group, patch, self.cert.clone(), &self.machine);
         self.state.add_patch(&signed)?;
         self.ledger.lock().insert(signed.clone())?;
@@ -376,8 +373,9 @@ impl Inner {
             path: path.clone(),
             content: Some(content),
             replaces: None,
+            continues: None,
         };
-        self.publish_at(self.clock.stamp(), vec![change], None)?;
+        self.publish_at(self.clock.stamp(), vec![change])?;
         work.join = self.join_state();
         let _ = self.wake.send(Wake::Keys(vec![path.key()]));
         Ok(())
@@ -426,7 +424,7 @@ impl Inner {
         let keys: Vec<PathKey> = keys.into_iter().collect();
         self.refresh_keys(work, &keys).await;
         if keys.iter().any(|key| key.as_str().starts_with(STATEMENTS)) {
-            self.apply_requests(work).await;
+            self.follow_suggestions(work).await;
         }
         work.protect_due = true;
     }
@@ -476,8 +474,8 @@ impl Inner {
         self.node.want(machines);
     }
 
-    /// One pass of the timer: join when due, publish settled edits and
-    /// set-aside items, rescan and protect when due.
+    /// One pass of the timer: join when due, take up what pigeon 0.6 left,
+    /// publish or suggest settled edits, rescan and protect when due.
     async fn tick(
         self: &Arc<Self>,
         work: &mut Work,
@@ -490,14 +488,17 @@ impl Inner {
         {
             self.report(format!("joining: {error}"));
         }
-        self.publish_settled(work, &[]).await;
-        if let Err(error) = self.share_aside(work).await {
-            self.report(format!("showing the set-aside items: {error:#}"));
+        if work.join == JoinState::Joined && !work.upgraded {
+            if let Err(error) = self.upgrade_v1(work).await {
+                self.report(format!("taking up what pigeon 0.6 left: {error:#}"));
+            }
+            work.upgraded = true;
         }
+        self.publish_settled(work, &[]).await;
         if last_rescan.elapsed() >= self.options.rescan {
             *last_rescan = Instant::now();
             self.refresh(work, &Rescan::All).await;
-            self.apply_requests(work).await;
+            self.follow_suggestions(work).await;
         }
         if work.protect_due || last_protect.elapsed() >= PROTECT_EVERY {
             *last_protect = Instant::now();
@@ -592,6 +593,8 @@ impl Engine {
                 watcher: None,
                 watched: Vec::new(),
                 announced: None,
+                suggestions: BTreeMap::new(),
+                upgraded: false,
             }),
             wake,
             rescans,
@@ -693,8 +696,8 @@ async fn run(
                 "freeing what the selection no longer holds: {error}"
             ));
         }
+        inner.follow_suggestions(&mut work).await;
         inner.refresh(&mut work, &Rescan::All).await;
-        inner.apply_requests(&mut work).await;
     }
     loop {
         tokio::select! {
@@ -732,7 +735,7 @@ async fn run(
                 let Wake::Keys(keys) = wake;
                 inner.refresh_keys(&mut work, &keys).await;
                 if keys.iter().any(|key| key.as_str().starts_with(STATEMENTS)) {
-                    inner.apply_requests(&mut work).await;
+                    inner.follow_suggestions(&mut work).await;
                     inner.follow_relay().await;
                 }
             }

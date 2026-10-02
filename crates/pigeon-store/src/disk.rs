@@ -1,6 +1,7 @@
 //! Files in a group's root: where a group path lives on disk, what a file's
 //! metadata says, and how pigeon replaces or removes a file at once, with
-//! the read-only and executable bits it should carry.
+//! the executable bit it should carry; every file pigeon writes may be
+//! written.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -70,28 +71,42 @@ impl Stat {
     }
 }
 
-/// Sets whether a file may be written and executed.
+/// Lets a file be written, and executed when `executable`.
 ///
 /// # Errors
 ///
 /// Fails if the permissions cannot be changed.
-pub fn set_permissions(path: &Path, executable: bool, writable: bool) -> Result<()> {
+pub fn set_permissions(path: &Path, executable: bool) -> Result<()> {
     let mut permissions = fs::metadata(path)
         .map_err(StoreError::io(path))?
         .permissions();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let write = if writable { 0o200 } else { 0 };
         let execute = if executable { 0o111 } else { 0 };
-        permissions.set_mode(0o444 | write | execute);
+        permissions.set_mode(0o644 | execute);
     }
     #[cfg(not(unix))]
     {
         let _ = executable;
-        permissions.set_readonly(!writable);
+        permissions.set_readonly(false);
     }
     fs::set_permissions(path, permissions).map_err(StoreError::io(path))
+}
+
+/// Lets the file at `path` be written if it is read-only, as pigeon left
+/// published drop files until 0.6, keeping its executable bit.
+///
+/// # Errors
+///
+/// Fails if the file exists and its permissions cannot be changed.
+pub fn unfreeze(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() && metadata.permissions().readonly() => {
+            set_permissions(path, Stat::of(&metadata).executable.unwrap_or(false))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// The temporary file next to `target` into which its new content goes.
@@ -113,10 +128,10 @@ pub fn temporary_path(target: &Path) -> PathBuf {
 /// # Errors
 ///
 /// Fails if the file cannot be moved or its permissions set.
-pub fn install(temporary: &Path, target: &Path, executable: bool, writable: bool) -> Result<()> {
-    set_permissions(temporary, executable, writable)?;
-    if cfg!(windows) && target.exists() {
-        set_permissions(target, false, true)?;
+pub fn install(temporary: &Path, target: &Path, executable: bool) -> Result<()> {
+    set_permissions(temporary, executable)?;
+    if cfg!(windows) {
+        unfreeze(target)?;
     }
     fs::rename(temporary, target).map_err(StoreError::io(target))
 }
@@ -128,8 +143,8 @@ pub fn install(temporary: &Path, target: &Path, executable: bool, writable: bool
 ///
 /// Fails if the file exists and cannot be removed.
 pub fn remove(root: &Path, target: &Path) -> Result<()> {
-    if cfg!(windows) && target.exists() {
-        set_permissions(target, false, true)?;
+    if cfg!(windows) {
+        unfreeze(target)?;
     }
     match fs::remove_file(target) {
         Ok(()) => {}
@@ -155,18 +170,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn install_replaces_a_read_only_file_and_sets_its_bits() {
+    fn install_replaces_a_read_only_file_with_a_writable_one_and_sets_its_bits() {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("a.txt");
         fs::write(&target, "old").unwrap();
-        set_permissions(&target, false, false).unwrap();
+        let mut frozen = fs::metadata(&target).unwrap().permissions();
+        frozen.set_readonly(true);
+        fs::set_permissions(&target, frozen).unwrap();
         let temporary = temporary_path(&target);
         assert_eq!(temporary.file_name().unwrap(), ".~pigeon-a.txt");
         fs::write(&temporary, "new").unwrap();
-        install(&temporary, &target, true, false).unwrap();
+        install(&temporary, &target, true).unwrap();
         assert_eq!(fs::read_to_string(&target).unwrap(), "new");
         let metadata = fs::metadata(&target).unwrap();
-        assert!(metadata.permissions().readonly());
+        assert!(!metadata.permissions().readonly());
         if cfg!(unix) {
             assert_eq!(Stat::of(&metadata).executable, Some(true));
         }

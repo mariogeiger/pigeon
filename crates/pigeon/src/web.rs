@@ -98,17 +98,10 @@ async fn home(State(app): State<Arc<App>>) -> Page {
     Ok(html_page(&pages::home(&groups)))
 }
 
-/// How many changes of `group` wait for its member to act.
-async fn waiting(app: &App, group: &str) -> Result<usize, Failure> {
-    let status = view(app, "group", "status", json!({ "group": group })).await?;
-    let changes = view(app, "change", "list", json!({ "group": group })).await?;
-    let me = status["member"].as_str().unwrap_or_default();
-    Ok(changes
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|change| files_page::waits_for(change, me))
-        .count())
+/// How many suggestions of `group` wait for the group.
+async fn suggestions(app: &App, group: &str) -> Result<usize, Failure> {
+    let suggestions = view(app, "suggestion", "list", json!({ "group": group })).await?;
+    Ok(suggestions.as_array().map_or(0, Vec::len))
 }
 
 /// The bar of `group`'s page at `tab`.
@@ -116,7 +109,7 @@ async fn bar<'a>(app: &App, group: &'a str, tab: Option<Tab>) -> Result<Bar<'a>,
     Ok(Bar {
         group,
         tab,
-        waiting: waiting(app, group).await?,
+        suggestions: suggestions(app, group).await?,
     })
 }
 
@@ -149,11 +142,16 @@ async fn files(
     let status = view(&app, "group", "status", json!({ "group": group })).await?;
     let list = view(&app, "file", "list", json!({ "group": group })).await?;
     let waiting = view(&app, "file", "pending", json!({ "group": group })).await?;
-    let changes = view(&app, "change", "list", json!({ "group": group })).await?;
+    let suggestions = view(&app, "suggestion", "list", json!({ "group": group })).await?;
     let member = status["member"].as_str().unwrap_or_default();
     let bar = bar(&app, &group, Some(Tab::Files)).await?;
     Ok(html_page(&files_page::files(
-        &bar, member, under, &list, &waiting, &changes,
+        &bar,
+        member,
+        under,
+        &list,
+        &waiting,
+        &suggestions,
     )))
 }
 
@@ -198,9 +196,8 @@ async fn file(
         })
         .cloned()
         .unwrap_or(Value::Null);
-    let (member, changes) = with_engine(&app, &group, async |engine| {
-        let member = engine.status().await.member.to_string();
-        (member, change_cards(engine, path).await)
+    let suggested = with_engine(&app, &group, async |engine| {
+        suggestion_cards(engine, path).await
     })
     .await?;
     let bar = bar(&app, &group, None).await?;
@@ -208,9 +205,9 @@ async fn file(
         file: &current,
         history: &history,
         waiting: &waiting,
-        changes: &changes,
+        suggested: &suggested,
     };
-    Ok(html_page(&group_pages::file(&bar, &member, path, &shown)))
+    Ok(html_page(&group_pages::file(&bar, path, &shown)))
 }
 
 /// The side of a comparison that `content` is.
@@ -240,19 +237,28 @@ fn version_content(engine: &Engine, path: &GroupPath, time: Option<u64>) -> Opti
     version.and_then(|version| version.content)
 }
 
-/// The changes waiting at `path`, each with the difference it makes to
-/// the current version, as far as this machine holds the contents.
-async fn change_cards(engine: &Engine, path: &str) -> Vec<(Value, Markup)> {
+/// The changes of `path` suggested, each with its suggestion and the
+/// difference it makes to the current version, as far as this machine
+/// holds the contents.
+async fn suggestion_cards(engine: &Engine, path: &str) -> Vec<(Value, Value, Markup)> {
     let current = GroupPath::parse(path)
         .ok()
         .and_then(|path| version_content(engine, &path, None));
     let mut cards = Vec::new();
-    for change in engine.waiting_changes().await {
-        if change.path != path {
-            continue;
+    for suggestion in engine.suggestions().await {
+        for change in suggestion
+            .changes
+            .iter()
+            .filter(|change| change.path == path)
+        {
+            let diff = change_diff(engine, current.as_ref(), change.content.as_ref()).await;
+            let change = serde_json::to_value(change).unwrap_or(Value::Null);
+            cards.push((
+                serde_json::to_value(&suggestion).unwrap_or(Value::Null),
+                change,
+                diff,
+            ));
         }
-        let diff = change_diff(engine, current.as_ref(), change.content.as_ref()).await;
-        cards.push((serde_json::to_value(&change).unwrap_or(Value::Null), diff));
     }
     cards
 }
@@ -380,14 +386,12 @@ fn local_page(back: &str) -> bool {
 }
 
 /// Whether an action's `result` says nothing its page does not show: no
-/// result, or only the requests it filed and the drafts it published,
-/// which the group's pages show by themselves.
+/// result, or only the paths it published, which the group's pages show by
+/// themselves.
 fn shown_by_its_page(result: &Value) -> bool {
     match result {
         Value::Null => true,
-        Value::Object(fields) => fields
-            .keys()
-            .all(|name| name == "requests" || name == "published"),
+        Value::Object(fields) => fields.keys().all(|name| name == "published"),
         _ => false,
     }
 }
@@ -477,8 +481,9 @@ mod tests {
     #[test]
     fn forms_return_to_their_page_unless_the_result_tells_more() {
         assert!(shown_by_its_page(&Value::Null));
-        assert!(shown_by_its_page(
-            &json!({"published": [], "requests": [".pigeon/requests/a.json"]})
+        assert!(shown_by_its_page(&json!({"published": ["a.txt"]})));
+        assert!(!shown_by_its_page(
+            &json!({"published": [], "requests": []})
         ));
         assert!(!shown_by_its_page(&json!({"key": "k"})));
         assert!(!shown_by_its_page(&json!([])));

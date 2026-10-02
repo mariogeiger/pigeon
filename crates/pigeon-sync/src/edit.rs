@@ -1,22 +1,23 @@
-//! What a person changes in the tree through an action: writing, deleting
-//! and renaming files or whole folders, drafts not yet published included.
-//! Every change of a published file, or of a new one, becomes a request to
-//! its owner, one per change, which the owner's machine applies at once
-//! when the owner asks it; a draft, which only this machine's disk holds,
-//! moves or goes on disk and is published at once.
+//! What a person changes in the tree through an action, which publishes it
+//! at once, whoever owns the files: writing, deleting and renaming files or
+//! whole folders, a renamed file continuing its history, and restoring
+//! files to what they held at a time. A draft, which only this machine's
+//! disk holds, moves or goes on disk and is published at once.
 
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use pigeon_core::ledger::{Ledger, Version};
-use pigeon_core::patch::{Change, Content};
-use pigeon_core::path::GroupPath;
-use pigeon_core::statement::Mode;
+use pigeon_core::patch::{Change, Content, VersionRef};
+use pigeon_core::path::{GroupPath, PathKey};
+use pigeon_core::restore::restore;
+use pigeon_core::selection::{compile, matches};
+use pigeon_core::statement::STATEMENTS;
 use pigeon_store::disk::{self, fs_path};
 use serde::Serialize;
 
 use crate::disk_sync::file_stat;
-use crate::engine::{Engine, Inner, Work};
+use crate::engine::{Engine, Inner, JoinState, Work};
 
 /// One change a person asks for. A folder is the prefix of its files'
 /// paths, so deleting or renaming a folder deletes or renames every file
@@ -28,20 +29,17 @@ pub enum Edit {
     Rename { from: GroupPath, to: GroupPath },
 }
 
-/// Where an edit went: the drafts it moved or removed on disk and
-/// published at once, or as soon as the member has joined, and the
-/// requests filed for the rest.
+/// The paths an action changed, all published.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Edited {
     pub published: Vec<GroupPath>,
-    pub requests: Vec<GroupPath>,
 }
 
 /// The content one path is to hold.
 enum Target {
     Bytes(Vec<u8>),
-    /// The content of a published file it moves from.
-    Moved(Content),
+    /// The content of the published version it moves from.
+    Moved(Content, VersionRef),
     /// The draft at `from`, which only this machine's disk holds.
     Draft {
         from: GroupPath,
@@ -96,9 +94,10 @@ fn targets(ledger: &Ledger, drafts: &[GroupPath], edit: Edit) -> Result<Vec<(Gro
             }
             let sources = files
                 .into_iter()
-                .map(|version| {
-                    let content = version.content.expect("a live version has content");
-                    (version.path.clone(), Target::Moved(content))
+                .filter_map(|version| {
+                    let content = version.content?;
+                    let moved = Target::Moved(content, version.reference());
+                    Some((version.path.clone(), moved))
                 })
                 .chain(moved_drafts.into_iter().map(|draft| {
                     (
@@ -158,7 +157,7 @@ impl Inner {
         Ok(())
     }
 
-    /// The change asking the owner of `path` to make it hold `target`.
+    /// The change that makes `path` hold `target`.
     async fn edit_change(
         &self,
         work: &mut Work,
@@ -166,35 +165,62 @@ impl Inner {
         target: Target,
     ) -> Result<Change> {
         let head = self.ledger.lock().head(&path.key()).cloned();
-        let content = match target {
+        let (content, continues) = match target {
             Target::Bytes(bytes) => {
                 let mut content = self.add_content(work, bytes).await?;
                 content.executable = head
                     .as_ref()
                     .and_then(|head| head.content)
                     .is_some_and(|old| old.executable);
-                Some(content)
+                (Some(content), None)
             }
-            Target::Moved(content) => Some(content),
+            Target::Moved(content, from) => (
+                Some(content),
+                Some(from).filter(|from| from.path.key() != path.key()),
+            ),
             Target::Draft { from } => {
                 bail!("{from} is not published yet: only its machine moves it")
             }
-            Target::Gone => None,
+            Target::Gone => (None, None),
         };
         Ok(Change {
             path,
             content,
             replaces: head.map(|head| head.stamp),
+            continues,
         })
     }
 
-    async fn edit(
+    /// Publishes `changes` at once, if the member has joined and none lies
+    /// in the statements folder, and brings their paths into agreement.
+    async fn publish_changes(
         self: &Arc<Self>,
         work: &mut Work,
-        edits: Vec<Edit>,
-        mode: Mode,
-        message: &str,
-    ) -> Result<Edited> {
+        changes: Vec<Change>,
+    ) -> Result<()> {
+        if changes.is_empty() {
+            return Ok(());
+        }
+        if work.join != JoinState::Joined {
+            bail!("{} has not joined the group yet", self.member);
+        }
+        if let Some(change) = changes
+            .iter()
+            .find(|change| change.path.is_inside(STATEMENTS))
+        {
+            bail!("{} lies in the statements folder", change.path);
+        }
+        self.ledger
+            .lock()
+            .check(&self.member, &self.cert.member, &changes)?;
+        let keys: Vec<PathKey> = changes.iter().map(|change| change.path.key()).collect();
+        self.publish_at(self.clock.stamp(), changes)?;
+        work.protect_due = true;
+        self.refresh_keys(work, &keys).await;
+        Ok(())
+    }
+
+    async fn edit(self: &Arc<Self>, work: &mut Work, edits: Vec<Edit>) -> Result<Edited> {
         let drafts: Vec<GroupPath> = work
             .pending
             .values()
@@ -218,7 +244,7 @@ impl Inner {
                     .lock()
                     .head(&path.key())
                     .is_some_and(Version::is_live),
-                Target::Bytes(_) | Target::Moved(_) => false,
+                Target::Bytes(_) | Target::Moved(..) => false,
             };
             if draft {
                 self.edit_draft(&path, &target)?;
@@ -227,32 +253,48 @@ impl Inner {
                 changes.push(self.edit_change(work, path, target).await?);
             }
         }
+        let mut published: Vec<GroupPath> =
+            changes.iter().map(|change| change.path.clone()).collect();
+        self.publish_changes(work, changes).await?;
         self.publish_now(work, &moved).await?;
-        let requests = if changes.is_empty() {
-            Vec::new()
-        } else {
-            self.request(work, changes, mode, message, &self.member)
-                .await?
-        };
-        Ok(Edited {
-            published: moved,
-            requests,
-        })
+        published.extend(moved);
+        Ok(Edited { published })
     }
 }
 
 impl Engine {
-    /// Carries out `edits`: drafts move or go on disk and are published at
-    /// once, and every other change is requested from its owner in `mode`,
-    /// with `message`, which the owner's machine applies at once when the
-    /// owner is this member.
+    /// Carries out `edits` and publishes them at once: drafts move or go
+    /// on disk first.
     ///
     /// # Errors
     ///
-    /// Fails if a path holds no file, a rename's target exists, a moved
-    /// file's content is not on this machine, or the disk refuses.
-    pub async fn edit(&self, edits: Vec<Edit>, mode: Mode, message: &str) -> Result<Edited> {
+    /// Fails if a path holds no file, a rename's target exists, the member
+    /// has not joined, a path lies in the statements folder, or the disk
+    /// refuses.
+    pub async fn edit(&self, edits: Vec<Edit>) -> Result<Edited> {
         let mut work = self.inner.work.lock().await;
-        self.inner.edit(&mut work, edits, mode, message).await
+        self.inner.edit(&mut work, edits).await
+    }
+
+    /// Makes every file the gitignore `pattern` matches hold what it held
+    /// at `time`, by new versions that leave the history whole: a file
+    /// that lived then and was deleted since comes back, one created since
+    /// goes, and a moved file keeps its path.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `pattern` is no gitignore pattern, the files already hold
+    /// what they held then, or the member has not joined.
+    pub async fn restore(&self, pattern: &str, time: u64) -> Result<Edited> {
+        let matcher = compile(pattern)?;
+        let inner = &self.inner;
+        let mut work = inner.work.lock().await;
+        let changes = restore(&inner.ledger.lock(), |path| matches(&matcher, path), time);
+        if changes.is_empty() {
+            bail!("{pattern} holds what it held then already");
+        }
+        let published = changes.iter().map(|change| change.path.clone()).collect();
+        inner.publish_changes(&mut work, changes).await?;
+        Ok(Edited { published })
     }
 }

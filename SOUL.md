@@ -5,14 +5,18 @@ short, and change it only if the project's identity changes.
 
 ## Mission
 
-pigeon keeps a trusted group's files in sync, peer to peer, giving every file
-exactly one owner, whose machines alone write it.
+pigeon keeps a trusted group's files in sync, peer to peer: every member may
+change every file, simple rules publish what is clearly theirs to change, and
+the group decides the rest.
 
 ## Design rules
 
-1. **One writer per file.** Only the machines of a file's owner write it;
-   every other change is a request that one of those machines applies. This
-   is what keeps people from ever conflicting, and no feature may break it.
+1. **Rules publish, the group decides, nothing is lost.** A machine
+   publishes by itself only its member's changes to their own files and new
+   files where no one owns the path; every other change, and the losing
+   side of concurrent ones, becomes a suggestion that anyone validates or
+   discards, the first decision final. Every version stays in the history,
+   and no feature may break this.
 2. **Trust the group, guard against mistakes.** Members are trusted; safety
    comes from visibility, history, and undo, never from walls between people.
 3. **Rust, reusing before writing.** pigeon is written in Rust and builds on

@@ -73,12 +73,12 @@ pub enum Tab {
 }
 
 /// Where a group's page stands in the bar: its group, its tab if it is
-/// one, and how many changes wait for this member to act.
+/// one, and how many suggestions wait for the group.
 #[derive(Clone, Copy, Debug)]
 pub struct Bar<'a> {
     pub group: &'a str,
     pub tab: Option<Tab>,
-    pub waiting: usize,
+    pub suggestions: usize,
 }
 
 /// The icon of every page: a bird.
@@ -103,7 +103,7 @@ fn bar(bar: Option<&Bar<'_>>) -> Markup {
                     ] {
                         a class=[(bar.tab == Some(tab)).then_some("current")] href={ "/g/" (bar.group) (address) } {
                             (label)
-                            @if tab == Tab::Files && bar.waiting > 0 { " (" (bar.waiting) ")" }
+                            @if tab == Tab::Files && bar.suggestions > 0 { " (" (bar.suggestions) ")" }
                         }
                     }
                 }
@@ -142,10 +142,15 @@ pub fn layout(title: &str, place: Option<&Bar<'_>>, body: &Markup) -> Markup {
     }
 }
 
+/// What a row of a table links to and ends with.
+pub type Link<'a> = &'a dyn Fn(&Value) -> Option<String>;
+pub type Ending<'a> = &'a dyn Fn(&Value) -> Markup;
+
 /// `items` as a table of `action`'s columns; `link` turns an item into the
-/// address its first cell links to.
+/// address its first cell links to, and `ending`, when given, into a last
+/// cell, such as a form acting on it.
 #[must_use]
-pub fn table(action: &Action, items: &Value, link: &dyn Fn(&Value) -> Option<String>) -> Markup {
+pub fn table(action: &Action, items: &Value, link: Link, ending: Option<Ending>) -> Markup {
     let items = items.as_array().map(Vec::as_slice).unwrap_or_default();
     html! {
         @if items.is_empty() {
@@ -157,13 +162,14 @@ pub fn table(action: &Action, items: &Value, link: &dyn Fn(&Value) -> Option<Str
                     tr {
                         @for (index, column) in action.columns.iter().enumerate() {
                             td {
-                                @let text = cell(column, field(item, column));
+                                @let text = cell(column, &field(item, column));
                                 @match link(item).filter(|_| index == 0) {
                                     Some(address) => a href=(address) { (text) },
                                     None => (text),
                                 }
                             }
                         }
+                        @if let Some(ending) = ending { td { (ending(item)) } }
                     }
                 }
             }
@@ -243,7 +249,7 @@ pub fn diff(old: &Side, new: &Side) -> Markup {
 pub fn home(groups: &Value) -> Markup {
     let link = |item: &Value| item["name"].as_str().map(|name| format!("/g/{name}"));
     let body = html! {
-        (table(action("group", "list"), groups, &link))
+        (table(action("group", "list"), groups, &link, None))
         (form(action("group", "create"), "/", Fill::default()))
         (form(action("group", "join"), "/", Fill::default()))
     };

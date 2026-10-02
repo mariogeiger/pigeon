@@ -1,8 +1,10 @@
 //! The ledger: every known patch, folded in stamp order into the accepted
-//! versions of each path, the member list with each name's current key, and
-//! the names that tags claim.
+//! versions of each path and their lineage across moves, the member list
+//! with each name's current key, and the names that tags claim.
 //! Each patch is accepted or rejected as a whole against the state it lands
 //! on, so every machine holding the same patches computes the same tree.
+//! Any member changes any file: the ledger guards who speaks for a name and
+//! that a suggestion is decided once, and leaves the rest to the group.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Bound;
@@ -13,27 +15,38 @@ use crate::clock::{MachineId, Stamp};
 use crate::identity::{GroupId, MachineCert};
 use crate::name::MemberName;
 use crate::ownership::{Ownership, classify};
-use crate::patch::{Change, Content, SignatureError, SignedPatch};
+use crate::patch::{Change, Content, SignatureError, SignedPatch, VersionRef};
 use crate::path::{GroupPath, PathKey};
 use crate::statement::{
-    RebindStatement, is_rebind_path, member_of_path, member_path, rebind_of_path,
+    RebindStatement, is_rebind_path, is_suggestion_path, member_of_path, member_path,
+    rebind_of_path,
 };
 
-/// One accepted state of a path.
+/// One accepted state of a path, the member who wrote it, and the
+/// versions it replaces and, when it moved here, continues.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Version {
     pub stamp: Stamp,
     pub path: GroupPath,
     pub content: Option<Content>,
-    pub owner: MemberName,
+    pub author: MemberName,
     pub replaces: Option<Stamp>,
-    pub applies: Option<GroupPath>,
+    pub continues: Option<VersionRef>,
 }
 
 impl Version {
     #[must_use]
     pub fn is_live(&self) -> bool {
         self.content.is_some()
+    }
+
+    /// The reference other changes name this version by.
+    #[must_use]
+    pub fn reference(&self) -> VersionRef {
+        VersionRef {
+            path: self.path.clone(),
+            stamp: self.stamp,
+        }
     }
 }
 
@@ -70,10 +83,8 @@ pub enum Rejection {
     Malformed(GroupPath),
     #[error("{path} is {owner}'s member file: only {owner} writes it")]
     ForeignMemberFile { path: GroupPath, owner: MemberName },
-    #[error("{path} belongs to {owner}: propose the change as a request")]
-    NotOwner { path: GroupPath, owner: MemberName },
-    #[error("{0} is frozen: change it through a request, which you may force")]
-    Frozen(GroupPath),
+    #[error("the suggestion {0} was decided already, or changed since you saw it")]
+    AlreadyDecided(GroupPath),
 }
 
 /// What accepting a patch changed, so that it can be undone exactly.
@@ -102,17 +113,11 @@ struct State {
     exclusions: BTreeSet<Stamp>,
 }
 
-/// One validated change and the member who owns its path.
-struct Planned<'a> {
-    change: &'a Change,
-    owner: MemberName,
-}
-
-/// What an acceptable patch does: whether it joins its author, its changes,
-/// and the names it rebinds.
+/// What an acceptable patch does: whether it joins its author, the
+/// changes that make versions, and the names it rebinds.
 struct Plan<'a> {
     joins: bool,
-    changes: Vec<Planned<'a>>,
+    changes: Vec<&'a Change>,
     rebinds: Vec<RebindStatement>,
 }
 
@@ -152,7 +157,6 @@ impl State {
         author: &MemberName,
         key: &PublicKey,
         changes: &'a [Change],
-        applies: bool,
     ) -> Result<Plan<'a>, Rejection> {
         let joins = self.check_author(author, key, changes)?;
         let is_member =
@@ -176,27 +180,20 @@ impl State {
                     owner,
                 });
             }
-            let head = self
+            let live = self
                 .head(&change.path.key())
                 .filter(|version| version.is_live());
-            let owner = match (classify(&change.path, is_member).0, head) {
-                (Ownership::Personal(owner), _) => owner,
-                (Ownership::Drop, Some(head)) => {
-                    if !applies && head.owner == *author {
-                        return Err(Rejection::Frozen(change.path.clone()));
-                    }
-                    head.owner.clone()
+            if change.content.is_none() {
+                let decides_what_was_seen =
+                    live.is_some_and(|head| Some(head.stamp) == change.replaces);
+                if is_suggestion_path(&change.path) && !decides_what_was_seen {
+                    return Err(Rejection::AlreadyDecided(change.path.clone()));
                 }
-                (Ownership::Drop, None) if change.content.is_none() => continue,
-                (Ownership::Drop, None) => author.clone(),
-            };
-            if owner != *author {
-                return Err(Rejection::NotOwner {
-                    path: change.path.clone(),
-                    owner,
-                });
+                if live.is_none() {
+                    continue;
+                }
             }
-            planned.push(Planned { change, owner });
+            planned.push(change);
         }
         Ok(Plan {
             joins,
@@ -208,12 +205,7 @@ impl State {
     fn fold(&mut self, signed: &SignedPatch) {
         let patch = &signed.patch;
         let cert = &signed.cert;
-        let outcome = match self.plan(
-            &cert.name,
-            &cert.member,
-            &patch.changes,
-            patch.applies.is_some(),
-        ) {
+        let outcome = match self.plan(&cert.name, &cert.member, &patch.changes) {
             Err(rejection) => Outcome::Rejected(rejection),
             Ok(plan) => {
                 let mut effects = Effects::default();
@@ -228,7 +220,7 @@ impl State {
                     );
                     effects.joined = Some(cert.name.clone());
                 }
-                for Planned { change, owner } in plan.changes {
+                for change in plan.changes {
                     let key = change.path.key();
                     let was_live = self.head(&key).is_some_and(Version::is_live);
                     let delta = isize::from(change.content.is_some()) - isize::from(was_live);
@@ -244,9 +236,9 @@ impl State {
                         stamp: patch.stamp,
                         path: change.path.clone(),
                         content: change.content,
-                        owner,
+                        author: cert.name.clone(),
                         replaces: change.replaces,
-                        applies: patch.applies.clone(),
+                        continues: change.continues.clone(),
                     });
                     effects.keys.push(key);
                 }
@@ -368,29 +360,17 @@ impl Ledger {
         author: &MemberName,
         key: &PublicKey,
         changes: &[Change],
-        applies: bool,
     ) -> Result<(), Rejection> {
-        self.state.plan(author, key, changes, applies).map(|_| ())
+        self.state.plan(author, key, changes).map(|_| ())
     }
 
-    /// The owner a new file at `path` would have if `author` created it now.
+    /// The member whose personal path `path` lies in, if any.
     #[must_use]
-    pub fn owner_of(&self, path: &GroupPath, author: &MemberName) -> MemberName {
-        let head = self.head(&path.key()).filter(|version| version.is_live());
-        match (
-            classify(path, |name| self.state.members.contains_key(name)).0,
-            head,
-        ) {
-            (Ownership::Personal(owner), _) => owner,
-            (Ownership::Drop, Some(head)) => head.owner.clone(),
-            (Ownership::Drop, None) => author.clone(),
+    pub fn owner(&self, path: &GroupPath) -> Option<MemberName> {
+        match classify(path, |name| self.state.members.contains_key(name)).0 {
+            Ownership::Personal(owner) => Some(owner),
+            Ownership::Drop => None,
         }
-    }
-
-    /// Whether files at `path` freeze once published.
-    #[must_use]
-    pub fn freezes(&self, path: &GroupPath) -> bool {
-        classify(path, |name| self.state.members.contains_key(name)).0 == Ownership::Drop
     }
 
     /// Whether `rejection` is the outcome of the patch `stamp`, or `Ok` if
@@ -431,6 +411,37 @@ impl Ledger {
         let versions = self.versions(key);
         let after = versions.partition_point(|version| version.stamp.time <= time);
         after.checked_sub(1).map(|index| &versions[index])
+    }
+
+    /// The version `reference` names, if it was accepted.
+    #[must_use]
+    pub fn version(&self, reference: &VersionRef) -> Option<&Version> {
+        let versions = self.versions(&reference.path.key());
+        versions
+            .binary_search_by_key(&reference.stamp, |version| version.stamp)
+            .ok()
+            .map(|index| &versions[index])
+    }
+
+    /// The version `version` follows in its file's history: the one it
+    /// continues when it moved, or else the previous version of its path.
+    #[must_use]
+    pub fn parent(&self, version: &Version) -> Option<&Version> {
+        if let Some(continued) = &version.continues {
+            return self
+                .version(continued)
+                .filter(|parent| parent.stamp < version.stamp);
+        }
+        let versions = self.versions(&version.path.key());
+        let at = versions.partition_point(|earlier| earlier.stamp < version.stamp);
+        at.checked_sub(1).map(|index| &versions[index])
+    }
+
+    /// The history of the file at `key`, newest first: its head and every
+    /// version it descends from, across the paths it moved from.
+    #[must_use]
+    pub fn lineage(&self, key: &PathKey) -> Vec<&Version> {
+        std::iter::successors(self.head(key), |version| self.parent(version)).collect()
     }
 
     /// Every path key that ever had a version.

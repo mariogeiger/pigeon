@@ -212,7 +212,7 @@ async fn the_api_answers_only_localhost_calls_with_the_token() {
 }
 
 #[tokio::test]
-async fn two_daemons_share_files_and_answer_requests() {
+async fn two_daemons_share_files_and_decide_suggestions() {
     let lookup = MemoryLookup::new();
     let a = Peer::start(&lookup).await;
     let b = Peer::start(&lookup).await;
@@ -242,8 +242,7 @@ async fn two_daemons_share_files_and_answer_requests() {
         )
         .await
         .unwrap();
-    assert_eq!(wrote["published"], json!([]));
-    assert_eq!(wrote["requests"].as_array().unwrap().len(), 1, "{wrote}");
+    assert_eq!(wrote, json!({"published": ["+alice/notes.txt"]}));
     b.call("selection", "follow", json!({"pattern": "/+alice/"}))
         .await
         .unwrap();
@@ -253,19 +252,10 @@ async fn two_daemons_share_files_and_answer_requests() {
     })
     .await;
 
-    let asked = b
-        .call(
-            "file",
-            "write",
-            json!({"path": "+alice/notes.txt", "content": base64("bonjour\n"), "message": "in French"}),
-        )
-        .await
-        .unwrap();
-    assert_eq!(asked["published"], json!([]));
-    let request = asked["requests"][0].as_str().unwrap().to_owned();
-    eventually("alice sees the proposal", async || {
-        let changes = a.call("change", "list", json!({})).await.unwrap();
-        changes.as_array().unwrap().len() == 1
+    std::fs::write(&on_b, "bonjour\n").unwrap();
+    eventually("alice sees bob's suggestion", async || {
+        let suggestions = a.call("suggestion", "list", json!({})).await.unwrap();
+        suggestions.as_array().unwrap().len() == 1
     })
     .await;
     eventually("alice reviews the difference", async || {
@@ -275,18 +265,26 @@ async fn two_daemons_share_files_and_answer_requests() {
     .await;
     let page = a.page("/g/cheapmo/file?path=%2Balice/notes.txt").await;
     assert!(
-        page.contains("bob proposes a change to alice: in French"),
+        page.contains("bob suggests a new version, as the rules leave it to the group"),
         "{page}"
     );
-    assert!(page.contains(r#"action="/act/change/apply""#), "{page}");
+    assert!(
+        page.contains(r#"action="/act/suggestion/validate""#),
+        "{page}"
+    );
     let page = a.page("/g/cheapmo/files").await;
     assert!(page.contains("Files (1)"), "{page}");
-    assert!(page.contains("📬 bob → alice"), "{page}");
-    a.call("change", "apply", json!({"entry": request}))
-        .await
-        .unwrap();
+    assert!(page.contains("📬 bob"), "{page}");
+    let suggestions = a.call("suggestion", "list", json!({})).await.unwrap();
+    a.call(
+        "suggestion",
+        "validate",
+        json!({"suggestions": suggestions[0]["id"]}),
+    )
+    .await
+    .unwrap();
     let on_a = a.root("cheapmo").join("+alice/notes.txt");
-    eventually("both hold the accepted note", async || {
+    eventually("both hold the validated note", async || {
         std::fs::read_to_string(&on_a).ok().as_deref() == Some("bonjour\n")
             && std::fs::read_to_string(&on_b).ok().as_deref() == Some("bonjour\n")
     })
@@ -371,6 +369,28 @@ async fn a_machine_hears_the_group_before_choosing_its_name() {
     assert!(error.contains("already in the group cheapmo"), "{error}");
 }
 
+/// Posts a web form of `fields` to `/act/<action>`, as a browser does.
+async fn post_form(peer: &Peer, action: &str, fields: &[(&str, &str)]) -> Answer {
+    let boundary = "pigeonboundary";
+    let parts: Vec<String> = fields
+        .iter()
+        .map(|(name, value)| {
+            format!(
+                "--{boundary}\r\ncontent-disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+            )
+        })
+        .collect();
+    let form = format!("{}--{boundary}--\r\n", parts.concat());
+    let kind = format!("multipart/form-data; boundary={boundary}");
+    peer.send(
+        "POST",
+        &format!("/act/{action}"),
+        vec![peer.cookie()],
+        Some((kind, form.into_bytes())),
+    )
+    .await
+}
+
 #[tokio::test]
 async fn web_forms_run_their_action_and_return() {
     let lookup = MemoryLookup::new();
@@ -382,27 +402,12 @@ async fn web_forms_run_their_action_and_return() {
     )
     .await
     .unwrap();
-    let boundary = "pigeonboundary";
     let fields = [
         ("back", "/g/cheapmo/files"),
         ("group", "cheapmo"),
         ("pattern", "/docs/"),
     ];
-    let parts = fields.map(|(name, value)| {
-        format!(
-            "--{boundary}\r\ncontent-disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
-        )
-    });
-    let form = format!("{}--{boundary}--\r\n", parts.concat());
-    let kind = format!("multipart/form-data; boundary={boundary}");
-    let answer = peer
-        .send(
-            "POST",
-            "/act/selection/follow",
-            vec![peer.cookie()],
-            Some((kind, form.into_bytes())),
-        )
-        .await;
+    let answer = post_form(&peer, "selection/follow", &fields).await;
     assert_eq!(answer.status, 303, "{}", answer.body);
     assert_eq!(answer.location.as_deref(), Some("/g/cheapmo/files"));
     assert_eq!(selection(&peer).await, ["follow +alice/", "follow /docs/"]);
@@ -419,7 +424,6 @@ fn dummy(kind: Kind, peer: &Peer) -> Value {
         Kind::Bytes => json!(base64("dummy")),
         Kind::Document => json!("member = \"alice\"\n"),
         Kind::Time => json!("2026-01-01T00:00:00Z"),
-        Kind::Choice(choices) => json!(choices[0]),
         Kind::Flag => json!(false),
     }
 }
@@ -831,4 +835,96 @@ async fn reloading_applies_the_configurations_edited_by_hand_unless_one_is_inval
     assert_eq!(selection(&peer).await, ["free +alice/", "free *.iso"]);
     assert_eq!(std::fs::read_to_string(&config).unwrap(), edited);
     eventually("the notes are freed", async || !notes.exists()).await;
+}
+
+#[tokio::test]
+async fn the_web_restores_a_version_and_decides_the_suggestions_it_shows() {
+    let lookup = MemoryLookup::new();
+    let (peer, notes) = alice_with_notes(&lookup).await;
+    peer.call(
+        "file",
+        "write",
+        json!({"path": "+alice/notes.txt", "content": base64("hello again\n")}),
+    )
+    .await
+    .unwrap();
+    let read = |path: &PathBuf| std::fs::read_to_string(path).unwrap_or_default();
+    eventually("the notes change", async || read(&notes) == "hello again\n").await;
+    let history = peer
+        .call("file", "history", json!({"path": "+alice/notes.txt"}))
+        .await
+        .unwrap();
+    let first = history[0]["time"].as_str().unwrap().to_owned();
+    let page = peer.page("/g/cheapmo/file?path=%2Balice/notes.txt").await;
+    assert_eq!(
+        page.matches(r#"action="/act/file/restore""#).count(),
+        2,
+        "{page}"
+    );
+    let back = "/g/cheapmo/file?path=%2Balice/notes.txt";
+    let restore = [
+        ("back", back),
+        ("group", "cheapmo"),
+        ("pattern", "/+alice/notes.txt"),
+        ("time", first.as_str()),
+    ];
+    let answer = post_form(&peer, "file/restore", &restore).await;
+    assert_eq!(answer.status, 303, "{}", answer.body);
+    assert_eq!(answer.location.as_deref(), Some(back));
+    eventually("the first version is back", async || {
+        read(&notes) == "hello\n"
+    })
+    .await;
+
+    peer.call("selection", "follow", json!({"pattern": "/docs/"}))
+        .await
+        .unwrap();
+    peer.call(
+        "file",
+        "write",
+        json!({"path": "docs/plan.txt", "content": base64("plan\n")}),
+    )
+    .await
+    .unwrap();
+    let plan = peer.root("cheapmo").join("docs/plan.txt");
+    eventually("the plan is on disk", async || read(&plan) == "plan\n").await;
+    let mut ids = Vec::new();
+    for text in ["first idea\n", "second idea\n"] {
+        std::fs::write(&plan, text).unwrap();
+        eventually("the edit is suggested", async || {
+            let suggestions = peer.call("suggestion", "list", json!({})).await.unwrap();
+            suggestions.as_array().unwrap().len() == 1
+                && suggestions[0]["changes"][0]["content"]["size"] == text.len()
+        })
+        .await;
+        let suggestions = peer.call("suggestion", "list", json!({})).await.unwrap();
+        ids.push(suggestions[0]["id"].as_str().unwrap().to_owned());
+        let page = peer.page("/g/cheapmo/files?under=docs").await;
+        assert!(page.contains("alice suggests a new version"), "{page}");
+        assert!(page.contains("Files (1)"), "{page}");
+    }
+    let stale = [
+        ("back", "/g/cheapmo/files"),
+        ("group", "cheapmo"),
+        ("suggestions", ids[0].as_str()),
+    ];
+    let answer = post_form(&peer, "suggestion/discard", &stale).await;
+    assert_ne!(
+        answer.status, 303,
+        "a suggestion changed since it was shown"
+    );
+    assert_eq!(read(&plan), "second idea\n");
+    let shown = [
+        ("back", "/g/cheapmo/files"),
+        ("group", "cheapmo"),
+        ("suggestions", ids[1].as_str()),
+    ];
+    let answer = post_form(&peer, "suggestion/discard", &shown).await;
+    assert_eq!(answer.status, 303, "{}", answer.body);
+    eventually("the disk shows the group's plan again", async || {
+        read(&plan) == "plan\n"
+    })
+    .await;
+    let suggestions = peer.call("suggestion", "list", json!({})).await.unwrap();
+    assert_eq!(suggestions, json!([]));
 }

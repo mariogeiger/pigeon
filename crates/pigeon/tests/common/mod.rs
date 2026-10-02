@@ -216,32 +216,13 @@ impl Machine {
             .unwrap_or_else(|error| panic!("{}: writing {relative}: {error}", self.name));
     }
 
-    /// Whether writing in place is refused, as it is for a read-only file.
-    pub fn refuses_writing(&self, relative: &str) -> bool {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(self.path(relative))
-            .is_err()
-    }
-
     /// Saves `text` as editors that keep a backup do: into a temporary file
-    /// beside it, renamed over the file, which replaces even a read-only
-    /// file.
+    /// beside it, renamed over the file.
     pub fn save_atomically(&self, relative: &str, text: &str) {
         let path = self.path(relative);
         let temporary = path.with_file_name(".goutputstream-PIGEON");
         std::fs::write(&temporary, text).unwrap();
         std::fs::rename(&temporary, &path).unwrap();
-    }
-
-    /// Makes the file writable, then writes `text`, as `:w!` does in vim.
-    pub fn force_write(&self, relative: &str, text: &str) {
-        let path = self.path(relative);
-        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
-        #[allow(clippy::permissions_set_readonly_false)]
-        permissions.set_readonly(false);
-        std::fs::set_permissions(&path, permissions).unwrap();
-        std::fs::write(&path, text).unwrap();
     }
 
     pub fn remove(&self, relative: &str) {
@@ -264,25 +245,63 @@ impl Machine {
         file.set_modified(SystemTime::now() - ago).unwrap();
     }
 
-    /// The changes `pigeon change list` shows waiting for someone.
-    pub async fn changes(&self) -> Vec<Value> {
-        let list = self.run("change", "list", json!({})).await;
+    /// The suggestions `pigeon suggestion list` shows, oldest first.
+    pub async fn suggestions(&self) -> Vec<Value> {
+        let list = self.run("suggestion", "list", json!({})).await;
         list.as_array().unwrap().clone()
     }
 
-    /// The set-aside items among the changes, whichever machine set them
-    /// aside.
-    pub async fn aside(&self) -> Vec<Value> {
-        let changes = self.changes().await;
-        changes
+    /// The suggestions that change `path`.
+    pub async fn suggested(&self, path: &str) -> Vec<Value> {
+        let suggestions = self.suggestions().await;
+        suggestions
             .into_iter()
-            .filter(|change| change["waits"].get("SetAside").is_some())
+            .filter(|suggestion| {
+                suggestion["changes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|change| change["path"] == path)
+            })
             .collect()
     }
 
+    /// The one suggestion that changes `path`, waiting until there is one.
+    pub async fn suggestion_at(&self, path: &str) -> Value {
+        eventually(
+            &format!("{} suggests {path}", self.name),
+            &[self],
+            async || self.suggested(path).await.len() == 1,
+        )
+        .await;
+        self.suggested(path).await.remove(0)
+    }
+
+    /// Validates the suggestions `ids`, at `to` when given.
+    pub async fn validate(&self, ids: &[&Value], to: Option<&str>) {
+        let ids: Vec<&str> = ids.iter().map(|id| id.as_str().unwrap()).collect();
+        self.run(
+            "suggestion",
+            "validate",
+            json!({"suggestions": ids.join(" "), "to": to}),
+        )
+        .await;
+    }
+
+    /// Discards the suggestions `ids`.
+    pub async fn discard(&self, ids: &[&Value]) {
+        let ids: Vec<&str> = ids.iter().map(|id| id.as_str().unwrap()).collect();
+        self.run(
+            "suggestion",
+            "discard",
+            json!({"suggestions": ids.join(" ")}),
+        )
+        .await;
+    }
+
     /// What this machine holds, for a failing scenario to show: the files
-    /// it lists with their owners, those on its disk, the changes it lists
-    /// as waiting, and its latest errors.
+    /// it lists with their authors, those on its disk, the suggestions it
+    /// lists, and its latest errors.
     pub async fn describe(&self) -> String {
         let mut lines = vec![format!("{}:", self.name)];
         let files = self.run("file", "list", json!({})).await;
@@ -290,8 +309,8 @@ impl Machine {
             let path = file["path"].as_str().unwrap();
             if !path.starts_with(".pigeon/") {
                 lines.push(format!(
-                    "  listed {path} owner {} held {} cutoff {}",
-                    file["owner"], file["held"], file["cutoff"]
+                    "  listed {path} by {} held {} cutoff {}",
+                    file["author"], file["held"], file["cutoff"]
                 ));
             }
         }
@@ -315,10 +334,10 @@ impl Machine {
                 }
             }
         }
-        for change in self.changes().await {
+        for suggestion in self.suggestions().await {
             lines.push(format!(
-                "  change {} by {} to {} waits {}",
-                change["path"], change["author"], change["owner"], change["waits"]
+                "  suggestion by {} as {}: {}",
+                suggestion["author"], suggestion["reason"], suggestion["changes"]
             ));
         }
         let status = self.run("group", "status", json!({})).await;

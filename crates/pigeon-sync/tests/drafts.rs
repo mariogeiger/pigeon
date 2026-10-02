@@ -1,8 +1,8 @@
 //! Drafts announced among machines: a new file in a drop folder shows on
 //! the other machines with its author before it is published, two drafts
-//! of one path in any case are rivals, the later one learns it will be set
-//! aside and renames its draft to keep both, and a draft that goes is no
-//! longer shown.
+//! of one path in any case are rivals, the later one learns it will become
+//! a suggestion and renames its draft to keep both, and a draft that goes
+//! is no longer shown.
 
 mod common;
 
@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use common::{eventually, group_with, joined};
 use pigeon_core::path::GroupPath;
-use pigeon_core::statement::Mode;
 use pigeon_sync::Edit;
 
 fn path(text: &str) -> GroupPath {
@@ -46,7 +45,7 @@ async fn drafts_of_one_path_warn_both_members_until_one_goes() {
             && pending.iter().any(|view| !view.here && view.rivals[0].wins)
     })
     .await;
-    eventually("bob learns his copy will be set aside", || async {
+    eventually("bob learns his copy will be a suggestion", || async {
         bob.engine.pending(None).await.iter().any(|view| {
             view.here && view.rivals[0].wins && view.rivals[0].path.as_str() == "shared/Report.txt"
         })
@@ -54,14 +53,10 @@ async fn drafts_of_one_path_warn_both_members_until_one_goes() {
     .await;
     let renamed = bob
         .engine
-        .edit(
-            vec![Edit::Rename {
-                from: path("shared/report.txt"),
-                to: path("shared/report-bob.txt"),
-            }],
-            Mode::Propose,
-            "",
-        )
+        .edit(vec![Edit::Rename {
+            from: path("shared/report.txt"),
+            to: path("shared/report-bob.txt"),
+        }])
         .await
         .unwrap();
     assert_eq!(

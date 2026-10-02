@@ -1,9 +1,9 @@
 //! The statuses a row of the Files page shows, one emoji each, with the
 //! legend that explains them: whether this machine is catching up with a
-//! followed file or keeps a frozen copy, whether changes become requests,
-//! the edits and drafts waiting with the time left, the drafts of one
-//! path that rival each other, and the changes waiting for someone. A file
-//! up to date, or neither followed nor held, shows nothing.
+//! followed file or keeps a frozen copy, the edits and drafts waiting with
+//! the time left, the drafts of one path that rival each other, and the
+//! changes suggested to the group. A file up to date, or neither followed
+//! nor held, shows nothing.
 
 use maud::{Markup, html};
 use serde_json::Value;
@@ -13,26 +13,24 @@ use serde_json::Value;
 pub enum Status {
     Updating,
     Frozen,
-    ByRequest,
     Waiting,
     Deleting,
     Drafted,
     Rival,
     Overtaken,
-    Change,
+    Suggested,
 }
 
 impl Status {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 8] = [
         Self::Updating,
         Self::Frozen,
-        Self::ByRequest,
         Self::Waiting,
         Self::Deleting,
         Self::Drafted,
         Self::Rival,
         Self::Overtaken,
-        Self::Change,
+        Self::Suggested,
     ];
 
     #[must_use]
@@ -40,13 +38,12 @@ impl Status {
         match self {
             Self::Updating => "⏬",
             Self::Frozen => "🧊",
-            Self::ByRequest => "🔒",
             Self::Waiting => "⏳",
             Self::Deleting => "🗑️",
             Self::Drafted => "✍️",
             Self::Rival => "⚠️",
             Self::Overtaken => "🛑",
-            Self::Change => "📬",
+            Self::Suggested => "📬",
         }
     }
 
@@ -57,18 +54,17 @@ impl Status {
                 "followed, but missing or older here: the current version is on its way"
             }
             Self::Frozen => "a copy kept here, frozen: it no longer syncs",
-            Self::ByRequest => {
-                "changes become requests: another member's file, or a published drop file"
-            }
             Self::Waiting => "your edit waits to be published",
             Self::Deleting => "your deletion waits to be published",
             Self::Drafted => "another member is adding this file",
-            Self::Rival => "another draft of the same path: the first published wins",
-            Self::Overtaken => {
-                "another draft of the same path is published first: rename yours to keep it"
+            Self::Rival => {
+                "another draft of the same path: the first published wins, the other becomes a suggestion"
             }
-            Self::Change => {
-                "a change waits for someone: its menu applies it, asks its owner, places it elsewhere or discards it"
+            Self::Overtaken => {
+                "another draft of the same path is published first: yours becomes a suggestion, unless you rename it"
+            }
+            Self::Suggested => {
+                "a change suggested to the group: anyone validates or discards it from its menu"
             }
         }
     }
@@ -98,7 +94,7 @@ fn mark(status: Status, title: Option<String>, detail: &Markup) -> Markup {
 }
 
 /// The other drafts of the path `item` waits at; for this machine's own,
-/// those published first say that this one will be set aside.
+/// those published first say that this one will become a suggestion.
 fn rivals(item: &Value) -> Markup {
     let rivals = item["rivals"]
         .as_array()
@@ -111,7 +107,7 @@ fn rivals(item: &Value) -> Markup {
             @let path = rival["path"].as_str().unwrap_or_default();
             @if here && rival["wins"] == true {
                 (mark(Status::Overtaken,
-                    Some(format!("{author} also adds {path} and publishes first: your copy will be set aside, rename it to keep both")),
+                    Some(format!("{author} also adds {path} and publishes first: yours will become a suggestion, rename it to keep both")),
                     &html! { (author) " " (countdown(&rival["due_in"])) }))
             } @else {
                 (mark(Status::Rival,
@@ -136,7 +132,6 @@ pub fn file_status(file: Option<&Value>, waiting: Option<&Value>, drafts: &[&Val
                 (mark(Status::Updating, None, &empty))
             }
             @if pinned && held { (mark(Status::Frozen, None, &empty)) }
-            @if !pinned && file["writable"] == false { (mark(Status::ByRequest, None, &empty)) }
         }
         @if let Some(waiting) = waiting {
             @let status = if waiting["deleted"] == true { Status::Deleting } else { Status::Waiting };
@@ -153,19 +148,16 @@ pub fn file_status(file: Option<&Value>, waiting: Option<&Value>, drafts: &[&Val
     }
 }
 
-/// Why pigeon set aside an item of `member`, as a reason of `change list`
-/// says, for the member `me`.
+/// Why a suggestion waits for the group, as its reason in `suggestion
+/// list` says.
 #[must_use]
-pub fn reason(reason: &Value, member: &str, me: &str) -> String {
-    let (who, whose) = if member == me {
-        ("you".to_owned(), "your".to_owned())
-    } else {
-        (member.to_owned(), format!("{member}'s"))
-    };
+pub fn reason(reason: &Value) -> String {
     match reason {
-        Value::String(name) if name == "NotWritable" => format!("{who} may not write it"),
+        Value::String(name) if name == "OutsideRules" => {
+            "the rules leave it to the group".to_owned()
+        }
         Value::String(name) if name == "Superseded" => {
-            format!("another of {whose} machines changed it meanwhile")
+            "another change of the same file came in meanwhile".to_owned()
         }
         Value::Object(fields) => fields
             .iter()
@@ -183,52 +175,43 @@ pub fn reason(reason: &Value, member: &str, me: &str) -> String {
     }
 }
 
-/// What `change`, as `change list` gives it, is and who must act, for the
-/// member `me`.
+/// What the change `change` of `suggestion`, as `suggestion list` gives
+/// them, does and why it waits.
 #[must_use]
-pub fn change_title(change: &Value, me: &str) -> String {
-    let author = change["author"].as_str().unwrap_or_default();
-    let owner = change["owner"].as_str().unwrap_or_default();
-    let what = if change["content"].is_null() {
-        "deletion"
-    } else {
-        "change"
+pub fn suggestion_title(suggestion: &Value, change: &Value) -> String {
+    let author = suggestion["author"].as_str().unwrap_or_default();
+    let what = match (&change["content"], &change["continues"]["path"]) {
+        (Value::Null, _) => "a deletion".to_owned(),
+        (_, Value::String(from)) => format!("a move from {from}"),
+        _ if change["replaces"].is_null() => "a new file".to_owned(),
+        _ => "a new version".to_owned(),
     };
-    let message = change["message"]
-        .as_str()
-        .filter(|message| !message.is_empty());
-    let said = message
-        .map(|message| format!(": {message}"))
-        .unwrap_or_default();
-    match &change["waits"] {
-        Value::String(waits) if waits == "Proposed" => {
-            format!("{author} proposes a {what} to {owner}{said}")
-        }
-        Value::String(_) => format!("{author}'s {what} is on its way to {owner}'s machines{said}"),
-        waits => format!(
-            "set aside on {author}'s machine, as {}",
-            reason(&waits["SetAside"]["reason"], author, me)
-        ),
-    }
+    let since = if change["outdated"] == true {
+        "; the file changed since"
+    } else {
+        ""
+    };
+    format!(
+        "{author} suggests {what}, as {}{since}",
+        reason(&suggestion["reason"])
+    )
 }
 
-/// The changes waiting at one path, for the member `me`.
+/// The suggested changes of one path, each with its suggestion.
 #[must_use]
-pub fn changes_status(changes: &[&Value], me: &str) -> Markup {
+pub fn suggested_status(suggested: &[(&Value, &Value)]) -> Markup {
     html! {
-        @for change in changes {
-            @let author = change["author"].as_str().unwrap_or_default();
-            @let owner = change["owner"].as_str().unwrap_or_default();
-            (mark(Status::Change, Some(change_title(change, me)),
-                &html! { @if author == owner { (author) } @else { (author) " → " (owner) } }))
+        @for (suggestion, change) in suggested {
+            (mark(Status::Suggested, Some(suggestion_title(suggestion, change)),
+                &html! { (suggestion["author"].as_str().unwrap_or_default()) }))
         }
     }
 }
 
-/// The edits waiting to be published in a folder, and the changes waiting
-/// for someone.
+/// The edits waiting to be published in a folder, and the changes
+/// suggested in it.
 #[must_use]
-pub fn folder_status(waiting: usize, changes: usize) -> Markup {
+pub fn folder_status(waiting: usize, suggested: usize) -> Markup {
     html! {
         @if waiting > 0 {
             @let title = if waiting == 1 {
@@ -239,13 +222,13 @@ pub fn folder_status(waiting: usize, changes: usize) -> Markup {
             (mark(Status::Waiting, Some(title),
                 &html! { (waiting) }))
         }
-        @if changes > 0 {
-            @let title = if changes == 1 {
-                "1 change waits for someone here".to_owned()
+        @if suggested > 0 {
+            @let title = if suggested == 1 {
+                "1 change is suggested here".to_owned()
             } else {
-                format!("{changes} changes wait for someone here")
+                format!("{suggested} changes are suggested here")
             };
-            (mark(Status::Change, Some(title), &html! { (changes) }))
+            (mark(Status::Suggested, Some(title), &html! { (suggested) }))
         }
     }
 }
@@ -273,17 +256,15 @@ mod tests {
 
     #[test]
     fn a_file_shows_only_what_departs_from_being_in_sync() {
-        let file = |cutoff: Value, held: bool, outdated: bool, writable: bool| json!({"cutoff": cutoff, "held": held, "outdated": outdated, "writable": writable});
+        let file = |cutoff: Value, held: bool, outdated: bool| json!({"cutoff": cutoff, "held": held, "outdated": outdated});
         let followed = json!("PlusInfinity");
         let pinned = json!({"At": 5});
-        assert_eq!(shown(&file(followed.clone(), true, false, true)), "");
-        assert_eq!(shown(&file(json!("MinusInfinity"), false, false, true)), "");
-        assert!(shown(&file(followed.clone(), false, false, true)).contains("⏬"));
-        assert!(shown(&file(followed.clone(), true, true, true)).contains("⏬"));
-        assert!(shown(&file(pinned.clone(), true, true, false)).contains("🧊"));
-        assert!(!shown(&file(pinned.clone(), true, true, false)).contains("🔒"));
-        assert_eq!(shown(&file(pinned, false, false, false)), "");
-        assert!(shown(&file(followed, true, false, false)).contains("🔒"));
+        assert_eq!(shown(&file(followed.clone(), true, false)), "");
+        assert_eq!(shown(&file(json!("MinusInfinity"), false, false)), "");
+        assert!(shown(&file(followed.clone(), false, false)).contains("⏬"));
+        assert!(shown(&file(followed, true, true)).contains("⏬"));
+        assert!(shown(&file(pinned.clone(), true, true)).contains("🧊"));
+        assert_eq!(shown(&file(pinned, false, false)), "");
     }
 
     #[test]
@@ -324,28 +305,29 @@ mod tests {
     }
 
     #[test]
-    fn a_waiting_change_says_who_asks_whom_and_why() {
-        let proposal = json!({"author": "bob", "owner": "alice", "content": {"size": 1},
-            "message": "bread", "waits": "Proposed"});
-        let shown = changes_status(&[&proposal], "alice").into_string();
-        assert!(shown.contains("📬 bob → alice"), "{shown}");
+    fn a_suggestion_says_who_suggests_what_and_why() {
+        let suggestion = json!({"author": "papy", "reason": "OutsideRules"});
+        let version = json!({"path": "a", "content": {"size": 1}, "replaces": {"time": 1}, "outdated": false});
+        let shown = suggested_status(&[(&suggestion, &version)]).into_string();
+        assert!(shown.contains("📬 papy"), "{shown}");
         assert!(
-            shown.contains("bob proposes a change to alice: bread"),
+            shown.contains("papy suggests a new version, as the rules leave it to the group"),
             "{shown}"
         );
-        let aside = json!({"author": "papy", "owner": "alice", "content": {"size": 1},
-            "message": "", "waits": {"SetAside": {"reason": "NotWritable", "machine": "m"}}});
+        let deletion = json!({"path": "a", "content": null, "outdated": true});
         assert_eq!(
-            change_title(&aside, "alice"),
-            "set aside on papy's machine, as papy may not write it"
+            suggestion_title(&suggestion, &deletion),
+            "papy suggests a deletion, as the rules leave it to the group; the file changed since"
         );
+        let moved = json!({"path": "b", "content": {"size": 1}, "continues": {"path": "a"}});
+        let lost = json!({"author": "papy", "reason": "Superseded"});
         assert_eq!(
-            change_title(&aside, "papy"),
-            "set aside on papy's machine, as you may not write it"
+            suggestion_title(&lost, &moved),
+            "papy suggests a move from a, as another change of the same file came in meanwhile"
         );
         let unportable = json!({"Unportable": "a colon"});
         assert_eq!(
-            reason(&unportable, "papy", "alice"),
+            reason(&unportable),
             "a name not every machine can hold: a colon"
         );
     }

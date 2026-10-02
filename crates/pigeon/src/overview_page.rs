@@ -106,7 +106,7 @@ fn members_section(group: &str, me: &str, members: &Value) -> Markup {
                                     (form(action("group", "leave"), &back, fill(group, &[], &[])))
                                 }
                             } @else {
-                                div data-confirm={ "Exclude " (name) "? Their name stays taken, their files stay readable but frozen, and the group key is renewed." } {
+                                div data-confirm={ "Exclude " (name) "? Their name stays taken, their files stay, for the others to change, and the group key is renewed." } {
                                     (form(action("member", "exclude"), &back, fill(group, &[("member", name)], &[])))
                                 }
                             }
@@ -157,7 +157,7 @@ fn places_section(group: &str, places: &Value) -> Markup {
         section {
             h2 { "Places" }
             @if !items(places).is_empty() {
-                (pages::table(action("selection", "places"), places, &|_| None))
+                (pages::table(action("selection", "places"), places, &|_| None, None))
             }
             @for verb in ["place", "unplace"] {
                 (form(action("selection", verb), &back, fill(group, &[], &[])))

@@ -9,11 +9,11 @@ use crate::path::GroupPath;
 /// The rule governing a file.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Ownership {
-    /// The path names `+<owner>`: only the owner adds the file, which never
-    /// freezes.
+    /// The path names `+<owner>`: the owner's machines publish its
+    /// changes at once, and anyone else's become suggestions.
     Personal(MemberName),
-    /// The path names no member: anyone adds the file, which freezes once
-    /// published.
+    /// The path names no member: a new file publishes itself once it has
+    /// settled, and any other change becomes a suggestion.
     Drop,
 }
 

@@ -1,8 +1,9 @@
-//! The edits waiting to be published: this machine's, and the drafts that
-//! other machines announce, each with the other drafts of the same path,
-//! whatever its case, and which of them are published first, which sets
-//! this one aside. The engine announces this machine's drafts, the
-//! new files in drop folders, whenever one appears, changes or goes.
+//! The edits waiting to be published or suggested: this machine's, and the
+//! drafts that other machines announce, each with the other drafts of the
+//! same path, whatever its case, and which of them are published first,
+//! which makes this one a suggestion. The engine announces this machine's
+//! drafts, the new files at paths no member owns, whenever one appears,
+//! changes or goes.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -25,7 +26,8 @@ pub struct Rival {
     pub author: MemberName,
     pub path: GroupPath,
     pub due_in: u64,
-    /// Whether it is published no later, which sets the other aside.
+    /// Whether it is published no later, which makes the other a
+    /// suggestion.
     pub wins: bool,
 }
 
@@ -43,8 +45,9 @@ pub struct PendingView {
     pub size: u64,
     /// Seconds until it is published, if it stays unchanged.
     pub due_in: u64,
-    /// Whether publishing freezes the file, as in a drop folder.
-    pub freezes: bool,
+    /// Whether it is a new file at a path no member owns, which waits
+    /// longer.
+    pub draft: bool,
     /// The cutoff the selection gives the file.
     pub cutoff: Cutoff,
     /// The other drafts of the same path, whatever its case.
@@ -52,9 +55,9 @@ pub struct PendingView {
 }
 
 impl PendingView {
-    /// Whether it is a draft: a new file in a drop folder.
+    /// Whether it is a draft, which other machines learn of.
     fn is_draft(&self) -> bool {
-        self.freezes && !self.deleted
+        self.draft && !self.deleted
     }
 }
 
@@ -92,7 +95,7 @@ fn left(settle: Duration, elapsed: Duration) -> u64 {
 impl Inner {
     /// Whether the edit `pending` is a draft, which other machines learn of.
     fn is_draft(&self, pending: &Pending) -> bool {
-        pending.stat.is_some() && self.ledger.lock().freezes(&pending.path)
+        pending.stat.is_some() && self.is_new_drop(&pending.path)
     }
 
     /// Announces this machine's drafts, signed, when they changed since
@@ -150,7 +153,7 @@ impl Engine {
                 deleted: pending.stat.is_none(),
                 size: pending.stat.as_ref().map_or(0, |stat| stat.size),
                 due_in: left(inner.settle_time(&pending.path), pending.since.elapsed()),
-                freezes: inner.ledger.lock().freezes(&pending.path),
+                draft: inner.is_new_drop(&pending.path),
                 cutoff: work.config.selection.cutoff(&pending.path),
                 rivals: Vec::new(),
             })
@@ -170,7 +173,7 @@ impl Engine {
                     deleted: false,
                     size: draft.size,
                     due_in: left(due, elapsed),
-                    freezes: true,
+                    draft: true,
                     rivals: Vec::new(),
                 });
             }
@@ -186,7 +189,7 @@ impl Engine {
 mod tests {
     use super::*;
 
-    fn view(path: &str, author: &str, due_in: u64, freezes: bool) -> PendingView {
+    fn view(path: &str, author: &str, due_in: u64, draft: bool) -> PendingView {
         PendingView {
             path: GroupPath::parse(path).unwrap(),
             author: MemberName::parse(author).unwrap(),
@@ -194,14 +197,14 @@ mod tests {
             deleted: false,
             size: 1,
             due_in,
-            freezes,
+            draft,
             cutoff: Cutoff::PlusInfinity,
             rivals: Vec::new(),
         }
     }
 
     #[test]
-    fn drafts_of_one_path_in_any_case_are_rivals_and_the_later_is_set_aside() {
+    fn drafts_of_one_path_in_any_case_are_rivals_and_the_later_is_suggested() {
         let mut views = [
             view("inbox/Report.txt", "alice", 200, true),
             view("inbox/report.TXT", "bob", 40, true),

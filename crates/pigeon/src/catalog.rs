@@ -17,8 +17,6 @@ pub enum Kind {
     Bytes,
     /// An RFC 3339 time, such as `2026-10-01T12:00:00Z`.
     Time,
-    /// One of a fixed set of words; the first is the default.
-    Choice(&'static [&'static str]),
     /// On or off, off by default.
     Flag,
     /// A text such as a configuration, where an empty one is a value too:
@@ -97,13 +95,6 @@ const fn optional(name: &'static str, about: &'static str, kind: Kind) -> Param 
     }
 }
 
-const MODES: &[&str] = &["propose", "force"];
-const MODE: Param = optional(
-    "mode",
-    "Ask the files' owners first, or apply it now; one's own files change at once either way",
-    Kind::Choice(MODES),
-);
-const MESSAGE: Param = optional("message", "Why, for the files' owners", Kind::Text);
 const MEMBER: Param = required(
     "member",
     "Your name in the group: 1 to 32 characters among a-z and 0-9",
@@ -131,20 +122,20 @@ const FOLDER: Param = required(
     "The folder of the group, such as videos",
     Kind::Path,
 );
-const ENTRY: Param = required(
-    "entry",
-    "The change's entry in `pigeon change list`: its request or set-aside file",
-    Kind::Path,
+const SUGGESTIONS: Param = required(
+    "suggestions",
+    "The suggestions, by the ids `pigeon suggestion list` shows, separated by spaces: each is decided as it was then",
+    Kind::Text,
 );
 
 const FILE_COLUMNS: &[&str] = &[
     "path",
     "owner",
+    "author",
     "content.size",
     "time",
     "held",
     "outdated",
-    "writable",
 ];
 
 const fn action(
@@ -203,8 +194,8 @@ pub const NOUNS: &[(&str, &str)] = &[
         "The group's config.toml on this machine: its member, root, selection, retention and places",
     ),
     (
-        "change",
-        "The changes waiting for someone: requests and what machines set aside",
+        "suggestion",
+        "The changes the rules leave to the group: anyone validates or discards each, and the first decision counts",
     ),
     (
         "daemon",
@@ -301,7 +292,7 @@ pub const ACTIONS: &[Action] = &[
     action(
         "member",
         "exclude",
-        "Exclude a member: the name stays taken, their files stay readable but frozen, and the group key is renewed",
+        "Exclude a member: the name stays taken, their files stay, for the others to change, and the group key is renewed",
         &[WHO],
     ),
     view(
@@ -318,25 +309,25 @@ pub const ACTIONS: &[Action] = &[
     view(
         "file",
         "history",
-        "List a file's versions",
+        "List a file's versions, oldest first, back through the paths it moved from",
         &[required("path", "The file", Kind::Path)],
-        &["time", "content.size", "owner", "applies"],
+        &["time", "path", "content.size", "author"],
     ),
     view(
         "file",
         "pending",
-        "List the edits waiting to be published, with the seconds left: this machine's, and the drafts other machines announce, each with the other drafts of its path",
+        "List the edits waiting to be published, with the seconds left: this machine's, and the drafts of new files other machines announce, each with the other drafts of its path",
         &[optional(
             "under",
             "Only the edits in this folder",
             Kind::Path,
         )],
-        &["path", "author", "due_in", "freezes", "deleted"],
+        &["path", "author", "due_in", "draft", "deleted"],
     ),
     action(
         "file",
         "publish",
-        "Publish waiting edits now rather than once they settle; a file in a drop folder then freezes",
+        "Publish waiting edits now rather than once they settle",
         &[optional(
             "path",
             "The file or folder whose edits to publish; leave it out for every edit",
@@ -346,7 +337,7 @@ pub const ACTIONS: &[Action] = &[
     action(
         "file",
         "write",
-        "Write a file, or request it from its owner",
+        "Write a file, whoever made it",
         &[
             required("path", "The file to write", Kind::Path),
             required(
@@ -354,29 +345,34 @@ pub const ACTIONS: &[Action] = &[
                 "A local file holding the new content, or - for standard input",
                 Kind::Bytes,
             ),
-            MODE,
-            MESSAGE,
         ],
     ),
     action(
         "file",
         "delete",
-        "Delete a file or a folder, or request it from their owners",
-        &[
-            required("path", "The file or folder to delete", Kind::Path),
-            MODE,
-            MESSAGE,
-        ],
+        "Delete a file or a folder; their history keeps them",
+        &[required("path", "The file or folder to delete", Kind::Path)],
     ),
     action(
         "file",
         "rename",
-        "Rename a file or a folder, or request it from their owners",
+        "Rename or move a file or a folder, which keeps its history",
         &[
             required("from", "The file or folder to rename", Kind::Path),
             required("to", "Its new path", Kind::Path),
-            MODE,
-            MESSAGE,
+        ],
+    ),
+    action(
+        "file",
+        "restore",
+        "Bring files back as they were at a past time, as new versions that undo nothing of the history",
+        &[
+            PATTERN,
+            required(
+                "time",
+                "The time, such as 2026-10-01T12:00:00Z; `pigeon selection times` lists those of the versions",
+                Kind::Time,
+            ),
         ],
     ),
     action(
@@ -483,40 +479,30 @@ pub const ACTIONS: &[Action] = &[
         ],
     ),
     view(
-        "change",
+        "suggestion",
         "list",
-        "List the changes waiting for someone, one per file: requests neither applied nor refused, and what machines set aside",
+        "List the suggestions, oldest first: the changes the rules leave to the group, with why each waits",
         &[],
-        &["entry", "path", "author", "owner", "waits", "outdated"],
+        &["id", "author", "time", "reason", "changes.path"],
     ),
     action(
-        "change",
-        "apply",
-        "Apply a waiting change: accept a proposal, or force a set-aside item on its owner",
-        &[ENTRY, MESSAGE],
-    ),
-    action(
-        "change",
-        "ask",
-        "Ask the owner of a set-aside item's path to accept it",
-        &[ENTRY, MESSAGE],
-    ),
-    action(
-        "change",
-        "place",
-        "Place a waiting change at another, free path instead, its author's unless the path names its owner",
+        "suggestion",
+        "validate",
+        "Validate suggestions: publish their changes, the later one winning at a path",
         &[
-            ENTRY,
-            required("to", "Where to place it", Kind::Path),
-            MODE,
-            MESSAGE,
+            SUGGESTIONS,
+            optional(
+                "to",
+                "Publish the one file of a single suggestion at this free path instead, such as for a name some machine cannot hold",
+                Kind::Path,
+            ),
         ],
     ),
     action(
-        "change",
+        "suggestion",
         "discard",
-        "Discard a waiting change: refuse a proposal, or delete a set-aside item for the whole group",
-        &[ENTRY, MODE],
+        "Discard suggestions: the group keeps its versions, and the history keeps theirs",
+        &[SUGGESTIONS],
     ),
     on_machine(Action {
         columns: &["group", "download", "free", "freeze"],

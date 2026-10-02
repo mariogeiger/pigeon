@@ -7,7 +7,6 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
 use pigeon_core::name::MemberName;
-use pigeon_core::path::GroupPath;
 use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_sync::{Edit, Engine};
 use serde::Serialize;
@@ -144,11 +143,6 @@ async fn on_config(daemon: &Daemon, args: &Args, verb: &str) -> Result<Value> {
     }
 }
 
-/// The requests an action filed.
-fn requested(requests: &[GroupPath]) -> Value {
-    json!({ "requests": requests })
-}
-
 /// The member a call names.
 fn member(args: &Args) -> Result<MemberName> {
     MemberName::parse(args.required("member")?).context("the member name")
@@ -157,7 +151,6 @@ fn member(args: &Args) -> Result<MemberName> {
 /// Carries out a call on one group.
 async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
     let action = args.action;
-    let message = args.text("message").unwrap_or_default();
     let rule = |cutoff| -> Result<Rule> {
         Ok(Rule {
             pattern: args.required("pattern")?.to_owned(),
@@ -194,35 +187,24 @@ async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
             engine.set_rule(rule(cutoff)?).await?;
             Ok(Value::Null)
         }
-        ("change", "list") => to_json(engine.waiting_changes().await),
-        ("change", "apply") => {
-            let requests = engine.apply_change(&args.path("entry")?, message).await?;
-            Ok(requested(&requests))
-        }
-        ("change", "ask") => {
-            let requests = engine.ask_change(&args.path("entry")?, message).await?;
-            Ok(requested(&requests))
-        }
-        ("change", "place") => {
-            let (entry, to) = (args.path("entry")?, args.path("to")?);
-            let requests = engine
-                .place_change(&entry, &to, args.mode(), message)
+        ("suggestion", "list") => to_json(engine.suggestions().await),
+        ("suggestion", "validate") => {
+            let to = args.text("to").map(|_| args.path("to")).transpose()?;
+            engine
+                .validate(&args.versions("suggestions")?, to.as_ref())
                 .await?;
-            Ok(requested(&requests))
+            Ok(Value::Null)
         }
-        ("change", "discard") => {
-            let requests = engine
-                .discard_change(&args.path("entry")?, args.mode())
-                .await?;
-            Ok(requested(&requests))
+        ("suggestion", "discard") => {
+            engine.discard(&args.versions("suggestions")?).await?;
+            Ok(Value::Null)
         }
         _ => bail!("{} is not implemented", action.command()),
     }
 }
 
-/// Lists, shows, publishes, writes, deletes or renames files.
+/// Lists, shows, publishes, writes, deletes, renames or restores files.
 async fn on_files(engine: &Engine, args: &Args, verb: &str) -> Result<Value> {
-    let message = args.text("message").unwrap_or_default();
     match verb {
         "list" => {
             let under = args.text("under").map(|_| args.path("under")).transpose()?;
@@ -252,8 +234,13 @@ async fn on_files(engine: &Engine, args: &Args, verb: &str) -> Result<Value> {
                     to: args.path("to")?,
                 },
             };
-            to_json(engine.edit(vec![edit], args.mode(), message).await?)
+            to_json(engine.edit(vec![edit]).await?)
         }
+        "restore" => to_json(
+            engine
+                .restore(args.required("pattern")?, args.time("time")?)
+                .await?,
+        ),
         _ => bail!("{} is not implemented", args.action.command()),
     }
 }

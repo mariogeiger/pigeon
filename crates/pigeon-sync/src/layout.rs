@@ -150,12 +150,12 @@ impl Work {
     pub(crate) fn in_place(&self) -> Vec<Place> {
         self.placed
             .iter()
-            .filter(|place| !self.is_frozen(&place.folder))
+            .filter(|place| !self.is_out_of_place(&place.folder))
             .collect()
     }
 
     /// Whether `path` lies in a folder out of place.
-    pub(crate) fn is_frozen(&self, path: &GroupPath) -> bool {
+    pub(crate) fn is_out_of_place(&self, path: &GroupPath) -> bool {
         let key = path.key();
         self.out_of_place
             .iter()

@@ -4,6 +4,50 @@ All notable user-visible changes to pigeon are documented here. While the
 version is 0.x, a change that breaks compatibility increments the second
 number, and any other change the third.
 
+## 0.7.0 — 2026-10-02
+
+### Changed
+
+- Every member may change every file. A machine publishes by itself only
+  its member's changes in their own `+name` paths, and new files at paths
+  no one owns once they have not changed for five minutes; every other
+  change made on disk, a deletion included, becomes a suggestion that the
+  whole group sees and anyone validates or discards. The disk that made
+  it keeps it until then, and a discard brings back the group's version.
+- Files are no longer read-only on disk, and a published file of no
+  `+name` path has no owner: pigeon shows who made it.
+- When two machines change a file while apart, the later change wins, and
+  the other becomes a suggestion that its disk keeps.
+- `pigeon file write`, `rename` and `delete`, and the web interface's
+  actions, publish at once, whoever owns the file, after a confirmation
+  in the web interface; `--mode` and `--message` are gone.
+- A rename or move, through pigeon or on disk, keeps the file's history,
+  which `pigeon file history` follows back through the paths it moved
+  from.
+- The sync protocol is `pigeon/sync/8`, which 0.6 machines cannot join.
+  The patches of 0.6 fold again under the new rules, where every one is
+  accepted, and the requests, decisions and set-aside files of 0.6 are
+  ignored; what a machine had set aside comes back as its suggestions.
+
+### Added
+
+- `pigeon suggestion list`, `validate` and `discard`, which decide
+  several suggestions at once by the ids the list shows, each as it was
+  listed, so the first decision is final; `validate --to` publishes the
+  one file of a single suggestion at another path, as a name Windows
+  cannot hold needs.
+- `pigeon file restore --pattern --time` brings files back as they were
+  at a past time as new versions, and a file's page restores any version
+  of its history in one click.
+- The Files page's menus validate or discard each suggestion, or all
+  those under a folder at once, and the machines that follow a path fetch
+  what is suggested there, so a file's page shows the difference.
+
+### Removed
+
+- `pigeon change list`, `apply`, `ask`, `place` and `discard`, with the
+  requests addressed to an owner they decided: suggestions replace them.
+
 ## 0.6.0 — 2026-10-01
 
 ### Changed

@@ -1,219 +1,181 @@
-//! Tests of the ledger's guarantees: one writer per file, earliest claims,
-//! freezing, joining, rebinding, concurrent changes, and convergence in any
-//! order.
+//! Tests of the ledger's guarantees: any member writes any file but
+//! another's member file, tags name owners and claim names, a suggestion
+//! is decided once, history follows moves, the later of concurrent
+//! changes wins, joining and rebinding, and convergence in any order.
 
 use iroh_base::SecretKey;
 
 use super::*;
-use crate::identity::{GroupSecret, MachineCert, member_key};
-use crate::patch::{ContentHash, Patch};
-use crate::statement::rebind_path;
-
-struct Machine {
-    group: GroupId,
-    cert: MachineCert,
-    key: SecretKey,
-}
-
-fn group() -> GroupId {
-    GroupSecret([9; 32]).id()
-}
-
-fn machine(name: &str, seed: u8) -> Machine {
-    let member = member_key(&group(), &MemberName::parse(name).unwrap());
-    keyed_machine(name, &member, seed)
-}
-
-fn keyed_machine(name: &str, member: &SecretKey, seed: u8) -> Machine {
-    let group = group();
-    let key = SecretKey::from_bytes(&[seed; 32]);
-    let cert = MachineCert::issue(
-        &group,
-        MemberName::parse(name).unwrap(),
-        member,
-        key.public(),
-    );
-    Machine { group, cert, key }
-}
-
-fn content(byte: u8) -> Content {
-    Content {
-        hash: ContentHash([byte; 32]),
-        size: 1,
-        executable: false,
-    }
-}
-
-fn change(path: &str, byte: Option<u8>, replaces: Option<Stamp>) -> Change {
-    Change {
-        path: GroupPath::parse(path).unwrap(),
-        content: byte.map(content),
-        replaces,
-    }
-}
-
-impl Machine {
-    fn stamp(&self, time: u64) -> Stamp {
-        Stamp {
-            time,
-            machine: self.key.public(),
-        }
-    }
-
-    fn patch(&self, time: u64, changes: Vec<Change>, applies: Option<&str>) -> SignedPatch {
-        let patch = Patch {
-            stamp: self.stamp(time),
-            changes,
-            applies: applies.map(|path| GroupPath::parse(path).unwrap()),
-        };
-        SignedPatch::sign(&self.group, patch, self.cert.clone(), &self.key)
-    }
-
-    fn join(&self, time: u64) -> SignedPatch {
-        let path = member_path(&self.cert.name);
-        self.patch(time, vec![change(path.as_str(), Some(0), None)], None)
-    }
-
-    fn rebind(&self, time: u64, name: &str, key: Option<PublicKey>) -> SignedPatch {
-        let rebind = RebindStatement {
-            name: MemberName::parse(name).unwrap(),
-            key,
-        };
-        let path = rebind_path(&rebind, &self.stamp(time));
-        self.patch(time, vec![change(path.as_str(), Some(0), None)], None)
-    }
-}
-
-fn key(path: &str) -> PathKey {
-    GroupPath::parse(path).unwrap().key()
-}
-
-fn rejection(ledger: &Ledger, stamp: Stamp) -> Rejection {
-    ledger.outcome(&stamp).unwrap().unwrap_err().clone()
-}
+use crate::statement::suggestion_path;
+use crate::test_machines::*;
 
 #[test]
-fn only_the_owner_writes_a_personal_file() {
+fn any_member_writes_any_file_and_is_its_author() {
     let mario = machine("mario", 1);
     let bob = machine("bob", 2);
     let mut ledger = Ledger::new(group());
     ledger.insert(mario.join(1)).unwrap();
     ledger.insert(bob.join(2)).unwrap();
-    ledger
-        .insert(mario.patch(3, vec![change("+mario/a", Some(1), None)], None))
-        .unwrap();
-    let edit = bob.patch(4, vec![change("+mario/a", Some(2), None)], None);
-    ledger.insert(edit.clone()).unwrap();
-    assert!(matches!(
-        rejection(&ledger, edit.stamp()),
-        Rejection::NotOwner { .. }
-    ));
-    let create = bob.patch(5, vec![change("x/+Mario/b", Some(2), None)], None);
+    let create = mario.patch(3, vec![change("+mario/a", Some(1), None)]);
     ledger.insert(create.clone()).unwrap();
-    assert!(matches!(
-        rejection(&ledger, create.stamp()),
-        Rejection::NotOwner { .. }
-    ));
+    for patch in [
+        bob.patch(4, vec![change("+mario/a", Some(2), Some(create.stamp()))]),
+        bob.patch(5, vec![change("x/+Mario/b", Some(2), None)]),
+        bob.patch(6, vec![change("drop/c", Some(3), None)]),
+        mario.patch(7, vec![change("drop/c", Some(4), Some(bob.stamp(6)))]),
+    ] {
+        ledger.insert(patch.clone()).unwrap();
+        assert!(ledger.outcome(&patch.stamp()).unwrap().is_ok());
+    }
+    let head = ledger.head(&key("+mario/a")).unwrap();
     assert_eq!(
-        ledger.head(&key("+mario/a")).unwrap().content,
-        Some(content(1))
+        (head.author.as_str(), head.content),
+        ("bob", Some(content(2)))
+    );
+    assert_eq!(
+        ledger.head(&key("drop/c")).unwrap().author.as_str(),
+        "mario"
     );
 }
 
 #[test]
-fn the_rightmost_tag_of_a_path_names_its_owner() {
+fn the_rightmost_tag_naming_a_member_names_the_owner() {
     let mario = machine("mario", 1);
     let bob = machine("bob", 2);
     let mut ledger = Ledger::new(group());
     ledger.insert(mario.join(1)).unwrap();
     ledger.insert(bob.join(2)).unwrap();
-    let into_bobs = mario.patch(3, vec![change("+mario/+bob/a", Some(1), None)], None);
-    ledger.insert(into_bobs.clone()).unwrap();
-    assert!(matches!(
-        rejection(&ledger, into_bobs.stamp()),
-        Rejection::NotOwner { .. }
-    ));
-    let bobs = bob.patch(4, vec![change("+mario/+bob/a", Some(2), None)], None);
-    ledger.insert(bobs.clone()).unwrap();
-    assert!(ledger.outcome(&bobs.stamp()).unwrap().is_ok());
-    let tagged = mario.patch(5, vec![change("docs/texte+mario.txt", Some(1), None)], None);
-    ledger.insert(tagged.clone()).unwrap();
-    let edit = mario.patch(
-        6,
-        vec![change(
-            "docs/texte+mario.txt",
-            Some(2),
-            Some(tagged.stamp()),
-        )],
-        None,
-    );
-    ledger.insert(edit.clone()).unwrap();
-    assert!(ledger.outcome(&edit.stamp()).unwrap().is_ok());
-    let by_bob = bob.patch(7, vec![change("docs/texte+mario.txt", Some(3), None)], None);
-    ledger.insert(by_bob.clone()).unwrap();
-    assert!(matches!(
-        rejection(&ledger, by_bob.stamp()),
-        Rejection::NotOwner { .. }
-    ));
-    let head = ledger.head(&key("docs/texte+mario.txt")).unwrap();
-    assert_eq!(
-        (head.owner.as_str(), head.content),
-        ("mario", Some(content(2)))
-    );
+    let owner = |path: &str| {
+        ledger
+            .owner(&GroupPath::parse(path).unwrap())
+            .map(|name| name.as_str().to_owned())
+    };
+    assert_eq!(owner("+mario/+bob/a").as_deref(), Some("bob"));
+    assert_eq!(owner("docs/texte+mario.txt").as_deref(), Some("mario"));
+    assert_eq!(owner("+mario/+nobody/a").as_deref(), Some("mario"));
+    assert_eq!(owner("drop/a"), None);
 }
 
 #[test]
-fn the_earliest_drop_claim_wins_whatever_the_arrival_order() {
+fn the_later_of_concurrent_creations_wins_whatever_the_arrival_order() {
     let mario = machine("mario", 1);
     let bob = machine("bob", 2);
-    let late = bob.patch(20, vec![change("Notes.txt", Some(2), None)], None);
-    let early = mario.patch(10, vec![change("notes.txt", Some(1), None)], None);
+    let late = bob.patch(20, vec![change("Notes.txt", Some(2), None)]);
+    let early = mario.patch(10, vec![change("notes.txt", Some(1), None)]);
     let mut ledger = Ledger::new(group());
     ledger.insert(mario.join(1)).unwrap();
     ledger.insert(bob.join(2)).unwrap();
     ledger.insert(late.clone()).unwrap();
-    assert!(ledger.outcome(&late.stamp()).unwrap().is_ok());
     ledger.insert(early.clone()).unwrap();
     assert!(ledger.outcome(&early.stamp()).unwrap().is_ok());
-    assert!(matches!(
-        rejection(&ledger, late.stamp()),
-        Rejection::NotOwner { .. }
-    ));
+    assert!(ledger.outcome(&late.stamp()).unwrap().is_ok());
     let head = ledger.head(&key("NOTES.TXT")).unwrap();
-    assert_eq!(head.owner.as_str(), "mario");
-    assert_eq!(head.path.as_str(), "notes.txt");
+    assert_eq!(
+        (head.author.as_str(), head.path.as_str()),
+        ("bob", "Notes.txt")
+    );
+    let unseen: Vec<Stamp> = ledger
+        .unseen_versions(&key("notes.txt"))
+        .iter()
+        .map(|version| version.stamp)
+        .collect();
+    assert_eq!(unseen, vec![early.stamp()]);
 }
 
 #[test]
-fn a_published_drop_file_changes_only_through_a_request() {
+fn a_suggestion_is_decided_once_and_as_it_was_seen() {
+    let mario = machine("mario", 1);
+    let bob = machine("bob", 2);
+    let emmy = machine("emmy", 3);
+    let mut ledger = Ledger::new(group());
+    for (time, member) in (1..).zip([&mario, &bob, &emmy]) {
+        ledger.insert(member.join(time)).unwrap();
+    }
+    let path = suggestion_path(&mario.stamp(10));
+    let made = mario.patch(10, vec![change(path.as_str(), Some(1), None)]);
+    ledger.insert(made.clone()).unwrap();
+    let validate = bob.patch(
+        11,
+        vec![
+            change(path.as_str(), None, Some(made.stamp())),
+            change("drop/a", Some(5), None),
+        ],
+    );
+    let discard = emmy.patch(12, vec![change(path.as_str(), None, Some(made.stamp()))]);
+    let late_validate = emmy.patch(
+        13,
+        vec![
+            change(path.as_str(), None, Some(made.stamp())),
+            change("drop/b", Some(6), None),
+        ],
+    );
+    for patch in [&late_validate, &discard, &validate] {
+        ledger.insert(patch.clone()).unwrap();
+    }
+    assert!(ledger.outcome(&validate.stamp()).unwrap().is_ok());
+    for patch in [&discard, &late_validate] {
+        assert_eq!(
+            rejection(&ledger, patch.stamp()),
+            Rejection::AlreadyDecided(path.clone())
+        );
+    }
+    assert!(ledger.head(&key("drop/a")).unwrap().is_live());
+    assert!(ledger.head(&key("drop/b")).is_none());
+    let renewed = suggestion_path(&mario.stamp(20));
+    let first = mario.patch(20, vec![change(renewed.as_str(), Some(1), None)]);
+    let update = mario.patch(
+        21,
+        vec![change(renewed.as_str(), Some(2), Some(first.stamp()))],
+    );
+    let stale = bob.patch(
+        22,
+        vec![change(renewed.as_str(), None, Some(first.stamp()))],
+    );
+    for patch in [&first, &update, &stale] {
+        ledger.insert(patch.clone()).unwrap();
+    }
+    assert_eq!(
+        rejection(&ledger, stale.stamp()),
+        Rejection::AlreadyDecided(renewed.clone())
+    );
+    assert!(ledger.head(&renewed.key()).unwrap().is_live());
+}
+
+#[test]
+fn history_follows_a_file_across_its_moves() {
     let mario = machine("mario", 1);
     let bob = machine("bob", 2);
     let mut ledger = Ledger::new(group());
     ledger.insert(mario.join(1)).unwrap();
     ledger.insert(bob.join(2)).unwrap();
-    let create = mario.patch(3, vec![change("drop/a", Some(1), None)], None);
-    ledger.insert(create.clone()).unwrap();
-    let edit = mario.patch(
-        4,
-        vec![change("drop/a", Some(2), Some(create.stamp()))],
-        None,
+    let create = mario.patch(3, vec![change("a", Some(1), None)]);
+    let unrelated = bob.patch(4, vec![change("b", Some(9), None)]);
+    let gone = bob.patch(5, vec![change("b", None, Some(unrelated.stamp()))]);
+    let moved = mario.patch(6, moved("a", create.stamp(), "b", 1));
+    let edit = bob.patch(7, vec![change("b", Some(2), Some(moved.stamp()))]);
+    for patch in [&create, &unrelated, &gone, &moved, &edit] {
+        ledger.insert(patch.clone()).unwrap();
+        assert!(ledger.outcome(&patch.stamp()).unwrap().is_ok());
+    }
+    let lineage: Vec<(&str, u64)> = ledger
+        .lineage(&key("b"))
+        .iter()
+        .map(|version| (version.path.as_str(), version.stamp.time))
+        .collect();
+    assert_eq!(lineage, [("b", 7), ("b", 6), ("a", 3)]);
+    assert!(!ledger.head(&key("a")).unwrap().is_live());
+    let ahead = mario.patch(
+        8,
+        vec![Change {
+            continues: Some(VersionRef {
+                path: GroupPath::parse("c").unwrap(),
+                stamp: mario.stamp(9),
+            }),
+            ..change("c", Some(3), None)
+        }],
     );
-    ledger.insert(edit.clone()).unwrap();
-    assert!(matches!(
-        rejection(&ledger, edit.stamp()),
-        Rejection::Frozen(_)
-    ));
-    let forced = mario.patch(
-        5,
-        vec![change("drop/a", None, Some(create.stamp()))],
-        Some(".pigeon/requests/r"),
-    );
-    ledger.insert(forced.clone()).unwrap();
-    assert!(ledger.outcome(&forced.stamp()).unwrap().is_ok());
-    let by_bob = bob.patch(6, vec![change("drop/a", Some(3), None)], None);
-    ledger.insert(by_bob.clone()).unwrap();
-    assert!(ledger.outcome(&by_bob.stamp()).unwrap().is_ok());
-    assert_eq!(ledger.head(&key("drop/a")).unwrap().owner.as_str(), "bob");
+    ledger.insert(ahead).unwrap();
+    assert_eq!(ledger.lineage(&key("c")).len(), 1);
 }
 
 #[test]
@@ -224,15 +186,14 @@ fn a_patch_is_accepted_or_rejected_whole() {
     ledger.insert(mario.join(1)).unwrap();
     ledger.insert(bob.join(2)).unwrap();
     ledger
-        .insert(mario.patch(3, vec![change("+mario/a", Some(1), None)], None))
+        .insert(mario.patch(3, vec![change("+mario/a", Some(1), None)]))
         .unwrap();
     let mixed = bob.patch(
         4,
         vec![
             change("+bob/a", Some(2), None),
-            change("+mario/a", None, None),
+            change(".pigeon/members/mario", None, Some(mario.stamp(1))),
         ],
-        None,
     );
     ledger.insert(mixed).unwrap();
     assert!(ledger.head(&key("+bob/a")).is_none());
@@ -246,7 +207,7 @@ fn a_name_belongs_to_its_first_key() {
     let impostor = keyed_machine("mario", &SecretKey::from_bytes(&[40; 32]), 3);
     let mut ledger = Ledger::new(group());
     ledger.insert(mario.join(1)).unwrap();
-    let second = laptop.patch(2, vec![change("+mario/x", Some(1), None)], None);
+    let second = laptop.patch(2, vec![change("+mario/x", Some(1), None)]);
     ledger.insert(second.clone()).unwrap();
     assert!(ledger.outcome(&second.stamp()).unwrap().is_ok());
     let other = impostor.join(3);
@@ -255,7 +216,7 @@ fn a_name_belongs_to_its_first_key() {
         rejection(&ledger, other.stamp()),
         Rejection::OtherKey(mario.cert.name.clone())
     );
-    let foreign = laptop.patch(4, vec![change(".pigeon/members/bob", Some(1), None)], None);
+    let foreign = laptop.patch(4, vec![change(".pigeon/members/bob", Some(1), None)]);
     ledger.insert(foreign.clone()).unwrap();
     assert!(matches!(
         rejection(&ledger, foreign.stamp()),
@@ -269,7 +230,7 @@ fn a_tag_claims_a_name_until_no_path_bears_it() {
     let build = machine("build", 2);
     let mut ledger = Ledger::new(group());
     ledger.insert(mario.join(1)).unwrap();
-    let dropped = mario.patch(2, vec![change("docs/+Build/a", Some(1), None)], None);
+    let dropped = mario.patch(2, vec![change("docs/+Build/a", Some(1), None)]);
     ledger.insert(dropped.clone()).unwrap();
     assert_eq!(
         ledger
@@ -288,19 +249,19 @@ fn a_tag_claims_a_name_until_no_path_bears_it() {
         .insert(mario.patch(
             4,
             vec![change("docs/+Build/a", None, Some(dropped.stamp()))],
-            Some("r"),
         ))
         .unwrap();
     assert_eq!(ledger.tag_claims().count(), 0);
     let joined = build.join(5);
     ledger.insert(joined.clone()).unwrap();
     assert!(ledger.outcome(&joined.stamp()).unwrap().is_ok());
-    let intrusion = mario.patch(6, vec![change("docs/+build/b", Some(1), None)], None);
-    ledger.insert(intrusion.clone()).unwrap();
-    assert!(matches!(
-        rejection(&ledger, intrusion.stamp()),
-        Rejection::NotOwner { .. }
-    ));
+    assert_eq!(
+        ledger
+            .owner(&GroupPath::parse("docs/+build/b").unwrap())
+            .unwrap()
+            .as_str(),
+        "build"
+    );
 }
 
 #[test]
@@ -309,18 +270,10 @@ fn between_one_members_machines_the_later_change_wins() {
     let laptop = machine("mario", 2);
     let mut ledger = Ledger::new(group());
     ledger.insert(desktop.join(1)).unwrap();
-    let base = desktop.patch(2, vec![change("+mario/a", Some(1), None)], None);
+    let base = desktop.patch(2, vec![change("+mario/a", Some(1), None)]);
     ledger.insert(base.clone()).unwrap();
-    let on_laptop = laptop.patch(
-        4,
-        vec![change("+mario/a", Some(3), Some(base.stamp()))],
-        None,
-    );
-    let on_desktop = desktop.patch(
-        3,
-        vec![change("+mario/a", Some(2), Some(base.stamp()))],
-        None,
-    );
+    let on_laptop = laptop.patch(4, vec![change("+mario/a", Some(3), Some(base.stamp()))]);
+    let on_desktop = desktop.patch(3, vec![change("+mario/a", Some(2), Some(base.stamp()))]);
     ledger.insert(on_laptop.clone()).unwrap();
     ledger.insert(on_desktop.clone()).unwrap();
     let key = key("+mario/a");
@@ -345,19 +298,18 @@ fn every_arrival_order_gives_the_same_tree() {
     let patches = vec![
         mario.join(1),
         bob.join(2),
-        bob.patch(3, vec![change("x", Some(1), None)], None),
+        bob.patch(3, vec![change("x", Some(1), None)]),
         mario.patch(
             4,
             vec![
                 change("+mario/y", Some(2), None),
                 change("X", Some(3), None),
             ],
-            None,
         ),
-        mario.patch(5, vec![change("+mario/y", None, None)], None),
-        bob.patch(6, vec![change("+bob/z", Some(4), None)], None),
+        mario.patch(5, vec![change("+mario/y", None, None)]),
+        bob.patch(6, vec![change("+bob/z", Some(4), None)]),
         bob.rebind(7, "mario", None),
-        mario.patch(8, vec![change("+mario/w", Some(5), None)], None),
+        mario.patch(8, vec![change("+mario/w", Some(5), None)]),
     ];
     let reference = {
         let mut ledger = Ledger::new(group());
@@ -391,7 +343,7 @@ fn every_arrival_order_gives_the_same_tree() {
             order.reverse();
         }
     }
-    assert_eq!(reference.head(&key("x")).unwrap().owner.as_str(), "bob");
+    assert_eq!(reference.head(&key("x")).unwrap().author.as_str(), "mario");
     assert!(reference.head(&key("+mario/w")).is_none());
 }
 
@@ -403,8 +355,8 @@ fn a_vector_names_exactly_the_missing_patches() {
     for patch in [
         mario.join(1),
         bob.join(2),
-        mario.patch(3, vec![], None),
-        bob.patch(4, vec![], None),
+        mario.patch(3, vec![]),
+        bob.patch(4, vec![]),
     ] {
         ledger.insert(patch).unwrap();
     }
@@ -437,9 +389,9 @@ fn a_new_key_rebinds_the_name_and_retires_the_old_one() {
     let mut ledger = Ledger::new(group());
     ledger.insert(old.join(1)).unwrap();
     ledger
-        .insert(old.patch(2, vec![change("+mario/a", Some(1), None)], None))
+        .insert(old.patch(2, vec![change("+mario/a", Some(1), None)]))
         .unwrap();
-    let early = new.patch(3, vec![change("+mario/b", Some(1), None)], None);
+    let early = new.patch(3, vec![change("+mario/b", Some(1), None)]);
     ledger.insert(early.clone()).unwrap();
     assert_eq!(
         rejection(&ledger, early.stamp()),
@@ -450,13 +402,13 @@ fn a_new_key_rebinds_the_name_and_retires_the_old_one() {
         .unwrap();
     assert!(ledger.recognizes(&new.cert));
     assert!(!ledger.recognizes(&old.cert));
-    let stale = old.patch(5, vec![change("+mario/a", Some(2), None)], None);
+    let stale = old.patch(5, vec![change("+mario/a", Some(2), None)]);
     ledger.insert(stale.clone()).unwrap();
     assert_eq!(
         rejection(&ledger, stale.stamp()),
         Rejection::OtherKey(old.cert.name.clone())
     );
-    let edit = new.patch(6, vec![change("+mario/a", Some(3), None)], None);
+    let edit = new.patch(6, vec![change("+mario/a", Some(3), None)]);
     ledger.insert(edit.clone()).unwrap();
     assert!(ledger.outcome(&edit.stamp()).unwrap().is_ok());
     let member = &ledger.members()[&old.cert.name];
@@ -474,7 +426,7 @@ fn any_member_rebinds_or_excludes_without_a_vote() {
     ledger.insert(mario.join(1)).unwrap();
     ledger.insert(bob.join(2)).unwrap();
     ledger
-        .insert(mario.patch(3, vec![change("+mario/a", Some(1), None)], None))
+        .insert(mario.patch(3, vec![change("+mario/a", Some(1), None)]))
         .unwrap();
     ledger
         .insert(bob.rebind(4, "mario", Some(reset.cert.member)))
@@ -494,7 +446,7 @@ fn any_member_rebinds_or_excludes_without_a_vote() {
     assert_eq!(ledger.last_exclusion(), Some(exclusion.stamp()));
     assert!(!ledger.recognizes(&reset.cert));
     for patch in [
-        reset.patch(6, vec![change("+mario/a", Some(2), None)], None),
+        reset.patch(6, vec![change("+mario/a", Some(2), None)]),
         mario.join(7),
     ] {
         ledger.insert(patch.clone()).unwrap();
@@ -505,15 +457,9 @@ fn any_member_rebinds_or_excludes_without_a_vote() {
     }
     let head = ledger.head(&key("+mario/a")).unwrap();
     assert_eq!(
-        (head.owner.as_str(), head.content),
+        (head.author.as_str(), head.content),
         ("mario", Some(content(1)))
     );
-    let intrusion = bob.patch(8, vec![change("+mario/b", Some(1), None)], None);
-    ledger.insert(intrusion.clone()).unwrap();
-    assert!(matches!(
-        rejection(&ledger, intrusion.stamp()),
-        Rejection::NotOwner { .. }
-    ));
     let impostor = keyed_machine("mario", &SecretKey::from_bytes(&[43; 32]), 4);
     ledger.insert(impostor.join(9)).unwrap();
     assert!(ledger.members()[&mario.cert.name].key.is_none());
@@ -533,7 +479,6 @@ fn a_rebinding_names_a_member_and_a_key() {
     let stray = mario.patch(
         3,
         vec![change(".pigeon/rebinds/mario/notes.txt", Some(1), None)],
-        None,
     );
     ledger.insert(stray.clone()).unwrap();
     assert!(matches!(
@@ -547,7 +492,7 @@ fn a_rebinding_names_a_member_and_a_key() {
 fn an_earlier_exclusion_undoes_what_the_excluded_member_did_after_it() {
     let mario = machine("mario", 1);
     let bob = machine("bob", 2);
-    let late_edit = mario.patch(5, vec![change("+mario/a", Some(1), None)], None);
+    let late_edit = mario.patch(5, vec![change("+mario/a", Some(1), None)]);
     let exclusion = bob.rebind(4, "mario", None);
     let mut ledger = Ledger::new(group());
     ledger.insert(mario.join(1)).unwrap();

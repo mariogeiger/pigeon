@@ -21,7 +21,9 @@ pub struct Machine {
     pub root: PathBuf,
     pub dirs: GroupDirs,
     options: Options,
-    _dir: TempDir,
+    /// The directory holding the root and the group's directories, which
+    /// lives as long as the machine.
+    dir: TempDir,
 }
 
 impl Machine {
@@ -33,22 +35,36 @@ impl Machine {
         std::fs::read_to_string(self.file(relative)).ok()
     }
 
-    /// Writes a file as a person would, making it writable first.
+    /// Writes a file as a person would.
     pub fn edit(&self, relative: &str, text: &str) {
         let path = self.file(relative);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        if path.exists() {
-            make_writable(&path);
-        }
         std::fs::write(path, text).unwrap();
     }
 
     pub async fn restart(self) -> Self {
-        self.engine.shutdown().await.unwrap();
-        let engine = Engine::start(&self.dirs, self.options.clone())
-            .await
-            .unwrap();
-        Self { engine, ..self }
+        self.restart_after(|_, _| {}).await
+    }
+
+    /// Stops the engine, lets `meddle` change its directories and root, as
+    /// another version of pigeon would have left them, and starts it again.
+    pub async fn restart_after(self, meddle: impl FnOnce(&GroupDirs, &Path)) -> Self {
+        let Self {
+            engine,
+            root,
+            dirs,
+            options,
+            dir,
+        } = self;
+        engine.shutdown().await.unwrap();
+        meddle(&dirs, &root);
+        Self {
+            engine: Engine::start(&dirs, options.clone()).await.unwrap(),
+            root,
+            dirs,
+            options,
+            dir,
+        }
     }
 
     /// Starts another machine on the same network, joining with `key`.
@@ -101,18 +117,8 @@ async fn start(
         root,
         dirs,
         options,
-        _dir: dir,
+        dir,
     }
-}
-
-pub fn make_writable(path: &Path) {
-    let mut permissions = std::fs::metadata(path).unwrap().permissions();
-    #[cfg(unix)]
-    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o644);
-    #[cfg(not(unix))]
-    #[allow(clippy::permissions_set_readonly_false)]
-    permissions.set_readonly(false);
-    std::fs::set_permissions(path, permissions).unwrap();
 }
 
 pub fn is_read_only(path: &Path) -> bool {

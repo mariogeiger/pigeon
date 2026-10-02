@@ -1,7 +1,7 @@
 //! Bringing disk and ledger into agreement: how each path's disk compares
-//! with the version it last matched and with the one the selection holds,
-//! and carrying out the steps `reconcile` returns, then publishing the edits
-//! that settled.
+//! with the version it last matched, with the one the selection holds and
+//! with what a suggestion of this machine keeps there, and carrying out the
+//! steps `reconcile` returns.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -13,24 +13,16 @@ use pigeon_core::clock::{MachineId, Stamp, ntp_time};
 use pigeon_core::ledger::{Ledger, Version};
 use pigeon_core::patch::{Change, Content, ContentHash};
 use pigeon_core::path::{GroupPath, PathKey};
-use pigeon_core::selection::{Cutoff, Rule, exact_pattern};
-use pigeon_core::statement::{AsideItem, STATEMENTS, member_path};
-use pigeon_store::config::Config;
+use pigeon_core::selection::Cutoff;
+use pigeon_core::statement::{Reason, STATEMENTS, SuggestedChange};
 use pigeon_store::disk::{self, Stat, fs_path};
 use pigeon_store::index::{IndexEntry, Seen, observe};
 use pigeon_store::scan::scan;
+use pigeon_store::state::Kept as KeptRecord;
 
-use crate::engine::{Inner, Pending, Wake, Work, now};
-use crate::reconcile::{Disk, Lost, Step, View, reconcile};
+use crate::engine::{Inner, Pending, Wake, Work};
+use crate::reconcile::{Disk, Kept, Lost, Step, View, reconcile};
 use crate::watch::Rescan;
-
-/// Stands for any content when asking the ledger whether a path is
-/// writable.
-const ANY_CONTENT: Content = Content {
-    hash: ContentHash([0; 32]),
-    size: 0,
-    executable: false,
-};
 
 /// Where a path is on disk and what is there.
 #[derive(Clone, Debug)]
@@ -62,7 +54,7 @@ pub(crate) fn file_stat(location: &Path) -> Option<Stat> {
 }
 
 /// A modification time in NTP64.
-fn stat_time(stat: &Stat) -> u64 {
+pub(crate) fn stat_time(stat: &Stat) -> u64 {
     let nanos = u64::try_from(stat.modified.max(0)).unwrap_or(u64::MAX);
     ntp_time(UNIX_EPOCH + Duration::from_nanos(nanos))
 }
@@ -82,11 +74,7 @@ pub(crate) fn target(
 }
 
 /// The change a patch made at `key`.
-pub(crate) fn change_at(
-    ledger: &Ledger,
-    stamp: &pigeon_core::clock::Stamp,
-    key: &PathKey,
-) -> Option<Change> {
+pub(crate) fn change_at(ledger: &Ledger, stamp: &Stamp, key: &PathKey) -> Option<Change> {
     ledger
         .patch(stamp)?
         .patch
@@ -107,7 +95,7 @@ fn compare_disk(
 ) -> Result<(Disk, Option<Seen>)> {
     let Some(stat) = probe.stat else {
         let disk = if synced.is_some() {
-            Disk::Removed { at: now() }
+            Disk::Removed
         } else {
             Disk::Unchanged
         };
@@ -121,9 +109,7 @@ fn compare_disk(
     let disk = if seen.is_some_and(|seen| Some(seen.content) == synced) {
         Disk::Unchanged
     } else {
-        Disk::Changed {
-            at: stat_time(&stat),
-        }
+        Disk::Changed
     };
     Ok((disk, seen))
 }
@@ -132,37 +118,10 @@ fn compare_disk(
 struct Look {
     target: Option<Version>,
     synced: Option<Change>,
-    writable: bool,
     lost: Option<Lost>,
 }
 
 impl Inner {
-    /// Whether this machine may publish a change at `path` now.
-    pub(crate) fn writable(&self, ledger: &Ledger, work: &Work, path: &GroupPath) -> bool {
-        if !work.join.syncs()
-            || path.is_inside(STATEMENTS)
-            || matches!(work.config.selection.cutoff(path), Cutoff::At(_))
-        {
-            return false;
-        }
-        let name = &self.member;
-        let mut changes = vec![Change {
-            path: path.clone(),
-            content: Some(ANY_CONTENT),
-            replaces: ledger.head(&path.key()).map(|version| version.stamp),
-        }];
-        if !ledger.members().contains_key(name) {
-            changes.push(Change {
-                path: member_path(name),
-                content: Some(ANY_CONTENT),
-                replaces: None,
-            });
-        }
-        ledger
-            .check(name, &self.cert.member, &changes, false)
-            .is_ok()
-    }
-
     fn look(
         &self,
         work: &Work,
@@ -189,11 +148,9 @@ impl Inner {
                 }
                 _ => None,
             });
-        let writable = self.writable(&ledger, work, path);
         Look {
             target,
             synced,
-            writable,
             lost,
         }
     }
@@ -252,7 +209,7 @@ impl Inner {
         }
         for skipped in found.skipped {
             if let Err(error) = self
-                .set_aside_unportable(work, &skipped.location, skipped.reason)
+                .suggest_unportable(work, &skipped.location, skipped.reason)
                 .await
             {
                 self.report(error);
@@ -301,7 +258,7 @@ impl Inner {
             };
             Probe::at(&root, path)
         };
-        if work.is_frozen(&probe.path) {
+        if work.is_out_of_place(&probe.path) {
             return Ok(());
         }
         let look = self.look(work, key, &probe.path, entry.as_ref());
@@ -310,7 +267,8 @@ impl Inner {
         let moved = target_stamp != synced_stamp;
         let synced_content = look.synced.as_ref().and_then(|change| change.content);
         let previous = entry.as_ref().and_then(|entry| entry.seen);
-        let hash = !look.writable || moved;
+        let record = self.state.kept_at(probe.path.as_str())?;
+        let hash = moved || record.is_some();
         let (disk, seen) = compare_disk(&probe, previous, synced_content, hash)?;
         let disk_content = match (probe.stat, seen) {
             (None, _) => Some(None),
@@ -325,12 +283,20 @@ impl Inner {
                 synced: Some(version.stamp),
             });
             self.state.update_index([(key, adopted.as_ref())])?;
+            if record.is_some() {
+                self.state.unkeep(probe.path.as_str())?;
+            }
             return Ok(());
         }
+        let kept = match (record, disk_content) {
+            (Some(record), Some(content)) => self.kept(&probe.path, &record, content)?,
+            _ => Kept::No,
+        };
         let view = View {
             synced: synced_stamp,
             target: target_stamp,
-            writable: look.writable,
+            kept,
+            statement: probe.path.is_inside(STATEMENTS),
             lost: look.lost.clone(),
         };
         let steps = reconcile(disk, &view);
@@ -352,10 +318,70 @@ impl Inner {
             work.pending.remove(key);
         }
         for step in steps {
-            self.carry_out(work, key, &probe, step, &look, synced_stamp)
-                .await?;
+            self.carry_out(work, key, &probe, step, &look).await?;
         }
         Ok(())
+    }
+
+    /// Whether the disk at `path`, holding `disk_content`, shows what
+    /// `record` says a suggestion of this machine keeps there, and whether
+    /// the group decided it; a record the disk no longer shows is
+    /// forgotten, as the disk moved on.
+    fn kept(
+        &self,
+        path: &GroupPath,
+        record: &KeptRecord,
+        disk_content: Option<Content>,
+    ) -> Result<Kept> {
+        if disk_content != record.content {
+            self.state.unkeep(path.as_str())?;
+            return Ok(Kept::No);
+        }
+        let waiting = self
+            .ledger
+            .lock()
+            .head(&record.statement.key())
+            .is_some_and(Version::is_live);
+        Ok(if waiting {
+            Kept::Waiting
+        } else {
+            Kept::Decided
+        })
+    }
+
+    /// Suggests a file the scan could not name, once for each content the
+    /// disk shows at its location.
+    async fn suggest_unportable(
+        &self,
+        work: &mut Work,
+        location: &Path,
+        reason: String,
+    ) -> Result<()> {
+        let path = location
+            .strip_prefix(&self.root)
+            .unwrap_or(location)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let Some(stat) = file_stat(location) else {
+            return Ok(());
+        };
+        if let Some(record) = self.state.kept_at(&path)? {
+            let unchanged = record.content.is_some_and(|content| {
+                pigeon_store::index::hash_file(location).is_ok_and(|hash| hash == content.hash)
+            });
+            if unchanged {
+                return Ok(());
+            }
+        }
+        let content = self.import(work, location, &stat).await?;
+        let change = SuggestedChange {
+            path,
+            content: Some(content),
+            replaces: None,
+            continues: None,
+        };
+        self.suggest(work, vec![change], Reason::Unportable(reason))
+            .await
     }
 
     /// Carries out one step of `reconcile` at `key`.
@@ -366,7 +392,6 @@ impl Inner {
         probe: &Probe,
         step: Step,
         look: &Look,
-        synced: Option<Stamp>,
     ) -> Result<()> {
         match step {
             Step::Settle => {
@@ -382,46 +407,33 @@ impl Inner {
                 };
                 work.pending.insert(key.clone(), pending);
             }
-            Step::SetAsideDisk(reason) => {
-                self.set_aside_file(work, probe, synced, reason).await?;
-            }
-            Step::SetAsideSynced(reason) => {
+            Step::SuggestSynced(reason) => {
                 if let Some(change) = &look.synced {
-                    self.record_aside(&AsideItem {
+                    let suggested = SuggestedChange {
                         path: change.path.as_str().to_owned(),
                         content: change.content,
                         replaces: change.replaces,
-                        reason,
-                        time: now(),
-                    })?;
-                    work.protect_due = true;
+                        continues: change.continues.clone(),
+                    };
+                    self.suggest(work, vec![suggested], reason).await?;
                 }
             }
             Step::Materialize => {
-                self.materialize(work, key, probe, look.target.as_ref(), look.writable)
+                self.materialize(work, key, probe, look.target.as_ref())
                     .await?;
-            }
-            Step::Exclude => {
-                let mut config = Config::clone(&work.config);
-                config.selection.set(Rule {
-                    pattern: exact_pattern(&probe.path),
-                    cutoff: Cutoff::MinusInfinity,
-                })?;
-                work.config.save(config)?;
-                self.state.update_index([(key, None)])?;
             }
         }
         Ok(())
     }
 
-    /// Makes the disk show `target`, fetching its content first if needed.
+    /// Makes the disk show `target`, fetching its content first if needed,
+    /// and forgets what a suggestion of this machine kept there.
     async fn materialize(
         self: &Arc<Self>,
         work: &mut Work,
         key: &PathKey,
         probe: &Probe,
         target: Option<&Version>,
-        writable: bool,
     ) -> Result<()> {
         let root = &self.root;
         let Some((version, content)) =
@@ -436,6 +448,7 @@ impl Inner {
                 synced: Some(version.stamp),
             });
             self.state.update_index([(key, deleted.as_ref())])?;
+            self.state.unkeep(probe.path.as_str())?;
             return Ok(());
         };
         if !self.blobs.has(&content.hash).await? {
@@ -447,7 +460,7 @@ impl Inner {
             disk::remove(root, &probe.location)?;
         }
         self.blobs
-            .export(&content.hash, &location, content.executable, writable)
+            .export(&content.hash, &location, content.executable)
             .await?;
         let seen = file_stat(&location).map(|stat| Seen { stat, content });
         let entry = IndexEntry {
@@ -456,6 +469,7 @@ impl Inner {
             synced: Some(version.stamp),
         };
         self.state.update_index([(key, Some(&entry))])?;
+        self.state.unkeep(probe.path.as_str())?;
         work.protect_due = true;
         Ok(())
     }

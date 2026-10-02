@@ -1,6 +1,6 @@
 //! Edits waiting to settle: the engine lists them with the time left and
-//! whether publishing freezes them, publishes them at once under a path,
-//! and signals each change of what it shows.
+//! whether they are drafts, publishes them at once under a path, leaving
+//! the files writable, and signals each change of what it shows.
 
 mod common;
 
@@ -39,9 +39,9 @@ async fn waiting_edits_are_listed_and_published_at_once_under_a_path() {
         unreachable!()
     };
     assert_eq!(notes.path, path("+alice/notes.txt"));
-    assert!(!notes.freezes && !notes.deleted && notes.due_in <= 60);
+    assert!(!notes.draft && !notes.deleted && notes.due_in <= 60);
     assert_eq!(drop.path, path("shared/drop.txt"));
-    assert!(drop.freezes && (60..=600).contains(&drop.due_in));
+    assert!(drop.draft && (60..=600).contains(&drop.due_in));
     let shared = alice.engine.pending(Some(&path("shared"))).await;
     assert_eq!(shared.len(), 1);
 
@@ -49,7 +49,7 @@ async fn waiting_edits_are_listed_and_published_at_once_under_a_path() {
     changes.mark_unchanged();
     alice.engine.publish(Some(&path("shared"))).await.unwrap();
     assert_eq!(alice.engine.history(&path("shared/drop.txt")).len(), 1);
-    assert!(is_read_only(&alice.file("shared/drop.txt")));
+    assert!(!is_read_only(&alice.file("shared/drop.txt")));
     let left = alice.engine.pending(None).await;
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].path, path("+alice/notes.txt"));

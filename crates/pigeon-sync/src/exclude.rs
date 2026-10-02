@@ -27,11 +27,12 @@ impl Inner {
             path: path.clone(),
             content: Some(content),
             replaces: None,
+            continues: None,
         }];
         self.ledger
             .lock()
-            .check(&self.member, &self.cert.member, &changes, false)?;
-        self.publish_at(stamp, changes, None)?;
+            .check(&self.member, &self.cert.member, &changes)?;
+        self.publish_at(stamp, changes)?;
         work.join = self.join_state();
         self.renew_secret(work);
         let _ = self.wake.send(Wake::Keys(vec![path.key()]));

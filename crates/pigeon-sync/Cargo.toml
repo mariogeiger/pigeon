@@ -22,6 +22,8 @@ serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+postcard.workspace = true
+redb.workspace = true
 tempfile.workspace = true
 
 [lints]

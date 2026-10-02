@@ -1,8 +1,9 @@
 # pigeon
 
 pigeon keeps a group's files in sync, peer to peer. Each member owns
-folders that the whole group sees, and changes to someone else's files go
-through requests.
+folders that the whole group sees, anyone may add files elsewhere, and
+every other change waits as a suggestion that anyone in the group
+validates or discards, with every version kept in the history.
 
 ![Three machines keep one tree in sync: an owner's edit reaches every machine, a locked file's change travels to its owner as a request she accepts, and a file dropped in inbox/ spreads and freezes](assets/pigeon.gif)
 

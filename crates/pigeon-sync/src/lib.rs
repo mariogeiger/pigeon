@@ -1,8 +1,8 @@
 //! pigeon's engine for one group on one machine: it watches the root,
-//! publishes what the machine may write, announces its drafts and hears
-//! those of other machines, materializes what the selection holds, sets
-//! aside what it may not publish, lists the changes waiting for someone
-//! and resolves them, applies requests, excludes members,
+//! publishes what the rules let the machine publish by itself and suggests
+//! the rest, announces its drafts and hears those of other machines,
+//! materializes what the selection holds, lists the suggestions and
+//! decides them, publishes actions and restorations, excludes members,
 //! follows the group's relay, and keeps placed folders at their
 //! destinations; and the listener that hears a group before its machine
 //! chooses a member name.
@@ -20,10 +20,10 @@ mod publish;
 pub mod reconcile;
 mod relay;
 mod selection_change;
-mod set_aside;
 mod statements;
+pub mod suggestions;
+mod upgrade_v1;
 pub mod views;
-mod waiting;
 pub mod watch;
 
 pub use edit::{Edit, Edited};
@@ -34,4 +34,4 @@ pub use pending::{PendingView, Rival};
 pub use selection_change::{
     Amount, Changed, Delta, DeltaFiles, LISTED, OwnFreed, Preview, RuleEffect,
 };
-pub use waiting::{WaitingChange, Waits};
+pub use suggestions::{SuggestedChangeView, SuggestionView};

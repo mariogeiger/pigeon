@@ -130,37 +130,53 @@ newcomer.
 
 ## 5. Organize the files
 
+Everyone may change every file. Two rules say which changes a machine
+publishes by itself; every other change becomes a suggestion that the
+whole group sees and anyone decides.
+
 - A tag, `+` followed by a member's name, makes a file that member's,
   whether it names a folder holding the file, as in
   `/cheapmo/src/+mario/plan.txt`, or sits in the file's own name, as in
   `/cheapmo/docs/texte+mario.txt`. Read from right
   to left, the first tag naming a member decides: `+mario/+emmy/a` is
-  emmy's. Only the owner's machines write the file, everyone reads it, and
-  it never freezes. A tag `+<name>` that names no member changes nothing,
-  but while it exists nobody can join under that name.
-- Every other file is a drop file, which anyone may add. A new file is
-  published once it has not changed for five minutes. After that it is
-  frozen, and only a request changes it. `pigeon file pending` lists the
+  emmy's. The owner's machines publish the owner's edits, additions and
+  deletions there within seconds. A tag `+<name>` that names no member
+  changes nothing, but while it exists nobody can join under that name.
+- Every other path belongs to no one, and anyone may add a file there. A
+  new file is a draft while it changes, which the other machines see, and
+  is published once it has not changed for five minutes; it then has no
+  owner, and pigeon shows who made it. `pigeon file pending` lists the
   edits still waiting, and `pigeon file publish --path <file or folder>`
   publishes them at once.
-- Every change made through pigeon, `pigeon file write`, `rename` or
-  `delete` and the web interface alike, becomes a request to the owner of
-  each file, one per file: `--mode propose` asks the owner first, and
-  `--mode force` applies it without waiting. A request to oneself is
-  applied at once.
+- Any other change made on disk, such as an edit in someone else's
+  folder, a deletion of someone else's file, an edit of a published file
+  that belongs to no one, or a name some system cannot hold, becomes a
+  suggestion. The disk that made it keeps it until someone decides. A
+  move on disk is one change, which keeps the file's history: moving a
+  folder outside the rules suggests one move per file. When two machines
+  change a file while apart, the later change wins and the other becomes
+  a suggestion that its disk keeps.
+- `pigeon suggestion list` shows every suggestion, oldest first, with why
+  it waits, and an id. Anyone, from any machine, decides one or several
+  at once: `pigeon suggestion validate --suggestions <ids>` publishes
+  them, the later one winning at a path, and `--to <path>` publishes the
+  one file of a single suggestion at another path, as a name Windows
+  cannot hold needs; `pigeon suggestion discard --suggestions <ids>`
+  brings back the group's version on the disk that suggested it. An id
+  names the suggestion as it was listed: one that changed or was decided
+  since is refused, so the first decision is final and decides what was
+  shown. A discarded suggestion stays in the history, so the group can
+  sort out the changes of someone who never opens pigeon.
+- A change made through pigeon, `pigeon file write`, `rename` or `delete`
+  and the web interface alike, is published at once, whoever owns the
+  file. A rename or move keeps the file's history, which `pigeon file
+  history` follows back through the paths it moved from.
+- `pigeon file restore --pattern /docs/ --time 2026-10-01T12:00:00Z`
+  brings files back as they were at a past time, deleted files included,
+  as new versions: the history is never rewritten, so a restore is undone
+  by another. `pigeon selection times` lists the times of the versions.
 - A `.pigeonignore` file, in the gitignore syntax, keeps files out of
   publication. pigeon never publishes them, not even their names.
-- A file pigeon may not publish, such as an edit in someone else's folder,
-  is set aside, and the whole group sees it. `pigeon change list` shows,
-  one per file, every change waiting for someone: the requests neither
-  applied nor refused, and what machines set aside. Anyone, from any
-  machine, resolves one with `pigeon change apply`, `ask`, `place --to
-  <path>` or `discard --entry <its entry>`: apply accepts a proposal or
-  forces a set-aside item, ask proposes a set-aside item to the owner of
-  its path, place puts the change at another path, and discard refuses a
-  proposal or drops a set-aside item. The first decision on a proposal is
-  final, whoever makes it, so the group can sort out the changes of
-  someone who never opens pigeon.
 
 ## 6. Choose what each machine holds
 
@@ -214,23 +230,22 @@ Each file and folder has a box: checked when followed, mixed when only part
 of a folder is. Unchecking asks whether to keep the current copy, frozen,
 or free the space. A rule set this way replaces the earlier rules for the
 paths inside it; hand-written patterns such as `*.pdf` stay. Each row's ⋯
-renames, replaces, adds, deletes, downloads once or publishes now, and
-turns a change to a file one may not write into a request to its owner.
+renames, replaces, adds, deletes, downloads once or publishes now; each
+change asks to be confirmed, then publishes at once.
 Each status is one emoji, which a legend under the tree explains: ⏬ on
-its way, 🧊 frozen copy, 🔒 changes become requests, ⏳ and 🗑️ an edit or a
-deletion waiting, ✍️ another member's draft, ⚠️ and 🛑 rival drafts.
-Drafts other members are adding to drop folders show greyed, with their
-author and the time left; when two members add the same path, both are
-warned, and the one whose copy will be set aside is told to rename it.
-`pigeon file pending` lists the same drafts. 📬 marks each change
-waiting for someone, on the line of its file, greyed when the file does
-not exist yet, and folders count them; the Files tab counts the proposals
-addressed to you and what your machines set aside. A line's menu applies
-a change, asks its owner, places it elsewhere or discards it, and the
-file's page shows the difference it makes. Every change asks only to
-confirm it when it is all yours, and otherwise whether to apply it now or
-ask the owners first. The group's pages update themselves as files
-change.
+its way, 🧊 frozen copy, ⏳ and 🗑️ an edit or a deletion waiting, ✍️
+another member's draft, ⚠️ and 🛑 rival drafts, 📬 a suggestion.
+Drafts other members are adding show greyed, with their author and the
+time left; when two members add the same path, both are warned, and the
+one whose copy will become a suggestion is told to rename it. `pigeon
+file pending` lists the same drafts. 📬 marks each suggested change on the
+line of its file, greyed when the file does not exist yet, and folders
+count them; the Files tab counts the suggestions. A line's menu validates
+or discards each suggestion, or validates it at another path, and a
+folder's menu validates or discards all those shown under it at once. A
+file's page shows the difference each suggestion makes, and its history
+with a button that restores each version. The group's pages update
+themselves as files change.
 
 `pigeon selection place --folder videos --destination /mnt/big/videos`
 keeps a folder on another disk and leaves a link at its place, a junction
@@ -256,7 +271,7 @@ pigeon selection follow --pattern '*'
 then set `everything = true` under `[retention]` in its `config.toml`, and
 run `pigeon daemon reload`.
 
-It owns no folder, so it writes nobody's files. Run its daemon with
+It owns no folder and nobody edits its disk, so it only receives. Run its daemon with
 `pigeon service install --linger`, which starts it at boot. On Linux and
 macOS,
 

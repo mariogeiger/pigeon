@@ -2,9 +2,9 @@
 // are remembered per group for the session and opened again each time
 // live.js swaps the page, and ?under= opens the tree down to a folder and
 // scrolls to it. Each row's ⋯ opens a menu of what can be done to it, the
-// changes waiting at it included; each choice opens its dialog, filled for
-// that row, which asks only to confirm a change that is all the member's,
-// and otherwise whether to apply it now or ask the owners first.
+// suggestions at it and under it included, each validated or discarded
+// alone or all together; each choice opens its dialog, filled for that
+// row, or asks, and publishes once confirmed.
 "use strict";
 (() => {
   const table = () => document.querySelector("table.tree");
@@ -58,22 +58,11 @@
   let row = null;
   let chosen = null;
 
-  // Whether what `dialog` changes is all the member's.
-  const mine = (dialog) => {
-    if (dialog.id === "add") return row.dataset.addable !== "false";
-    if (dialog.id === "place") return chosen.made && chosen.owned;
-    if (dialog.id === "discard") return chosen.made;
-    return row.dataset.writable !== "false";
-  };
-
   const fill = (dialog) => {
     const { kind, path, pattern } = row.dataset;
     for (const subject of dialog.querySelectorAll(".subject")) {
       subject.textContent = path === "" ? table().dataset.group : path + (kind === "file" ? "" : "/");
     }
-    const own = dialog.id === "menu" || mine(dialog);
-    for (const part of dialog.querySelectorAll(".mine")) part.hidden = !own;
-    for (const part of dialog.querySelectorAll(".theirs")) part.hidden = own;
     const set = (name, value) => {
       for (const field of dialog.querySelectorAll(`[name=${name}]`)) field.value = value;
     };
@@ -82,18 +71,19 @@
     set("from", path);
     set("to", path);
     set("pattern", pattern ?? "");
-    set("message", "");
-    set("entry", chosen?.entry ?? "");
+    set("suggestions", chosen?.id ?? "");
     for (const file of dialog.querySelectorAll("input[type=file]")) file.value = "";
   };
 
-  // A button that posts `entry` to `change <verb>` at once.
-  const post = (verb, entry, label) => {
+  // A button that posts the suggestions `ids` to `suggestion <verb>` once
+  // `question` is confirmed.
+  const post = (verb, ids, label, question) => {
     const form = document.createElement("form");
     form.method = "post";
-    form.action = `/act/change/${verb}`;
+    form.action = `/act/suggestion/${verb}`;
     form.enctype = "multipart/form-data";
-    const fields = { back: location.pathname + location.search, group: table().dataset.group, entry };
+    form.dataset.confirm = question;
+    const fields = { back: location.pathname + location.search, group: table().dataset.group, suggestions: ids.join(" ") };
     for (const [name, value] of Object.entries(fields)) {
       const field = document.createElement("input");
       field.type = "hidden";
@@ -107,13 +97,13 @@
     return form;
   };
 
-  // A button that opens the dialog `id` for `waiting`.
-  const opener = (id, waiting, label) => {
+  // A button that opens the dialog `id` for the suggestion `suggestion`.
+  const opener = (id, suggestion, label) => {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = label;
     button.addEventListener("click", () => {
-      chosen = waiting;
+      chosen = suggestion;
       const dialog = document.getElementById(id);
       document.getElementById("menu").close();
       fill(dialog);
@@ -122,31 +112,46 @@
     return button;
   };
 
-  // The lines of the changes waiting at the row, each with what resolves it.
-  const waitingLines = () =>
-    JSON.parse(row.dataset.changes ?? "[]").map((waiting) => {
-      const line = document.createElement("div");
-      line.className = "change";
+  const validating = "It publishes at once, for the whole group.";
+  const discarding = "The group keeps its versions, and the history keeps the suggestion.";
+
+  // The lines of the suggestions at the row, each with what decides it,
+  // then, when there are several, what decides them all as shown.
+  const suggestionLines = () => {
+    const suggestions = JSON.parse(row.dataset.suggestions ?? "[]");
+    const line = (text, ...buttons) => {
+      const div = document.createElement("div");
+      div.className = "change";
       const what = document.createElement("p");
-      what.textContent = `📬 ${waiting.title}`;
-      line.append(what);
-      if (waiting.waits === "applying") return line;
-      line.append(post("apply", waiting.entry, "Apply"));
-      if (waiting.waits === "aside" && !waiting.owned) {
-        line.append(post("ask", waiting.entry, "Ask the owner"));
-      }
-      line.append(opener("place", waiting, "Place elsewhere…"));
-      line.append(
-        waiting.waits === "proposed"
-          ? post("discard", waiting.entry, "Discard")
-          : opener("discard", waiting, "Discard…"),
+      what.textContent = text;
+      div.append(what, ...buttons);
+      return div;
+    };
+    const lines = suggestions.map((suggestion) =>
+      line(
+        `📬 ${suggestion.title}`,
+        post("validate", [suggestion.id], "Validate", `Validate this suggestion? ${validating}`),
+        ...(suggestion.elsewhere ? [opener("elsewhere", suggestion, "Validate at another path…")] : []),
+        post("discard", [suggestion.id], "Discard", `Discard this suggestion? ${discarding}`),
+      ),
+    );
+    if (suggestions.length > 1) {
+      const ids = suggestions.map((suggestion) => suggestion.id);
+      const all = `all ${ids.length} suggestions`;
+      lines.push(
+        line(
+          `📬 ${ids.length} suggestions`,
+          post("validate", ids, "Validate all", `Validate ${all}? ${validating}`),
+          post("discard", ids, "Discard all", `Discard ${all}? ${discarding}`),
+        ),
       );
-      return line;
-    });
+    }
+    return lines;
+  };
 
   const showMenu = () => {
     const menu = document.getElementById("menu");
-    const { kind, waiting, freezes, published, editable, path } = row.dataset;
+    const { kind, waiting, published, editable, path } = row.dataset;
     const file = kind === "file" && published === "true";
     const draft = kind === "file" && published === "false" && editable === "true";
     const folder = kind === "folder";
@@ -159,15 +164,10 @@
     for (const choice of menu.querySelectorAll("[data-open]")) {
       choice.hidden = !offered[choice.dataset.open];
     }
-    menu.querySelector(".waiting").replaceChildren(...waitingLines());
+    menu.querySelector(".suggestions").replaceChildren(...suggestionLines());
     menu.querySelector("#download").hidden = !(file || folder);
     const publish = menu.querySelector("#publish");
     publish.hidden = Number(waiting) === 0;
-    if (freezes === "true") {
-      publish.dataset.confirm = `Publishing freezes what waits in a drop folder at ${path || table().dataset.group}: it then changes only through requests. Publish now?`;
-    } else {
-      delete publish.dataset.confirm;
-    }
     const history = menu.querySelector("#history");
     history.hidden = !file;
     history.href = `/g/${encodeURIComponent(table().dataset.group)}/file?path=${encodeURIComponent(path)}`;

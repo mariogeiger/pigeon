@@ -1,5 +1,5 @@
 //! What a person can ask of the engine besides editing the tree, the
-//! selection and the waiting changes: change the retention and publish
+//! selection and the suggestions: change the retention and publish
 //! waiting edits at once.
 
 use std::sync::Arc;

@@ -37,11 +37,6 @@ fn input(param: &Param, value: Option<&str>) -> Markup {
                 Kind::Flag => input type="checkbox" name=(name) value="true";
                 Kind::Bytes => input type="file" name=(name) required[required];
                 Kind::Document => textarea name=(name) rows="6" { (value) }
-                Kind::Choice(choices) => select name=(name) {
-                    @for choice in choices {
-                        option value=(choice) selected[*choice == value] { (choice) }
-                    }
-                },
                 Kind::Text | Kind::Path | Kind::Pattern | Kind::Folder | Kind::Time => {
                     input type="text" name=(name) value=(value) required[required];
                 }
@@ -99,14 +94,21 @@ mod tests {
         let fill = Fill {
             group: Some("cheapmo"),
             fixed: &[("path", "+alice/a.txt")],
-            defaults: &[("mode", "force")],
+            defaults: &[],
         };
         let markup = form(write, "/g/cheapmo", fill).into_string();
         assert!(markup.contains(r#"action="/act/file/write""#));
         assert!(markup.contains(r#"<input type="hidden" name="group" value="cheapmo">"#));
         assert!(markup.contains(r#"<input type="hidden" name="path" value="+alice/a.txt">"#));
         assert!(markup.contains(r#"<input type="file" name="content" required>"#));
-        assert!(markup.contains(r#"<option value="force" selected>"#));
+        let rename = find("file", "rename").unwrap();
+        let fill = Fill {
+            group: Some("cheapmo"),
+            fixed: &[("from", "a")],
+            defaults: &[("to", "b")],
+        };
+        let markup = form(rename, "/", fill).into_string();
+        assert!(markup.contains(r#"<input type="text" name="to" value="b" required>"#));
         let download = find("selection", "download").unwrap();
         let fill = Fill {
             fixed: &[("pattern", "/docs/")],

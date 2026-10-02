@@ -8,13 +8,19 @@ use serde_json::{Map, Value};
 
 use crate::catalog::Action;
 
-/// The field at the dotted path `column` of `item`, or null.
+/// The field at the dotted path `column` of `item`, or null; through a
+/// list, the list of that field of each item.
 #[must_use]
-pub fn field<'a>(item: &'a Value, column: &str) -> &'a Value {
-    column
-        .split('.')
-        .try_fold(item, |value, name| value.get(name))
-        .unwrap_or(&Value::Null)
+pub fn field(item: &Value, column: &str) -> Value {
+    match (item, column.split_once('.')) {
+        (Value::Array(items), _) => {
+            Value::Array(items.iter().map(|item| field(item, column)).collect())
+        }
+        (_, Some((name, rest))) => item
+            .get(name)
+            .map_or(Value::Null, |inner| field(inner, rest)),
+        (_, None) => item.get(column).cloned().unwrap_or(Value::Null),
+    }
 }
 
 /// A byte count in the largest unit that keeps it at least 1.
@@ -69,7 +75,7 @@ fn table(columns: &[&str], items: &[Value]) -> String {
         .map(|item| {
             columns
                 .iter()
-                .map(|column| cell(column, field(item, column)))
+                .map(|column| cell(column, &field(item, column)))
                 .collect()
         })
         .collect();
@@ -176,17 +182,27 @@ mod tests {
     #[test]
     fn lists_read_as_tables_of_their_columns() {
         let files = json!([
-            {"path": "+alice/a.txt", "owner": "alice", "content": {"size": 2048}, "time": "t", "held": true, "outdated": false, "writable": true},
+            {"path": "+alice/a.txt", "owner": "alice", "author": "bob", "content": {"size": 2048}, "time": "t", "held": true, "outdated": false},
         ]);
         let text = text(find("file", "list").unwrap(), &files);
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
             lines[0],
-            "PATH          OWNER  SIZE    TIME  HELD  OUTDATED  WRITABLE"
+            "PATH          OWNER  AUTHOR  SIZE    TIME  HELD  OUTDATED"
         );
-        assert_eq!(
-            lines[1],
-            "+alice/a.txt  alice  2.0 KB  t     yes             yes"
+        assert_eq!(lines[1], "+alice/a.txt  alice  bob     2.0 KB  t     yes");
+        let suggestions = json!([
+            {"id": "s", "author": "bob", "reason": "OutsideRules",
+             "changes": [{"path": "a", "outdated": false}, {"path": "b", "outdated": true}]},
+        ]);
+        let lines = super::text(find("suggestion", "list").unwrap(), &suggestions);
+        assert!(
+            lines
+                .lines()
+                .nth(1)
+                .unwrap()
+                .ends_with("OutsideRules  a, b"),
+            "{lines}"
         );
         let key = json!({"key": "cheapmo-abc"});
         assert_eq!(

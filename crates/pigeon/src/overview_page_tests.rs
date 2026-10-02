@@ -119,7 +119,7 @@ fn the_page_holds_the_file_and_offers_to_exclude_others_or_leave() {
     let bar = Bar {
         group: "cheapmo",
         tab: Some(pages::Tab::Overview),
-        waiting: 2,
+        suggestions: 2,
     };
     let page = overview(&bar, &shown).into_string();
     assert!(

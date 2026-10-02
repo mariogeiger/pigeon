@@ -180,13 +180,7 @@ impl Blobs {
     /// # Panics
     ///
     /// Panics if `target` has no parent folder.
-    pub async fn export(
-        &self,
-        hash: &ContentHash,
-        target: &Path,
-        executable: bool,
-        writable: bool,
-    ) -> Result<()> {
+    pub async fn export(&self, hash: &ContentHash, target: &Path, executable: bool) -> Result<()> {
         let parent = target.parent().expect("a file has a parent");
         std::fs::create_dir_all(parent).map_err(StoreError::io(parent))?;
         let temporary = disk::temporary_path(target);
@@ -195,7 +189,7 @@ impl Blobs {
             .export(blob_hash(hash), &temporary)
             .await
             .map_err(blob_error)?;
-        disk::install(&temporary, target, executable, writable)
+        disk::install(&temporary, target, executable)
     }
 
     /// Reads a whole content into memory, for statements and small files.
@@ -256,10 +250,8 @@ mod tests {
         assert_eq!(tag.hash(), blob_hash(&hash));
         assert!(blobs.has(&hash).await.unwrap());
         let target = dir.path().join("root/a/b");
-        blobs.export(&hash, &target, false, false).await.unwrap();
+        blobs.export(&hash, &target, false).await.unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), vec![7u8; 100_000]);
-        assert!(std::fs::metadata(&target).unwrap().permissions().readonly());
-        blobs.export(&hash, &target, false, true).await.unwrap();
         assert!(!std::fs::metadata(&target).unwrap().permissions().readonly());
         assert!(!disk::temporary_path(&target).exists());
         blobs.shutdown().await.unwrap();

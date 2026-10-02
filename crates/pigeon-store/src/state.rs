@@ -1,8 +1,8 @@
 //! The state database of one group on one machine: every patch received,
-//! the disk index, the set-aside list and the files that show its items to
-//! the group, the folders the disk holds at other destinations, and the
-//! selection the disk was last brought to, in one redb file whose
-//! transactions keep them consistent across crashes.
+//! the disk index, the suggestions whose content the disk keeps, the
+//! folders the disk holds at other destinations, and the selection the
+//! disk was last brought to, in one redb file whose transactions keep them
+//! consistent across crashes.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -11,26 +11,34 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use pigeon_core::clock::Stamp;
 use pigeon_core::identity::GroupId;
 use pigeon_core::ledger::Ledger;
-use pigeon_core::patch::SignedPatch;
+use pigeon_core::patch::{Content, SignedPatch};
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::places::{Place, Places};
 use pigeon_core::selection::Rule;
-use pigeon_core::statement::AsideItem;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, StoreError};
 use crate::index::IndexEntry;
 
-const PATCHES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("patches");
+pub(crate) const PATCHES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("signed patches");
 const INDEX: TableDefinition<&str, &[u8]> = TableDefinition::new("index");
-const ASIDE: TableDefinition<u64, &[u8]> = TableDefinition::new("aside");
-const ASIDE_FILES: TableDefinition<u64, &str> = TableDefinition::new("aside files");
+const KEPT: TableDefinition<&str, &[u8]> = TableDefinition::new("kept suggestions");
 const PLACED: TableDefinition<&str, &str> = TableDefinition::new("placed");
 const APPLIED: TableDefinition<&str, &[u8]> = TableDefinition::new("applied");
 const SELECTION: &str = "selection";
 
+/// Content that the disk keeps at a path while the suggestion this
+/// machine made of it waits: `None` for a deletion, the disk then showing
+/// no file there.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct Kept {
+    pub statement: GroupPath,
+    pub content: Option<Content>,
+}
+
 /// A patch's key, which sorts patches in stamp order.
-fn stamp_key(stamp: &Stamp) -> [u8; 40] {
+pub(crate) fn stamp_key(stamp: &Stamp) -> [u8; 40] {
     let mut key = [0; 40];
     key[..8].copy_from_slice(&stamp.time.to_be_bytes());
     key[8..].copy_from_slice(stamp.machine.as_bytes());
@@ -56,9 +64,9 @@ impl State {
         let database = Database::create(path)?;
         let transaction = database.begin_write()?;
         transaction.open_table(PATCHES)?;
+        crate::state_v1::upgrade_patches(&transaction)?;
         transaction.open_table(INDEX)?;
-        transaction.open_table(ASIDE)?;
-        transaction.open_table(ASIDE_FILES)?;
+        transaction.open_table(KEPT)?;
         transaction.open_table(PLACED)?;
         transaction.open_table(APPLIED)?;
         transaction.commit()?;
@@ -201,96 +209,67 @@ impl State {
         Ok(())
     }
 
-    /// Adds an item to the set-aside list and returns its number.
+    /// Records that the disk keeps `kept` at `path`, a path relative to
+    /// the root that no portable path may hold.
     ///
     /// # Errors
     ///
     /// Fails if the database cannot be written.
-    pub fn set_aside(&self, item: &AsideItem) -> Result<u64> {
-        let bytes = postcard::to_stdvec(item)?;
-        let transaction = self.database.begin_write()?;
-        let id = {
-            let mut table = transaction.open_table(ASIDE)?;
-            let id = table.last()?.map_or(1, |(key, _)| key.value() + 1);
-            table.insert(id, bytes.as_slice())?;
-            id
-        };
-        transaction.commit()?;
-        self.revision.fetch_add(1, Ordering::Relaxed);
-        Ok(id)
-    }
-
-    /// The set-aside list, oldest first.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the database cannot be read.
-    pub fn aside(&self) -> Result<Vec<(u64, AsideItem)>> {
-        let transaction = self.database.begin_read()?;
-        let table = transaction.open_table(ASIDE)?;
-        let mut items = Vec::new();
-        for entry in table.iter()? {
-            let (key, value) = entry?;
-            items.push((key.value(), postcard::from_bytes(value.value())?));
-        }
-        Ok(items)
-    }
-
-    /// Records that the file at `file` shows the group item `id`.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the database cannot be written.
-    pub fn set_aside_file(&self, id: u64, file: &GroupPath) -> Result<()> {
+    pub fn keep(&self, path: &str, kept: &Kept) -> Result<()> {
+        let bytes = postcard::to_stdvec(kept)?;
         let transaction = self.database.begin_write()?;
         transaction
-            .open_table(ASIDE_FILES)?
-            .insert(id, file.as_str())?;
+            .open_table(KEPT)?
+            .insert(path, bytes.as_slice())?;
         transaction.commit()?;
         self.revision.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
-    /// The files that show the group the set-aside items, by item.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the database cannot be read or names an invalid file.
-    pub fn aside_files(&self) -> Result<BTreeMap<u64, GroupPath>> {
-        let transaction = self.database.begin_read()?;
-        let table = transaction.open_table(ASIDE_FILES)?;
-        let mut files = BTreeMap::new();
-        for entry in table.iter()? {
-            let (id, file) = entry?;
-            let file = GroupPath::parse(file.value()).map_err(|error| {
-                StoreError::Invalid(format!(
-                    "the state database holds a set-aside file that is no path: {error}"
-                ))
-            })?;
-            files.insert(id.value(), file);
-        }
-        Ok(files)
-    }
-
-    /// Removes an item from the set-aside list, with the record of its
-    /// file, and returns it.
+    /// Forgets what the disk keeps at `path`.
     ///
     /// # Errors
     ///
     /// Fails if the database cannot be written.
-    pub fn take_aside(&self, id: u64) -> Result<Option<AsideItem>> {
+    pub fn unkeep(&self, path: &str) -> Result<()> {
         let transaction = self.database.begin_write()?;
-        let item = {
-            transaction.open_table(ASIDE_FILES)?.remove(id)?;
-            let mut table = transaction.open_table(ASIDE)?;
-            let removed = table.remove(id)?;
-            removed
-                .map(|value| postcard::from_bytes(value.value()))
-                .transpose()?
-        };
+        transaction.open_table(KEPT)?.remove(path)?;
         transaction.commit()?;
         self.revision.fetch_add(1, Ordering::Relaxed);
-        Ok(item)
+        Ok(())
+    }
+
+    /// What the disk keeps at `path` for a suggestion, if anything.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the database cannot be read.
+    pub fn kept_at(&self, path: &str) -> Result<Option<Kept>> {
+        let transaction = self.database.begin_read()?;
+        let table = transaction.open_table(KEPT)?;
+        let value = table.get(path)?;
+        Ok(value
+            .map(|value| postcard::from_bytes(value.value()))
+            .transpose()?)
+    }
+
+    /// What the disk keeps for suggestions, by path relative to the root.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the database cannot be read.
+    pub fn kept(&self) -> Result<BTreeMap<String, Kept>> {
+        let transaction = self.database.begin_read()?;
+        let table = transaction.open_table(KEPT)?;
+        let mut kept = BTreeMap::new();
+        for entry in table.iter()? {
+            let (path, value) = entry?;
+            kept.insert(
+                path.value().to_owned(),
+                postcard::from_bytes(value.value())?,
+            );
+        }
+        Ok(kept)
     }
 
     /// The rules of the selection the disk was last brought to, if any was.

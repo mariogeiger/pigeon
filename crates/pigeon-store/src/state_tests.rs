@@ -1,6 +1,6 @@
 //! Tests of the state database: patches survive reopening and fold back
-//! into the same ledger, and the index, set-aside list with its files, and
-//! placed folders round-trip, every write counted.
+//! into the same ledger, and the index, kept suggestions, and placed
+//! folders round-trip, every write counted.
 
 use iroh_base::SecretKey;
 use pigeon_core::clock::Stamp;
@@ -9,7 +9,7 @@ use pigeon_core::name::MemberName;
 use pigeon_core::patch::{Change, Content, ContentHash, Patch};
 use pigeon_core::path::GroupPath;
 use pigeon_core::places::Places;
-use pigeon_core::statement::{Reason, member_path};
+use pigeon_core::statement::member_path;
 
 use super::*;
 use crate::disk::Stat;
@@ -45,8 +45,8 @@ fn patch(time: u64, path: &GroupPath) -> SignedPatch {
             path: path.clone(),
             content: Some(content(1)),
             replaces: None,
+            continues: None,
         }],
-        applies: None,
     };
     SignedPatch::sign(&group(), unsigned, cert, &key)
 }
@@ -136,55 +136,25 @@ fn index_entries_are_listed_under_a_folder_without_case() {
 }
 
 #[test]
-fn aside_items_are_numbered_and_taken_each_write_counted() {
+fn kept_suggestions_round_trip_each_write_counted() {
     let dir = tempfile::tempdir().unwrap();
     let state = State::open(&dir.path().join("s")).unwrap();
-    let item = |path: &str| AsideItem {
-        path: path.into(),
-        content: Some(content(4)),
-        replaces: None,
-        reason: Reason::NotWritable,
-        time: 7,
+    let kept = |content: Option<Content>| Kept {
+        statement: GroupPath::parse(".pigeon/suggestions/1.json").unwrap(),
+        content,
     };
     assert_eq!(state.revision(), 0);
-    assert_eq!(state.set_aside(&item("a")).unwrap(), 1);
+    state.keep("a", &kept(Some(content(4)))).unwrap();
     assert_eq!(state.revision(), 1);
-    assert_eq!(state.set_aside(&item("b")).unwrap(), 2);
-    assert_eq!(state.take_aside(1).unwrap(), Some(item("a")));
-    assert_eq!(state.take_aside(1).unwrap(), None);
-    assert_eq!(state.set_aside(&item("c")).unwrap(), 3);
-    let paths: Vec<String> = state
-        .aside()
-        .unwrap()
-        .into_iter()
-        .map(|(_, i)| i.path)
-        .collect();
-    assert_eq!(paths, ["b", "c"]);
-    assert_eq!(state.revision(), 5, "every write and no read counts");
-}
-
-#[test]
-fn an_aside_files_record_goes_with_its_item() {
-    let dir = tempfile::tempdir().unwrap();
-    let state = State::open(&dir.path().join("s")).unwrap();
-    let item = AsideItem {
-        path: "a".into(),
-        content: Some(content(1)),
-        replaces: None,
-        reason: Reason::Superseded,
-        time: 0,
-    };
-    let first = state.set_aside(&item).unwrap();
-    let second = state.set_aside(&item).unwrap();
-    let file = GroupPath::parse(".pigeon/aside/1.json").unwrap();
-    state.set_aside_file(first, &file).unwrap();
+    state.keep("b:c", &kept(None)).unwrap();
+    state.keep("a", &kept(None)).unwrap();
+    state.unkeep("b:c").unwrap();
     drop(state);
     let state = State::open(&dir.path().join("s")).unwrap();
-    assert_eq!(state.aside_files().unwrap(), [(first, file)].into());
-    state.take_aside(first).unwrap();
-    assert!(state.aside_files().unwrap().is_empty());
-    assert_eq!(state.aside().unwrap().len(), 1);
-    assert_eq!(state.aside().unwrap()[0].0, second);
+    assert_eq!(state.kept().unwrap(), [("a".to_owned(), kept(None))].into());
+    assert_eq!(state.kept_at("a").unwrap(), Some(kept(None)));
+    assert_eq!(state.kept_at("b:c").unwrap(), None);
+    assert_eq!(state.revision(), 0, "no read counts");
 }
 
 #[test]

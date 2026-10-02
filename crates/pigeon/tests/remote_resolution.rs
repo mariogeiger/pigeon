@@ -1,8 +1,8 @@
 //! A member who never looks at pigeon: while the family is apart, papy's
-//! laptop and desktop pile up every kind of set-aside item, an edit that
-//! lost to a later one, a save over alice's read-only file, a drop whose
-//! name alice took first and a name Windows cannot hold; alice resolves
-//! them all from her machine, and papy's machines carry it out alone.
+//! laptop and desktop pile up every kind of suggestion, an edit that lost
+//! to a later one, a save over alice's file, a drop whose name he took
+//! after alice and a name Windows cannot hold; alice decides them all from
+//! her machine, and papy's machines carry it out alone.
 
 mod common;
 
@@ -10,16 +10,12 @@ use common::{Machine, eventually, family, published, settle};
 use iroh::address_lookup::MemoryLookup;
 use serde_json::{Value, json};
 
-/// The entry of the item papy's machines set aside at `path`, as
-/// `machine` lists it.
-async fn aside_entry(machine: &Machine, path: &str) -> Value {
-    let items = machine.aside().await;
-    let item = items
-        .iter()
-        .find(|item| item["path"] == path)
-        .unwrap_or_else(|| panic!("nothing set aside at {path}: {items:?}"));
-    assert_eq!(item["author"], "papy", "{item}");
-    item["entry"].clone()
+/// The id of the one suggestion of `author` at `path`, as `machine` lists
+/// it.
+async fn suggestion_id(machine: &Machine, path: &str, author: &str) -> Value {
+    let suggestion = machine.suggestion_at(path).await;
+    assert_eq!(suggestion["author"], author, "{suggestion}");
+    suggestion["id"].clone()
 }
 
 /// Plays the family apart: alice drops a plan first, papy's laptop edits
@@ -46,34 +42,22 @@ async fn apart(alice: &mut Machine, desktop: &mut Machine, laptop: &mut Machine)
     laptop.go_online().await;
 }
 
-/// Alice resolves papy's four items from her machine: she restores his
-/// laptop's budget, his plan and his invoice under new names, forces his
-/// recipe, and follows his folder and the plans.
+/// Alice decides the four suggestions from her machine: she places his
+/// laptop's budget, her own plan and his invoice under new names,
+/// validates his recipe, and follows his folder and the plans.
 async fn resolve_for_papy(alice: &Machine) {
-    let superseded = aside_entry(alice, "+papy/budget.txt").await;
-    let not_writable = aside_entry(alice, "+alice/recipe.txt").await;
-    let rejected = aside_entry(alice, "docs/Plan.txt").await;
-    let unportable = aside_entry(alice, "+papy/Facture: mars.txt").await;
-    for (entry, to) in [
-        (superseded, "+papy/budget (laptop).txt"),
-        (rejected, "docs/plan (papy).txt"),
-        (unportable, "+papy/Facture - mars.txt"),
+    let superseded = suggestion_id(alice, "+papy/budget.txt", "papy").await;
+    let recipe = suggestion_id(alice, "+alice/recipe.txt", "papy").await;
+    let plan = suggestion_id(alice, "docs/plan.txt", "alice").await;
+    let unportable = suggestion_id(alice, "+papy/Facture: mars.txt", "papy").await;
+    for (id, to) in [
+        (&superseded, "+papy/budget (laptop).txt"),
+        (&plan, "docs/plan (alice).txt"),
+        (&unportable, "+papy/Facture - mars.txt"),
     ] {
-        alice
-            .run(
-                "change",
-                "place",
-                json!({"entry": entry, "to": to, "mode": "force"}),
-            )
-            .await;
+        alice.validate(&[id], Some(to)).await;
     }
-    alice
-        .run(
-            "change",
-            "apply",
-            json!({"entry": not_writable, "message": "papy's sugar"}),
-        )
-        .await;
+    alice.validate(&[&recipe], None).await;
     for pattern in ["/+papy/", "/docs/"] {
         alice
             .run("selection", "follow", json!({"pattern": pattern}))
@@ -102,15 +86,15 @@ async fn a_passive_members_conflicts_are_all_resolved_by_another_from_her_machin
     apart(&mut alice, &mut desktop, &mut laptop).await;
 
     let all = [&alice, &desktop, &laptop];
-    eventually("alice sees papy's four items", &all, async || {
-        alice.aside().await.len() == 4
+    eventually("alice sees the four suggestions", &all, async || {
+        alice.suggestions().await.len() == 4
     })
     .await;
     resolve_for_papy(&alice).await;
     eventually("nothing waits anywhere", &all, async || {
-        alice.changes().await.is_empty()
-            && desktop.changes().await.is_empty()
-            && laptop.changes().await.is_empty()
+        alice.suggestions().await.is_empty()
+            && desktop.suggestions().await.is_empty()
+            && laptop.suggestions().await.is_empty()
     })
     .await;
     eventually("every machine shows what alice decided", &all, async || {
@@ -121,8 +105,8 @@ async fn a_passive_members_conflicts_are_all_resolved_by_another_from_her_machin
                 && machine.shows("+papy/Facture - mars.txt", "42 €\n")
         }) && laptop.shows("+papy/budget (laptop).txt", "from the train\n")
             && laptop.shows("+papy/Facture - mars.txt", "42 €\n")
-            && alice.shows("docs/plan.txt", "alice's plan\n")
-            && alice.shows("docs/plan (papy).txt", "papy's plan\n")
+            && alice.shows("docs/Plan.txt", "papy's plan\n")
+            && alice.shows("docs/plan (alice).txt", "alice's plan\n")
             && desktop.read("+papy/Facture: mars.txt").is_none()
     })
     .await;
@@ -130,7 +114,7 @@ async fn a_passive_members_conflicts_are_all_resolved_by_another_from_her_machin
     desktop.switch_off().await;
     desktop.switch_on().await;
     settle().await;
-    assert_eq!(desktop.changes().await, Vec::<Value>::new());
+    assert_eq!(desktop.suggestions().await, Vec::<Value>::new());
     assert!(desktop.read("+papy/Facture: mars.txt").is_none());
     assert!(desktop.shows("+papy/Facture - mars.txt", "42 €\n"));
 }

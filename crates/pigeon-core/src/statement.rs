@@ -1,13 +1,13 @@
 //! Statements: the signed files in the hidden drop folder `.pigeon` that
-//! record members, rebindings, requests, decisions, the group's relay, and
-//! what machines set aside, with their paths and bodies.
+//! record members, rebindings, the group's relay, and the changes waiting
+//! for the group as suggestions, with their paths and bodies.
 
 use iroh_base::PublicKey;
 use serde::{Deserialize, Serialize};
 
 use crate::clock::Stamp;
 use crate::name::MemberName;
-use crate::patch::{Change, Content};
+use crate::patch::{Content, VersionRef};
 use crate::path::GroupPath;
 
 /// The folder that holds every statement.
@@ -78,26 +78,6 @@ pub fn rebind_of_path(path: &GroupPath) -> Option<RebindStatement> {
     })
 }
 
-/// The file of the request stamped `stamp`.
-///
-/// # Panics
-/// Never: every part of the path is portable by construction.
-#[must_use]
-pub fn request_path(stamp: &Stamp) -> GroupPath {
-    GroupPath::parse(&format!("{STATEMENTS}/requests/{}.json", stamp.label()))
-        .expect("labels are portable")
-}
-
-/// The file of the owner's decision on the request at `request`.
-///
-/// # Panics
-/// Never: every part of the path is portable by construction.
-#[must_use]
-pub fn decision_path(request: &GroupPath) -> GroupPath {
-    GroupPath::parse(&format!("{STATEMENTS}/decisions/{}", request.file_name()))
-        .expect("request names are portable")
-}
-
 /// The file of the relay choice made in the patch stamped `stamp`; the
 /// latest choice holds.
 ///
@@ -119,22 +99,29 @@ pub fn is_relay_path(path: &GroupPath) -> bool {
         .starts_with(&format!("{STATEMENTS}/{RELAYS}/"))
 }
 
-/// The file through which the machine that stamped `stamp` shows the group
-/// an item it set aside, owned by that machine's member; deleting it
-/// resolves the item.
+/// The file of the suggestion first made in the patch stamped `stamp`;
+/// deleting it decides the suggestion.
 ///
 /// # Panics
 /// Never: every part of the path is portable by construction.
 #[must_use]
-pub fn aside_path(stamp: &Stamp) -> GroupPath {
-    GroupPath::parse(&format!("{}/{}.json", aside_folder(), stamp.label()))
+pub fn suggestion_path(stamp: &Stamp) -> GroupPath {
+    GroupPath::parse(&format!("{}/{}.json", suggestions_folder(), stamp.label()))
         .expect("labels are portable")
 }
 
-/// The folder holding set-aside items.
+/// The folder holding suggestions.
 #[must_use]
-pub fn aside_folder() -> String {
-    format!("{STATEMENTS}/aside")
+pub fn suggestions_folder() -> String {
+    format!("{STATEMENTS}/suggestions")
+}
+
+/// Whether `path` lies where suggestions do.
+#[must_use]
+pub fn is_suggestion_path(path: &GroupPath) -> bool {
+    path.as_str()
+        .to_lowercase()
+        .starts_with(&format!("{}/", suggestions_folder()))
 }
 
 /// What a member file says: the key its name is bound to.
@@ -158,66 +145,38 @@ pub struct RelayStatement {
     pub url: Option<String>,
 }
 
-/// Whether a request waits for acceptance or needs none.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Mode {
-    Propose,
-    Force,
-}
-
-/// A patch on one owner's files, waiting for that owner's machine.
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub struct RequestStatement {
-    pub owner: MemberName,
-    pub mode: Mode,
-    pub changes: Vec<Change>,
-    pub message: String,
-}
-
-/// The owner's answer to a proposal.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Decision {
-    Accept,
-    Refuse,
-}
-
-/// A decision file's body.
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub struct DecisionStatement {
-    pub request: GroupPath,
-    pub decision: Decision,
-}
-
-/// Why pigeon set content aside.
+/// Why a change waits for the group as a suggestion rather than
+/// publishing itself.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Reason {
-    /// An edit to a file this member cannot write.
-    NotWritable,
+    /// A change the rules leave to the group: any change but its own
+    /// member's in a personal path, and but a new file elsewhere.
+    OutsideRules,
     /// A name no portable path can hold, or one that collides by case.
     Unportable(String),
     /// A patch the ledger rejected, such as a lost claim.
     Rejected(String),
-    /// The losing side of concurrent changes by one member's machines.
+    /// The losing side of concurrent changes.
     Superseded,
 }
 
-/// What a set-aside file says: content a machine's disk held that pigeon
-/// may not publish as it is, a patch that nobody signed, whose blob that
-/// machine keeps.
+/// One change of a suggestion, at a path that is not always a valid group
+/// path, its content, or `None` for a deletion, and the versions it
+/// replaces and continues.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub struct AsideItem {
-    /// Where the content was found, relative to the root; not always a
-    /// valid group path.
+pub struct SuggestedChange {
     pub path: String,
-    /// The content, or `None` for a deletion.
     pub content: Option<Content>,
-    /// The version the content was based on, if any.
     pub replaces: Option<Stamp>,
+    pub continues: Option<VersionRef>,
+}
+
+/// What a suggestion file says: changes that anyone may validate, which
+/// publishes them, or discard, and why they wait.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub struct Suggestion {
+    pub changes: Vec<SuggestedChange>,
     pub reason: Reason,
-    /// When pigeon set it aside, in NTP64 time.
-    pub time: u64,
 }
 
 #[cfg(test)]
@@ -272,7 +231,8 @@ mod tests {
             machine: iroh_base::SecretKey::from_bytes(&[1; 32]).public(),
         };
         assert!(is_relay_path(&relay_path(&stamp)));
-        assert!(!is_relay_path(&request_path(&stamp)));
-        assert!(aside_path(&stamp).is_inside(&aside_folder()));
+        assert!(!is_relay_path(&suggestion_path(&stamp)));
+        assert!(is_suggestion_path(&suggestion_path(&stamp)));
+        assert!(!is_suggestion_path(&relay_path(&stamp)));
     }
 }
