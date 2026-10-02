@@ -642,3 +642,7 @@ impl Ledger {
 #[cfg(test)]
 #[path = "ledger_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "ledger_properties.rs"]
+mod properties;
