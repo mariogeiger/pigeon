@@ -2,13 +2,15 @@
 //! only through a third agree on the file both edited at once, and still
 //! once the network heals; a suggestion decided on each side of a partition
 //! keeps the earlier decision once it heals, whichever it is, and the
-//! refused validation waits as a suggestion of its machine.
+//! refused validation waits as a suggestion of its machine; and a burst of
+//! more patches than a session buffers all arrive and land on disk.
 
 mod common;
 
 use common::*;
 use iroh::address_lookup::MemoryLookup;
 use pigeon_core::statement::Reason;
+use pigeon_sync::Edit;
 
 /// What a machine on the far side of the machine between reports while the
 /// machine between has yet to fetch a content it wants.
@@ -158,4 +160,29 @@ async fn a_validation_made_apart_before_a_discard_holds_once_the_partition_heals
 #[tokio::test(flavor = "multi_thread")]
 async fn a_discard_made_apart_before_a_validation_holds_once_the_partition_heals() {
     Box::pin(decided_apart(false)).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_burst_of_more_patches_than_a_session_buffers_all_arrive_and_land_on_disk() {
+    let machines = group(&["alice", "bob"]).await;
+    joined(&machines).await;
+    let [alice, bob] = &machines[..] else {
+        unreachable!()
+    };
+    bob.follow("+alice/").await;
+    let burst = 300;
+    for index in 0..burst {
+        alice
+            .engine
+            .edit(vec![Edit::Write {
+                path: path(&format!("+alice/burst/{index}.txt")),
+                bytes: index.to_string().into_bytes(),
+            }])
+            .await
+            .unwrap();
+    }
+    converged(&machines, &[]).await;
+    assert_eq!(bob.engine.list(None).await.unwrap().len(), burst);
+    assert_eq!(bob.read("+alice/burst/299.txt").as_deref(), Some("299"));
+    shut_down(machines).await;
 }

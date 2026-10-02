@@ -316,6 +316,8 @@ const ERRORS_KEPT: usize = 100;
 /// before the engine reports it.
 const LAG_REPORTED: Duration = Duration::from_secs(1);
 const PROTECT_EVERY: Duration = Duration::from_secs(60);
+/// How long the rescans the watcher asks for gather, from the first, before
+/// the loop makes them, doing its other work meanwhile.
 const DEBOUNCE: Duration = Duration::from_millis(200);
 /// The most subtrees rescanned one by one after a burst of changes; a
 /// larger burst rescans the whole tree once.
@@ -728,6 +730,8 @@ async fn run(
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut last_rescan = Instant::now();
     let mut last_protect = Instant::now();
+    let mut gathered = Vec::new();
+    let mut gathered_until = None;
     {
         let mut work = inner.work.lock().await;
         let _ = begun.send(());
@@ -759,13 +763,14 @@ async fn run(
                 }
             }
             Some(rescan) = rescan_events.recv() => {
-                let mut rescans = vec![rescan];
-                tokio::time::sleep(DEBOUNCE).await;
-                while let Ok(rescan) = rescan_events.try_recv() {
-                    merge(&mut rescans, rescan);
-                }
-                for rescan in &rescans {
-                    inner.rescan(rescan).await;
+                merge(&mut gathered, rescan);
+                gathered_until.get_or_insert_with(|| tokio::time::Instant::now() + DEBOUNCE);
+            }
+            () = tokio::time::sleep_until(gathered_until.unwrap_or_else(tokio::time::Instant::now)),
+                if gathered_until.is_some() => {
+                gathered_until = None;
+                for rescan in std::mem::take(&mut gathered) {
+                    inner.rescan(&rescan).await;
                 }
             }
             Some(keys) = wakes.recv() => {
