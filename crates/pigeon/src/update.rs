@@ -197,13 +197,14 @@ mod tests {
 
     #[test]
     fn cargo_builds_the_checkout_into_the_kept_folder_and_installs_into_a_stage() {
-        let build = Path::new("/cache/pigeon/build");
+        let arguments = arguments(&install_command(
+            Path::new("/src/pigeon"),
+            Path::new("/cache/pigeon/build"),
+            Path::new("/cache/pigeon/stage"),
+        ));
+        let (checkout, flags) = arguments.split_last().unwrap();
         assert_eq!(
-            arguments(&install_command(
-                Path::new("/src/pigeon"),
-                build,
-                Path::new("/cache/pigeon/stage")
-            )),
+            flags,
             [
                 "install",
                 "--locked",
@@ -212,8 +213,8 @@ mod tests {
                 "--root",
                 "/cache/pigeon/stage",
                 "--path",
-                "/src/pigeon/crates/pigeon"
             ]
         );
+        assert_eq!(Path::new(checkout), Path::new("/src/pigeon/crates/pigeon"));
     }
 }
