@@ -198,6 +198,25 @@ pub async fn start_with(key: GroupKey, member: &str, options: Options) -> Machin
     start(key, member, (dir, root), options).await
 }
 
+/// Starts the machine whose directories `dir` holds, `config` and `data`,
+/// as another version of pigeon left them, its root moved to `dir`'s
+/// `root`.
+pub async fn reopen(dir: TempDir, options: Options) -> Machine {
+    let dirs = GroupDirs::new(dir.path().join("config"), dir.path().join("data"));
+    let root = dir.path().join("root");
+    let mut config = dirs.load_config().unwrap();
+    config.root = root.clone();
+    ConfigFile::create(&dirs, config).unwrap();
+    let engine = Engine::start(&dirs, options.clone()).await.unwrap();
+    Machine {
+        engine,
+        root,
+        dirs,
+        options,
+        dir,
+    }
+}
+
 async fn start(
     key: GroupKey,
     member: &str,
