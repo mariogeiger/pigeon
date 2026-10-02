@@ -366,12 +366,10 @@ impl Machine {
         let files = self.run("file", "list", json!({})).await;
         for file in files.as_array().unwrap() {
             let path = file["path"].as_str().unwrap();
-            if !path.starts_with(".pigeon/") {
-                lines.push(format!(
-                    "  listed {path} by {} held {} cutoff {}",
-                    file["author"], file["held"], file["cutoff"]
-                ));
-            }
+            lines.push(format!(
+                "  listed {path} by {} held {} cutoff {}",
+                file["author"], file["held"], file["cutoff"]
+            ));
         }
         let mut folders = vec![self.root()];
         while let Some(folder) = folders.pop() {

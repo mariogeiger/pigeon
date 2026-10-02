@@ -201,7 +201,7 @@ mod tests {
             "+mario/a.txt",
             "+mario/docs/plan.txt",
             "notes.md",
-            ".pigeon/members/mario",
+            ".config/app.toml",
         ]
         .map(|path| json!({"path": path}))
         .into()
@@ -223,7 +223,7 @@ mod tests {
             shown(&values(path, list, &files(), "+mario/d")),
             ["+mario/docs/"]
         );
-        assert_eq!(shown(&values(path, list, &files(), ".")), [".pigeon/"]);
+        assert_eq!(shown(&values(path, list, &files(), ".")), [".config/"]);
     }
 
     #[test]

@@ -242,7 +242,8 @@ impl Engine {
         Ok(Some(blobs.read(&content.hash).await?))
     }
 
-    /// Every file of the group at `under` or inside it.
+    /// Every file of the group at `under` or inside it, but the
+    /// statements, which only pigeon writes.
     ///
     /// # Errors
     ///
@@ -260,6 +261,7 @@ impl Engine {
         let mut files: Vec<FileView> = ledger
             .live()
             .filter(|version| under.is_none_or(|under| version.path.is_within(under)))
+            .filter(|version| !is_statement(&version.path.key()))
             .filter_map(|version| {
                 let content = version.content?;
                 let entry = entries.get(&version.path.key());

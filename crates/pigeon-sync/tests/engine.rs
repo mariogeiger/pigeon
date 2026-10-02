@@ -41,6 +41,13 @@ async fn a_personal_file_reaches_the_machines_that_hold_it() {
     assert!(!is_read_only(&bob.file("+alice/notes.txt")));
     assert!(!is_read_only(&alice.file("+alice/notes.txt")));
     assert!(bob.read(".pigeon/members/alice").is_some());
+    let listed = bob.engine.list(None).await.unwrap();
+    assert!(
+        listed
+            .iter()
+            .all(|file| !file.path.as_str().starts_with(".pigeon")),
+        "statements are not listed: {listed:?}"
+    );
 
     alice.edit("+alice/notes.txt", "two");
     eventually("bob follows alice's edit", || async {
