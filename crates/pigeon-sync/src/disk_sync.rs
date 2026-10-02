@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use anyhow::Result;
+use iroh_blobs::api::TempTag;
 use pigeon_core::clock::{MachineId, Stamp, ntp_time};
 use pigeon_core::ledger::{Ledger, Version};
 use pigeon_core::patch::{Change, Content, ContentHash};
@@ -606,8 +607,9 @@ impl Inner {
     /// trying again, twice as long after each failure in a row, but no
     /// longer than until a session opens, and reports only the first.
     ///
-    /// The blob is protected from the start, so that garbage collection
-    /// never takes it before the paths waiting for it protect it.
+    /// The blob is held from the start, so that garbage collection never
+    /// takes what the fetch stores before the paths waiting for it protect
+    /// it.
     pub(crate) fn fetch(
         self: &Arc<Self>,
         work: &mut Work,
@@ -621,8 +623,6 @@ impl Inner {
         if !started {
             return;
         }
-        self.blobs
-            .protect_also(pigeon_store::blobs::blob_hash(&hash));
         let mut providers = vec![author];
         providers.extend(self.node.peers().into_iter().filter(|peer| *peer != author));
         providers.retain(|provider| *provider != self.me());
@@ -632,6 +632,9 @@ impl Inner {
         while work.fetches.try_join_next().is_some() {}
         work.fetches.spawn(async move {
             let Some(engine) = inner.upgrade() else {
+                return;
+            };
+            let Ok(held) = engine.blobs.hold(&hash).await else {
                 return;
             };
             let fetched = engine
@@ -651,15 +654,18 @@ impl Inner {
                 let Some(again) = inner.upgrade() else {
                     return;
                 };
-                return again.release(hash, false).await;
+                return again.release(hash, held, false).await;
             }
-            engine.release(hash, true).await;
+            engine.release(hash, held, true).await;
         });
     }
 
-    /// Wakes the paths waiting for a blob, counting a failed fetch of it.
-    async fn release(&self, hash: ContentHash, fetched: bool) {
+    /// Wakes the paths waiting for a blob, counting a failed fetch of it,
+    /// with what the fetch stored `held` until it is protected.
+    async fn release(&self, hash: ContentHash, held: TempTag, fetched: bool) {
         let mut work = self.work.lock().await;
+        work.tags.push(held);
+        work.protect_due = true;
         if fetched {
             work.fetch_failures.remove(&hash);
         } else {

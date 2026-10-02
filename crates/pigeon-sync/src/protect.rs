@@ -30,7 +30,7 @@ fn seconds(time: SystemTime) -> u64 {
 }
 
 impl Inner {
-    /// Recomputes the protected set and lets go of the blobs' temporary
+    /// Recomputes the protected set and hands it the blobs' temporary
     /// tags, which it covers.
     pub(crate) async fn protect(&self, work: &mut Work) -> Result<()> {
         let retention = work.config.retention;
@@ -116,8 +116,7 @@ impl Inner {
             .chain(&anyway)
             .map(blob_hash)
             .collect();
-        self.blobs.protect(kept);
-        work.tags.clear();
+        self.blobs.protect(kept, std::mem::take(&mut work.tags));
         work.protect_due = false;
         Ok(())
     }

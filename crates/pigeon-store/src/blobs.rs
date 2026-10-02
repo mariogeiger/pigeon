@@ -1,8 +1,9 @@
 //! The blob store: file contents by BLAKE3 hash, in iroh-blobs' file store,
 //! whose garbage collector keeps exactly the hashes pigeon protects, and
-//! everything until pigeon first says which, on a disk whose size bounds
-//! the history; a store stops whole, its collector, threads and files
-//! gone, before another opens in its folder.
+//! everything until pigeon first says which, each content stored kept
+//! until a collection keeping what pigeon protected since begins, on a disk
+//! whose size bounds the history; a store stops whole, its collector,
+//! threads and files gone, before another opens in its folder.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -48,11 +49,14 @@ pub fn blob_hash(hash: &ContentHash) -> Hash {
 /// at most how long a store outlives the stop of its database.
 const ASKED_EVERY: Duration = Duration::from_millis(50);
 
-/// The hashes garbage collection keeps, once pigeon computed them.
+/// The hashes garbage collection keeps, once pigeon computed them, and
+/// the temporary tags taken before, which keep their contents until a
+/// collection keeping those hashes begins.
 #[derive(Default)]
 struct Protected {
     hashes: HashSet<Hash>,
     computed: bool,
+    held: Vec<TempTag>,
 }
 
 /// What iroh's garbage collector asks before each collection, held by the
@@ -71,18 +75,20 @@ impl Collector {
     /// Whether a collection runs now, with the hashes it keeps added to
     /// `live`: once the store's database stopped, so that the collection
     /// fails and the collector ends, and otherwise every `interval`, once
-    /// pigeon said what to keep.
+    /// pigeon said what to keep, letting go of the temporary tags that
+    /// those hashes now cover.
     fn ask(&self, live: &mut HashSet<Hash>) -> ProtectOutcome {
         if self.stopping.load(Ordering::Acquire) {
             return ProtectOutcome::Continue;
         }
         let mut due = self.due.lock().expect("no panic holds the lock");
-        let protected = self.protected.lock().expect("no panic holds the lock");
+        let mut protected = self.protected.lock().expect("no panic holds the lock");
         if Instant::now() < *due || !protected.computed {
             return ProtectOutcome::Abort;
         }
         *due = Instant::now() + self.interval;
         live.extend(protected.hashes.iter());
+        protected.held.clear();
         self.collections.fetch_add(1, Ordering::Relaxed);
         ProtectOutcome::Continue
     }
@@ -174,30 +180,32 @@ impl Blobs {
     }
 
     /// Replaces the set of hashes garbage collection keeps, letting it
-    /// collect the others.
+    /// collect the others, and holds `tags`, taken before `hashes` was
+    /// computed, until a collection keeping `hashes` begins, since one
+    /// begun already keeps only what was protected before.
     ///
     /// # Panics
     ///
     /// Panics if a thread panicked while holding the set.
-    pub fn protect(&self, hashes: HashSet<Hash>) {
-        *self.protected.lock().expect("no panic holds the lock") = Protected {
-            hashes,
-            computed: true,
-        };
+    pub fn protect(&self, hashes: HashSet<Hash>, tags: Vec<TempTag>) {
+        let mut protected = self.protected.lock().expect("no panic holds the lock");
+        protected.hashes = hashes;
+        protected.computed = true;
+        protected.held.extend(tags);
     }
 
-    /// Adds `hash` to the set garbage collection keeps, until the next
-    /// [`Blobs::protect`] replaces it.
+    /// Keeps the content from garbage collection, whether the store holds
+    /// it yet or not, until the returned tag is protected or dropped.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if a thread panicked while holding the set.
-    pub fn protect_also(&self, hash: Hash) {
-        self.protected
-            .lock()
-            .expect("no panic holds the lock")
-            .hashes
-            .insert(hash);
+    /// Fails if the store stopped.
+    pub async fn hold(&self, hash: &ContentHash) -> Result<TempTag> {
+        self.store
+            .tags()
+            .temp_tag(blob_hash(hash))
+            .await
+            .map_err(blob_error)
     }
 
     /// Copies the file at `path` into the store and returns its size. The
@@ -394,6 +402,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_tag_given_with_the_protected_set_holds_until_a_collection_keeping_that_set_begins() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = Blobs::open(&dir.path().join("blobs"), Duration::from_secs(3600))
+            .await
+            .unwrap();
+        blobs.protect(HashSet::new(), Vec::new());
+        let collector = Collector {
+            protected: blobs.protected.clone(),
+            collections: Arc::default(),
+            stopping: Arc::default(),
+            interval: Duration::ZERO,
+            due: Mutex::new(Instant::now()),
+            _whole: watch::channel(()).0,
+        };
+        let tag = blobs.add_bytes(b"published".to_vec()).await.unwrap();
+        let hash = tag.hash();
+        let tagged = || async {
+            let tags = blobs.store.tags().list_temp_tags().await.unwrap();
+            n0_future::StreamExt::collect::<Vec<_>>(tags)
+                .await
+                .iter()
+                .any(|tagged| tagged.hash == hash)
+        };
+        let mut begun = HashSet::new();
+        assert!(matches!(
+            collector.ask(&mut begun),
+            ProtectOutcome::Continue
+        ));
+        blobs.protect(HashSet::from([hash]), vec![tag]);
+        assert!(!begun.contains(&hash));
+        assert!(tagged().await, "the collection begun before takes it");
+        let mut next = HashSet::new();
+        assert!(matches!(collector.ask(&mut next), ProtectOutcome::Continue));
+        assert!(next.contains(&hash));
+        assert!(
+            !tagged().await,
+            "the tag outlives the collection keeping it"
+        );
+        blobs.stop_whole().await;
+    }
+
+    #[tokio::test]
     async fn garbage_collection_keeps_everything_until_told_what_to_keep() {
         let dir = tempfile::tempdir().unwrap();
         let blobs = Blobs::open(&dir.path().join("blobs"), Duration::from_millis(20))
@@ -407,7 +457,7 @@ mod tests {
         drop(tag);
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(blobs.has(&hash).await.unwrap());
-        blobs.protect(HashSet::new());
+        blobs.protect(HashSet::new(), Vec::new());
         for _ in 0..100 {
             if !blobs.has(&hash).await.unwrap() {
                 break;
@@ -427,7 +477,7 @@ mod tests {
         let kept = blobs.add_bytes(b"kept".to_vec()).await.unwrap();
         let dropped = blobs.add_bytes(b"dropped".to_vec()).await.unwrap();
         let (kept_hash, dropped_hash) = (kept.hash(), dropped.hash());
-        blobs.protect(HashSet::from([kept_hash]));
+        blobs.protect(HashSet::from([kept_hash]), Vec::new());
         drop((kept, dropped));
         let content = |hash: Hash| ContentHash(*hash.as_bytes());
         for _ in 0..100 {

@@ -29,6 +29,7 @@ junction.workspace = true
 
 [dev-dependencies]
 pigeon-core = { workspace = true, features = ["test-support"] }
+n0-future.workspace = true
 tempfile.workspace = true
 
 [lints]
