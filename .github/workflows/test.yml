@@ -1,6 +1,6 @@
 # Every push and pull request runs the workspace's tests on Linux, macOS
-# and Windows, the systems pigeon runs on, and on Linux the checks the
-# commit hooks make: file length and header, formatting, and clippy.
+# and Windows, the systems pigeon runs on, and on Linux the commit hooks
+# themselves over every file, so that the checks are defined once.
 
 name: test
 
@@ -22,9 +22,5 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - if: runner.os == 'Linux'
-        run: python3 scripts/check-file-length-and-header
-      - if: runner.os == 'Linux'
-        run: cargo fmt --all -- --check
-      - if: runner.os == 'Linux'
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -D clippy::pedantic
+        run: pipx run pre-commit run --all-files --show-diff-on-failure
       - run: cargo test --workspace --locked
