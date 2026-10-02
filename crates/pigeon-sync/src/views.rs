@@ -49,6 +49,8 @@ pub struct Status {
     /// Blobs being fetched.
     pub fetching: usize,
     pub patches: usize,
+    /// Why nothing syncs, if the root is out of place.
+    pub paused: Option<String>,
     /// The latest errors, oldest first.
     pub errors: Vec<String>,
 }
@@ -201,6 +203,7 @@ impl Engine {
             pending: work.pending.len(),
             fetching: work.fetching.len(),
             patches: ledger.patches().count(),
+            paused: work.root_problem.clone(),
             errors: inner
                 .errors
                 .lock()

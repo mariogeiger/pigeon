@@ -1,6 +1,7 @@
 //! Tests of the state database: patches, recorded together or one by one,
-//! survive reopening and fold back into the same ledger, and the index, kept suggestions, and placed
-//! folders round-trip, every write counted.
+//! survive reopening and fold back into the same ledger, the index, kept
+//! suggestions, and placed folders round-trip, every write counted, and a
+//! fresh start forgets everything recorded of the disk.
 
 use pigeon_core::patch::Content;
 use pigeon_core::path::GroupPath;
@@ -173,4 +174,28 @@ fn the_index_of_0_8_moves_to_the_current_form_trusted_as_it_was() {
     drop(state);
     let again = State::open(&path).unwrap();
     assert_eq!(again.index(None).unwrap().len(), 1);
+}
+
+#[test]
+fn a_fresh_start_forgets_the_disk_and_its_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("s")).unwrap();
+    assert!(state.index_is_empty().unwrap());
+    assert_eq!(state.applied_root().unwrap(), None);
+    let root = dir.path().join("root");
+    state.set_applied_root(&root).unwrap();
+    assert_eq!(state.applied_root().unwrap(), Some(root));
+    let path = GroupPath::parse("a.txt").unwrap();
+    let entry = IndexEntry {
+        path: path.clone(),
+        seen: None,
+        synced: None,
+    };
+    state.update_index([(&path.key(), Some(&entry))]).unwrap();
+    state.set_applied_selection(&[]).unwrap();
+    assert!(!state.index_is_empty().unwrap());
+    state.forget_disk().unwrap();
+    assert!(state.index_is_empty().unwrap());
+    assert_eq!(state.applied_root().unwrap(), None);
+    assert_eq!(state.applied_selection().unwrap(), None);
 }

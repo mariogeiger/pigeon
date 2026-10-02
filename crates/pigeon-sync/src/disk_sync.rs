@@ -189,6 +189,9 @@ impl Inner {
             return;
         }
         self.lay_out(work);
+        if work.root_problem.is_some() {
+            return;
+        }
         let under = match rescan {
             Rescan::Under(path) => Some(path.clone()),
             Rescan::All => None,
@@ -246,6 +249,9 @@ impl Inner {
             return;
         }
         self.lay_out(work);
+        if work.root_problem.is_some() {
+            return;
+        }
         let mut prober = self.prober(work);
         for key in keys {
             if let Err(error) = self.sync_key(work, &mut prober, key, None).await {

@@ -18,6 +18,7 @@ mod publish;
 mod receive;
 pub mod reconcile;
 mod relay;
+mod root;
 mod selection_change;
 mod statements;
 pub mod suggestions;

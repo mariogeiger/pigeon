@@ -92,6 +92,36 @@ impl Machine {
         }
     }
 
+    /// Stops the engine, lets `meddle` change the disk given the old root,
+    /// and starts it again with `root` as its root, as a person editing its
+    /// configuration does; why it does not start, if it does not.
+    pub async fn restart_in(
+        self,
+        root: PathBuf,
+        meddle: impl FnOnce(&Path),
+    ) -> anyhow::Result<Self> {
+        let Self {
+            engine,
+            root: old,
+            dirs,
+            options,
+            dir,
+        } = self;
+        engine.shutdown().await.unwrap();
+        meddle(&old);
+        let mut config = dirs.load_config().unwrap();
+        config.root = root.clone();
+        ConfigFile::create(&dirs, config).unwrap();
+        let engine = Engine::start(&dirs, options.clone()).await?;
+        Ok(Self {
+            engine,
+            root,
+            dirs,
+            options,
+            dir,
+        })
+    }
+
     /// Starts another machine on the same network, joining with `key`.
     pub async fn join_with(&self, key: &str, member: &str) -> Machine {
         let dir = tempfile::tempdir().unwrap();

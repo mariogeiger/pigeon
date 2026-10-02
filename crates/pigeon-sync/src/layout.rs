@@ -58,6 +58,9 @@ impl Inner {
     /// allows; the folders left out of place pause, and the watcher
     /// follows the destinations reached.
     pub(crate) fn lay_out(&self, work: &mut Work) {
+        if self.pause_without_root(work) {
+            return;
+        }
         let root = &self.root;
         let mut problems: Vec<(GroupPath, String)> = Vec::new();
         let placed: Vec<Place> = work.placed.iter().collect();
@@ -154,12 +157,14 @@ impl Work {
             .collect()
     }
 
-    /// Whether `path` lies in a folder out of place.
+    /// Whether `path` lies in a folder out of place, or the root is.
     pub(crate) fn is_out_of_place(&self, path: &GroupPath) -> bool {
         let key = path.key();
-        self.out_of_place
-            .iter()
-            .any(|(folder, _)| key.is_within(&folder.key()))
+        self.root_problem.is_some()
+            || self
+                .out_of_place
+                .iter()
+                .any(|(folder, _)| key.is_within(&folder.key()))
     }
 
     /// Why `folder` is out of place, if it is.

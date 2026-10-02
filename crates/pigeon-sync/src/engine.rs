@@ -11,7 +11,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use iroh::Endpoint;
 use iroh::address_lookup::MemoryLookup;
 use iroh_base::SecretKey;
@@ -39,6 +39,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{JoinHandle, JoinSet};
 
 use crate::receive::{take, wanted};
+use crate::root::open_root;
 use crate::suggestions::Live;
 use crate::watch::{Rescan, Watched};
 
@@ -198,6 +199,8 @@ pub(crate) struct Work {
     pub placed: Places,
     /// The folders out of place, with why; nothing under them syncs.
     pub out_of_place: Vec<(GroupPath, String)>,
+    /// Why the whole root is out of place, if it is; nothing syncs then.
+    pub root_problem: Option<String>,
     pub watcher: Option<notify::RecommendedWatcher>,
     pub watched: Vec<Watched>,
     /// The drafts last announced: each path, size, and when it last changed.
@@ -286,7 +289,11 @@ impl Inner {
             .lock()
             .expect("no panic holds the errors")
             .hash(&mut hasher);
-        format!("{:?}{:?}", work.join, work.out_of_place).hash(&mut hasher);
+        format!(
+            "{:?}{:?}{:?}",
+            work.join, work.out_of_place, work.root_problem
+        )
+        .hash(&mut hasher);
         self.node.announced().hash(&mut hasher);
         let mut peers = self.node.peers();
         peers.sort_unstable();
@@ -429,6 +436,7 @@ impl Inner {
         last_rescan: &mut Instant,
         last_protect: &mut Instant,
     ) {
+        self.pause_without_root(work);
         if work.join == JoinState::Pending
             && self.started.elapsed() >= self.options.join_delay
             && let Err(error) = self.join(work).await
@@ -484,8 +492,7 @@ impl Engine {
         let lead = clock.lead();
         let first_stamp = clock.stamp();
         let config = ConfigFile::open(dirs)?;
-        std::fs::create_dir_all(&config.root)
-            .with_context(|| format!("creating {}", config.root.display()))?;
+        open_root(&state, &config.root)?;
         let cert = MachineCert::derive(&group, config.member.clone(), machine.public());
         let ledger = Arc::new(SharedLedger::new(ledger));
         let blobs = Blobs::open(&dirs.blobs_path(), options.gc).await?;
@@ -530,6 +537,7 @@ impl Engine {
                 protect_due: true,
                 placed,
                 out_of_place: Vec::new(),
+                root_problem: None,
                 watcher: None,
                 watched: Vec::new(),
                 announced: None,

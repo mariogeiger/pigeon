@@ -5,7 +5,7 @@
 //! consistent across crashes.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use pigeon_core::clock::Stamp;
@@ -33,6 +33,7 @@ const KEPT: TableDefinition<&str, &[u8]> = TableDefinition::new("kept suggestion
 const PLACED: TableDefinition<&str, &str> = TableDefinition::new("placed");
 const APPLIED: TableDefinition<&str, &[u8]> = TableDefinition::new("applied");
 const SELECTION: &str = "selection";
+const ROOT: &str = "root";
 
 /// Content that the disk keeps at a path while the suggestion this
 /// machine made of it waits: `None` for a deletion, the disk then showing
@@ -378,6 +379,58 @@ impl State {
                 })?;
                 table.insert(place.folder.as_str(), destination)?;
             }
+            Ok(())
+        })
+    }
+
+    /// The root the disk was last brought to, if one was recorded.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the database cannot be read.
+    pub fn applied_root(&self) -> Result<Option<PathBuf>> {
+        Ok(self.value::<String>(APPLIED, ROOT)?.map(PathBuf::from))
+    }
+
+    /// Records the root the disk is brought to.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the root is not valid Unicode or the database cannot be
+    /// written.
+    pub fn set_applied_root(&self, root: &Path) -> Result<()> {
+        let text = root.to_str().ok_or_else(|| {
+            StoreError::Invalid(format!("{} is not valid Unicode", root.display()))
+        })?;
+        self.set_value(APPLIED, ROOT, text)
+    }
+
+    /// Whether the index holds no path, as before anything was synced.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the database cannot be read.
+    pub fn index_is_empty(&self) -> Result<bool> {
+        let transaction = self.database.begin_read()?;
+        let table = transaction.open_table(INDEX)?;
+        Ok(table.iter()?.next().is_none())
+    }
+
+    /// Forgets all the state records of the disk, as a fresh start in
+    /// another root does: the index, the kept suggestions, the placed
+    /// folders and what the disk was brought to.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the database cannot be written.
+    pub fn forget_disk(&self) -> Result<()> {
+        self.write(|transaction| {
+            for table in [INDEX, KEPT, APPLIED] {
+                transaction.delete_table(table)?;
+                transaction.open_table(table)?;
+            }
+            transaction.delete_table(PLACED)?;
+            transaction.open_table(PLACED)?;
             Ok(())
         })
     }

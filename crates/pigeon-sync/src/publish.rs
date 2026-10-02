@@ -237,11 +237,14 @@ impl Inner {
     }
 
     /// Takes the pending edits at `due`, with the changes they make, as a
-    /// new look at the disk confirms them. An edit that changed again
+    /// new look at the disk confirms them, while the root is in place. An edit that changed again
     /// waits anew; one at a path now ignored, or where nothing can be
     /// told, is dropped.
     async fn take_settled(&self, work: &mut Work, due: &BTreeSet<PathKey>) -> Vec<Settled> {
         let mut settled = Vec::new();
+        if self.pause_without_root(work) {
+            return settled;
+        }
         let mut prober = self.prober(work);
         for key in due {
             let Some(pending) = work.pending.get(key).cloned() else {
