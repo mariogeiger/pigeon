@@ -36,7 +36,7 @@ use pigeon_store::group_dirs::GroupDirs;
 use pigeon_store::group_key::GroupKey;
 use pigeon_store::state::State;
 use tokio::sync::{mpsc, oneshot, watch};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 
 use crate::receive::{take, wanted};
 use crate::suggestions::Live;
@@ -188,6 +188,8 @@ pub(crate) struct Work {
     /// How many fetches of each blob failed in a row, until one succeeds;
     /// at most one entry per content the ledger names.
     pub fetch_failures: HashMap<ContentHash, u32>,
+    /// The tasks fetching blobs, which shutting down ends.
+    pub fetches: JoinSet<()>,
     /// Blobs added since the protected set was last computed.
     pub tags: Vec<TempTag>,
     pub join: JoinState,
@@ -522,6 +524,7 @@ impl Engine {
                 config,
                 fetching: HashMap::new(),
                 fetch_failures: HashMap::new(),
+                fetches: JoinSet::new(),
                 tags: Vec::new(),
                 join: JoinState::Pending,
                 protect_due: true,
@@ -570,8 +573,9 @@ impl Engine {
         self.inner.me()
     }
 
-    /// Stops the loop and closes every session; closing the blob protocol
-    /// flushes the blob store.
+    /// Stops the loop, ends the fetches and closes every session, so that
+    /// nothing holds the group's state once it returns; closing the blob
+    /// protocol flushes the blob store.
     ///
     /// # Errors
     ///
@@ -583,6 +587,8 @@ impl Engine {
         if let Some(task) = self.task.take() {
             task.await?;
         }
+        let mut fetches = std::mem::take(&mut self.inner.work.lock().await.fetches);
+        fetches.shutdown().await;
         self.inner.node.shutdown().await?;
         Ok(())
     }

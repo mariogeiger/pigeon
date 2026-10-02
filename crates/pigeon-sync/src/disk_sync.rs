@@ -494,7 +494,8 @@ impl Inner {
         let failures = work.fetch_failures.get(&hash).copied().unwrap_or(0);
         let mut opened = self.node.sessions_opened();
         let inner = Arc::downgrade(self);
-        tokio::spawn(async move {
+        while work.fetches.try_join_next().is_some() {}
+        work.fetches.spawn(async move {
             let Some(engine) = inner.upgrade() else {
                 return;
             };
