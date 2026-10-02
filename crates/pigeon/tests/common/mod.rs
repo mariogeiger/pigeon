@@ -497,6 +497,33 @@ pub fn content(text: &str) -> Value {
     })
 }
 
+/// A file name this system holds and another refuses, with the portable
+/// name pigeon proposes for it and words of its reason.
+pub struct UnportableName {
+    pub name: String,
+    pub proposal: String,
+    pub reason: &'static str,
+}
+
+/// A name with a colon, which Windows forbids; on Windows, where a colon
+/// names a stream of the file before it, a name of 260 bytes, more than
+/// Linux and macOS hold, which pigeon cuts to 240.
+pub fn unportable_name() -> UnportableName {
+    if cfg!(windows) {
+        UnportableName {
+            name: "\u{e9}".repeat(130),
+            proposal: "\u{e9}".repeat(120),
+            reason: "longer than 255 bytes",
+        }
+    } else {
+        UnportableName {
+            name: "Facture: mars.txt".to_owned(),
+            proposal: "Facture_ mars.txt".to_owned(),
+            reason: "Windows forbids",
+        }
+    }
+}
+
 /// Waits up to thirty seconds for `condition`, then fails showing what
 /// `machines` hold.
 pub async fn eventually<F, Fut>(what: &str, machines: &[&Machine], mut condition: F)

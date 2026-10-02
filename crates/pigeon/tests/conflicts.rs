@@ -9,7 +9,7 @@
 
 mod common;
 
-use common::{content, eventually, family, published};
+use common::{content, eventually, family, published, unportable_name};
 use iroh::address_lookup::MemoryLookup;
 use pigeon_core::statement::Reason;
 use serde_json::{Value, json};
@@ -190,10 +190,15 @@ async fn two_members_adding_one_path_while_apart_both_keep_their_content() {
 }
 
 #[tokio::test]
-async fn a_name_windows_cannot_hold_stays_out_until_its_machine_renames_it_as_proposed() {
+async fn a_name_another_system_cannot_hold_stays_out_until_its_machine_renames_it_as_proposed() {
     let internet = MemoryLookup::new();
     let (alice, desktop, laptop) = family(&internet).await;
-    desktop.write("+papy/Facture: mars.txt", "42 €\n");
+    let odd = unportable_name();
+    let (name, proposal) = (
+        format!("+papy/{}", odd.name),
+        format!("+papy/{}", odd.proposal),
+    );
+    desktop.write(&name, "42 €\n");
     let all = [&alice, &desktop, &laptop];
     let unportable = async || desktop.run("file", "unportable", json!({})).await;
     eventually("papy's desktop keeps the invoice out", &all, async || {
@@ -204,25 +209,21 @@ async fn a_name_windows_cannot_hold_stays_out_until_its_machine_renames_it_as_pr
     })
     .await;
     let names = unportable().await;
-    assert_eq!(names[0]["path"], "+papy/Facture: mars.txt", "{names}");
-    assert_eq!(names[0]["proposal"], "+papy/Facture_ mars.txt", "{names}");
+    assert_eq!(names[0]["path"], name, "{names}");
+    assert_eq!(names[0]["proposal"], proposal, "{names}");
     assert!(
         names[0]["reason"]
             .as_str()
-            .is_some_and(|reason| reason.contains("Windows forbids")),
+            .is_some_and(|reason| reason.contains(odd.reason)),
         "{names}"
     );
     desktop.wait_past_settling().await;
     assert_eq!(desktop.suggestions().await, Vec::<Value>::new());
-    assert!(desktop.history("+papy/Facture_ mars.txt").await.is_empty());
+    assert!(desktop.history(&proposal).await.is_empty());
     let renamed = desktop
-        .run(
-            "file",
-            "make-portable",
-            json!({"path": "+papy/Facture: mars.txt"}),
-        )
+        .run("file", "make-portable", json!({"path": name}))
         .await;
-    assert_eq!(renamed, json!({"renamed": "+papy/Facture_ mars.txt"}));
+    assert_eq!(renamed, json!({"renamed": proposal}));
     alice
         .run("selection", "follow", json!({"pattern": "/+papy/"}))
         .await;
@@ -230,9 +231,9 @@ async fn a_name_windows_cannot_hold_stays_out_until_its_machine_renames_it_as_pr
         "alice holds the invoice under its portable name",
         &all,
         async || {
-            alice.shows("+papy/Facture_ mars.txt", "42 €\n")
-                && desktop.shows("+papy/Facture_ mars.txt", "42 €\n")
-                && desktop.read("+papy/Facture: mars.txt").is_none()
+            alice.shows(&proposal, "42 €\n")
+                && desktop.shows(&proposal, "42 €\n")
+                && desktop.read(&name).is_none()
         },
     )
     .await;

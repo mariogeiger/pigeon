@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use common::web::next_event;
-use common::{GROUP, Machine, alice_with_notes, eventually};
+use common::{GROUP, Machine, alice_with_notes, eventually, unportable_name};
 use iroh::address_lookup::MemoryLookup;
 use pigeon_core::clock::{ntp_time, parse_rfc3339};
 use serde_json::{Value, json};
@@ -340,24 +340,28 @@ async fn the_web_decides_the_suggestions_it_shows() {
 async fn the_files_page_renames_a_name_kept_out_to_the_one_proposed() {
     let lookup = MemoryLookup::new();
     let (peer, notes) = alice_with_notes(&lookup).await;
-    std::fs::write(notes.with_file_name("what?.txt"), "odd\n").unwrap();
+    let odd = unportable_name();
+    let (name, proposal) = (
+        format!("+alice/{}", odd.name),
+        format!("+alice/{}", odd.proposal),
+    );
+    std::fs::write(notes.with_file_name(&odd.name), "odd\n").unwrap();
+    let offered = format!(r#"<input type="hidden" name="path" value="{name}">"#);
     eventually("the Files page offers the rename", &[], async || {
-        peer.page("/g/family")
-            .await
-            .contains(r#"<input type="hidden" name="path" value="+alice/what?.txt">"#)
+        peer.page("/g/family").await.contains(&offered)
     })
     .await;
     let fields = [
         ("back", "/g/family"),
         ("group", GROUP),
-        ("path", "+alice/what?.txt"),
+        ("path", name.as_str()),
     ];
     let answer = peer.post_form("file/make-portable", &fields).await;
     assert_eq!(answer.status, 303, "{}", answer.body);
     assert_eq!(answer.location.as_deref(), Some("/g/family"));
-    assert!(notes.with_file_name("what_.txt").exists());
+    assert!(notes.with_file_name(&odd.proposal).exists());
     eventually("the renamed file is published", &[], async || {
-        peer.call("file", "history", json!({"path": "+alice/what_.txt"}))
+        peer.call("file", "history", json!({"path": proposal}))
             .await
             .is_ok_and(|history| {
                 history
