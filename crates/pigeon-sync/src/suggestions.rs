@@ -19,12 +19,11 @@ use pigeon_core::selection::Cutoff;
 use pigeon_core::statement::{
     Reason, SuggestedChange, Suggestion, is_statement, is_suggestion_path, suggestion_path,
 };
-use pigeon_store::disk::fs_path;
 use pigeon_store::index::IndexEntry;
+use pigeon_store::probe::Probe;
 use pigeon_store::state::Kept;
 use serde::Serialize;
 
-use crate::disk_sync::file_stat;
 use crate::engine::{Engine, Inner, Work};
 use crate::views::as_text;
 
@@ -312,9 +311,10 @@ impl Inner {
         }
     }
 
-    /// Fails unless `to` is free, here and in the ledger, outside the
-    /// statements folder.
-    fn ensure_free(&self, to: &GroupPath) -> Result<()> {
+    /// Fails unless `to` is free in the ledger and on this disk, as far as
+    /// it can tell, which ignores no such path, outside the statements
+    /// folder.
+    fn ensure_free(&self, work: &Work, to: &GroupPath) -> Result<()> {
         if is_statement(&to.key()) {
             bail!("{to} lies in the statements folder");
         }
@@ -323,17 +323,27 @@ impl Inner {
             .lock()
             .head(&to.key())
             .is_some_and(Version::is_live);
-        if live || file_stat(&fs_path(&self.root, to)).is_some() {
+        if live {
             bail!("{to} exists");
         }
-        Ok(())
+        match self.prober(work).probe(to) {
+            Probe::Absent => Ok(()),
+            Probe::Present(_) => bail!("{to} exists"),
+            Probe::Ignored => bail!("{to} is ignored on this machine"),
+            Probe::Unknown(reason) => bail!("whether {to} is free cannot be told: {reason}"),
+        }
     }
 
     /// The change validating `change` makes, at `to` when given.
-    fn validated(&self, change: SuggestedChange, to: Option<&GroupPath>) -> Result<Change> {
+    fn validated(
+        &self,
+        work: &Work,
+        change: SuggestedChange,
+        to: Option<&GroupPath>,
+    ) -> Result<Change> {
         let (path, continues) = match to {
             Some(to) => {
-                self.ensure_free(to)?;
+                self.ensure_free(work, to)?;
                 (to.clone(), None)
             }
             None => (change.path, change.continues),
@@ -383,7 +393,7 @@ impl Inner {
                 bail!(placed);
             }
             for change in suggestion.changes {
-                let change = self.validated(change, to)?;
+                let change = self.validated(work, change, to)?;
                 published.insert(change.path.key(), change);
             }
         }

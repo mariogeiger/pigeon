@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use pigeon_core::ledger::{Ledger, Version};
 use pigeon_core::patch::{Change, Content, VersionRef};
 use pigeon_core::path::{GroupPath, PathKey};
@@ -16,7 +16,6 @@ use pigeon_core::statement::is_statement;
 use pigeon_store::disk::{self, fs_path};
 use serde::Serialize;
 
-use crate::disk_sync::file_stat;
 use crate::engine::{Engine, Inner, Work};
 
 /// One change a person asks for. A folder is the prefix of its files'
@@ -139,25 +138,29 @@ fn plan(ledger: &Ledger, drafts: &[GroupPath], edit: Edit) -> Result<Vec<(GroupP
 }
 
 impl Inner {
-    /// Makes the disk at `path` hold the draft that moves from `from`, or
-    /// no draft.
-    fn edit_draft(&self, path: &GroupPath, from: Option<&GroupPath>) -> Result<()> {
+    /// Makes the disk at `path` hold the draft that moves from `from`, onto
+    /// no other file, or no draft, removing it only as pigeon last saw it.
+    fn edit_draft(&self, work: &Work, path: &GroupPath, from: Option<&GroupPath>) -> Result<()> {
         let root = &self.root;
-        let location = fs_path(root, path);
+        let draft = |path: &GroupPath| {
+            work.pending
+                .get(&path.key())
+                .and_then(|pending| Some((pending.location.clone(), pending.stat?)))
+        };
         match from {
             Some(from) => {
-                if let Some(parent) = location.parent() {
-                    std::fs::create_dir_all(parent)
-                        .with_context(|| format!("creating {}", parent.display()))?;
+                let source =
+                    draft(from).map_or_else(|| fs_path(root, from), |(location, _)| location);
+                let (_, location, _) = self.prober(work).locate(path);
+                if !disk::rename(root, &source, &location)? {
+                    bail!("{path} exists");
                 }
-                let source = fs_path(root, from);
-                std::fs::rename(&source, &location)
-                    .with_context(|| format!("moving {from} to {path}"))?;
-                disk::remove(root, &source)?;
             }
             None => {
-                if file_stat(&location).is_some() {
-                    disk::remove(root, &location)?;
+                if let Some((location, stat)) = draft(path)
+                    && !disk::remove(root, &location, stat)?
+                {
+                    bail!("{path} changed since pigeon last looked at it");
                 }
             }
         }
@@ -244,7 +247,7 @@ impl Inner {
                     changes.push(self.edit_change(work, path, target).await?);
                 }
                 Planned::Draft(from) => {
-                    self.edit_draft(&path, from.as_ref())?;
+                    self.edit_draft(work, &path, from.as_ref())?;
                     moved.push(path);
                 }
             }
@@ -265,8 +268,8 @@ impl Engine {
     /// # Errors
     ///
     /// Fails if a path holds no file, a rename's target exists, the member
-    /// has not joined, a path lies in the statements folder, or the disk
-    /// refuses.
+    /// has not joined, a path lies in the statements folder, a draft to
+    /// remove changed since pigeon last looked at it, or the disk refuses.
     pub async fn edit(&self, edits: Vec<Edit>) -> Result<Edited> {
         let mut work = self.inner.work.lock().await;
         self.inner.edit(&mut work, edits).await

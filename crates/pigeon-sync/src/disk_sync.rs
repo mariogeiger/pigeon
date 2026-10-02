@@ -183,7 +183,8 @@ impl Inner {
     }
 
     /// Compares every path the scan, the index, and, for the whole root,
-    /// the ledger know with the ledger.
+    /// the ledger know with the ledger, removing the temporary files a
+    /// stopped run left in the folders scanned.
     pub(crate) async fn refresh(self: &Arc<Self>, work: &mut Work, rescan: &Rescan) {
         if !work.join.syncs() {
             return;
@@ -200,6 +201,17 @@ impl Inner {
         let found = prober.scan(under.as_ref());
         for error in &found.errors {
             self.report(error);
+        }
+        for temporary in found
+            .temporaries
+            .iter()
+            .filter(|path| disk::is_left_over(path))
+        {
+            if let Err(error) = std::fs::remove_file(temporary)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                self.report(format!("{}: {error}", temporary.display()));
+            }
         }
         let mut sought: BTreeMap<PathKey, Option<(GroupPath, Probe)>> = found
             .files
@@ -288,21 +300,20 @@ impl Inner {
             (Some(_), Some(seen)) => Some(Some(seen.content)),
             (Some(_), None) => None,
         };
-        let in_place = match (&look.target, probe.stat) {
-            (Some(version), Some(_)) => prober.locate(&version.path).1 == probe.location,
-            _ => true,
-        };
-        if moved
-            && in_place
-            && disk_content == Some(look.target.as_ref().and_then(|version| version.content))
-        {
+        if moved && disk_content == Some(look.target.as_ref().and_then(|version| version.content)) {
+            let located = match (&look.target, probe.stat) {
+                (Some(version), Some(_)) => Some(prober.locate(&version.path)),
+                _ => None,
+            };
+            if let Some((_, location, _)) = &located
+                && *location != probe.location
+                && !self.move_file(prober, &probe.location, location)?
+            {
+                return Ok(());
+            }
             work.pending.remove(key);
             let adopted = look.target.map(|version| IndexEntry {
-                path: if probe.stat.is_some() {
-                    probe.path.clone()
-                } else {
-                    version.path
-                },
+                path: located.map_or(version.path, |(path, _, _)| path),
                 seen,
                 synced: Some(version.stamp),
             });
@@ -455,7 +466,10 @@ impl Inner {
 
     /// Makes the disk show `target`, fetching its content first if needed,
     /// into the folders the disk holds under any spelling of their names,
-    /// and forgets what a suggestion of this machine kept there.
+    /// and forgets what a suggestion of this machine kept there. A file
+    /// that changed since the probe stays as it is, and is looked at
+    /// again; a file whose name changes moves first, so that its folder
+    /// stays.
     async fn materialize(
         self: &Arc<Self>,
         work: &mut Work,
@@ -468,8 +482,11 @@ impl Inner {
         let Some((version, content)) =
             target.and_then(|version| version.content.map(|content| (version, content)))
         else {
-            if probe.stat.is_some() {
-                disk::remove(root, &probe.location)?;
+            if let Some(stat) = probe.stat
+                && !disk::remove(root, &probe.location, stat)?
+            {
+                self.look_again(key);
+                return Ok(());
             }
             let deleted = target.map(|version| IndexEntry {
                 path: version.path.clone(),
@@ -485,25 +502,48 @@ impl Inner {
             return Ok(());
         }
         let (path, location, grows) = prober.locate(&version.path);
-        if probe.stat.is_some() && probe.location != location {
-            disk::remove(root, &probe.location)?;
+        if probe.stat.is_some()
+            && probe.location != location
+            && !self.move_file(prober, &probe.location, &location)?
+        {
+            return Ok(());
         }
-        self.blobs
-            .export(&content.hash, &location, content.executable)
+        let written = self
+            .blobs
+            .export(&content.hash, &location, content.executable, probe.stat)
             .await?;
         if let Some(folder) = grows {
             prober.forget(&folder);
         }
-        let seen = file_stat(&location).map(|stat| Seen::read(stat, content, now_nanos()));
+        let Some(stat) = written else {
+            self.look_again(key);
+            return Ok(());
+        };
         let entry = IndexEntry {
             path,
-            seen,
+            seen: Some(Seen::read(stat, content, now_nanos())),
             synced: Some(version.stamp),
         };
         self.state.update_index([(key, Some(&entry))])?;
         self.state.unkeep(probe.path.as_str())?;
         work.protect_due = true;
         Ok(())
+    }
+
+    /// Moves the file at `from` to `to`, unless another file is there,
+    /// saying whether it did.
+    fn move_file(&self, prober: &mut Prober, from: &Path, to: &Path) -> Result<bool> {
+        let moved = disk::rename(&self.root, from, to)?;
+        if let Some(folder) = from.parent() {
+            prober.forget(folder);
+        }
+        Ok(moved)
+    }
+
+    /// Looks at `key` again soon: the disk changed there while pigeon
+    /// wrote.
+    fn look_again(&self, key: &PathKey) {
+        let _ = self.wake.send(vec![key.clone()]);
     }
 
     /// Fetches a blob from its author's machine and every peer at once, then

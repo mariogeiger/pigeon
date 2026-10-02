@@ -166,8 +166,10 @@ impl Inner {
                 continue;
             }
             let location = fs_path(&self.root, &entry.path);
-            if file_stat(&location).is_some() {
-                disk::remove(&self.root, &location)?;
+            if let Some(seen) = entry.seen
+                && !disk::remove(&self.root, &location, seen.stat)?
+            {
+                continue;
             }
             self.state.update_index([(&key, None)])?;
         }

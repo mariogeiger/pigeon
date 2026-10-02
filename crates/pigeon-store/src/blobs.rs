@@ -171,8 +171,10 @@ impl Blobs {
     }
 
     /// Writes the content to `target` at once, flushed to the disk,
-    /// creating its folders and giving it its bits; nothing is left of a
-    /// write that failed.
+    /// creating its folders and giving it its bits, if the disk at
+    /// `target` still shows `expected`, the file pigeon saw there or no
+    /// file: the metadata of the file written, or `None` when `target`
+    /// changed since. Nothing is left of a write that failed.
     ///
     /// # Errors
     ///
@@ -181,7 +183,13 @@ impl Blobs {
     /// # Panics
     ///
     /// Panics if `target` has no parent folder.
-    pub async fn export(&self, hash: &ContentHash, target: &Path, executable: bool) -> Result<()> {
+    pub async fn export(
+        &self,
+        hash: &ContentHash,
+        target: &Path,
+        executable: bool,
+        expected: Option<disk::Stat>,
+    ) -> Result<Option<disk::Stat>> {
         let parent = target.parent().expect("a file has a parent");
         std::fs::create_dir_all(parent).map_err(StoreError::io(parent))?;
         let temporary = disk::temporary_path(target);
@@ -189,7 +197,7 @@ impl Blobs {
             let _ = std::fs::remove_file(&temporary);
             return Err(blob_error(error));
         }
-        disk::install(&temporary, target, executable)
+        disk::install(&temporary, target, executable, expected)
     }
 
     /// Reads a whole content into memory, for statements and small files.
@@ -250,7 +258,8 @@ mod tests {
         assert_eq!(tag.hash(), blob_hash(&hash));
         assert!(blobs.has(&hash).await.unwrap());
         let target = dir.path().join("root/a/b");
-        blobs.export(&hash, &target, false).await.unwrap();
+        let written = blobs.export(&hash, &target, false, None).await.unwrap();
+        assert_eq!(written, Some(disk::Stat::read(&target).unwrap()));
         assert_eq!(std::fs::read(&target).unwrap(), vec![7u8; 100_000]);
         assert!(!std::fs::metadata(&target).unwrap().permissions().readonly());
         assert!(!disk::temporary_path(&target).exists());

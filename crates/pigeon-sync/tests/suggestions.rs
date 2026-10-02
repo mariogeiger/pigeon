@@ -1,10 +1,11 @@
 //! Suggestions among engines of one group on this host: what the rules
 //! leave to the group waits as a suggestion the author's disk keeps, anyone
-//! validates or discards it and only the first decision counts, a discarded
-//! one brings the group's version back and stays in history, a folder's
-//! suggestions are decided together, an outdated one stays decidable, the
-//! loser of concurrent edits is suggested, a move is one suggestion that
-//! keeps the file's history.
+//! validates or discards it and only the first decision counts, placing it
+//! at no path the validating disk holds or ignores, a discarded one brings
+//! the group's version back and stays in history, a folder's suggestions
+//! are decided together, an outdated one stays decidable, the loser of
+//! concurrent edits is suggested, a move is one suggestion that keeps the
+//! file's history.
 
 mod common;
 
@@ -73,6 +74,19 @@ async fn an_edit_outside_the_rules_waits_on_its_disk_until_anyone_validates_it_o
     );
     assert_eq!(alice.engine.history(&path("+alice/plan.txt")).len(), 1);
     let statement = [suggestion.statement.clone()];
+    alice.edit(".pigeonignore", "*.bak\n.pigeonignore\n");
+    alice.edit("+alice/taken.txt", "alice's other file");
+    for (to, why) in [
+        ("+alice/plan.bak", "ignored"),
+        ("+alice/taken.txt", "exists"),
+    ] {
+        let refused = alice
+            .engine
+            .validate(&statement, Some(&path(to)))
+            .await
+            .unwrap_err();
+        assert!(refused.to_string().contains(why), "{refused:#}");
+    }
     alice.engine.validate(&statement, None).await.unwrap();
     for machine in [alice, bob] {
         eventually("the validated edit lands everywhere", || async {

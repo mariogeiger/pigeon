@@ -4,10 +4,9 @@
 //! person renames one to that name, which brings what it holds into the
 //! group.
 
-use std::fs;
-
 use anyhow::{Context, Result, bail};
 use pigeon_core::path::GroupPath;
+use pigeon_store::disk;
 use pigeon_store::probe::Unportable;
 use serde::Serialize;
 
@@ -83,11 +82,11 @@ impl Engine {
         };
         let proposed = fresh.proposed()?;
         let to = fresh.location.with_file_name(&fresh.proposal);
-        if fs::symlink_metadata(&to).is_ok() {
+        let renamed = disk::rename(&inner.root, &fresh.location, &to)
+            .with_context(|| format!("renaming {path} to {proposed}"))?;
+        if !renamed {
             bail!("{proposed} exists");
         }
-        fs::rename(&fresh.location, &to)
-            .with_context(|| format!("renaming {path} to {proposed}"))?;
         work.unportable.remove(path);
         inner
             .refresh(&mut work, &Rescan::Under(proposed.clone()))

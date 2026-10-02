@@ -16,7 +16,7 @@ use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::selection::Cutoff;
 use pigeon_core::statement::{Reason, SuggestedChange, is_statement};
 use pigeon_store::disk::Stat;
-use pigeon_store::index::{IndexEntry, Seen, hash_file, now_nanos};
+use pigeon_store::index::{IndexEntry, hash_file, observe};
 
 use crate::disk_sync::{change_at, probed, stat_time};
 use crate::engine::{Inner, JoinState, Pending, Work, now};
@@ -98,22 +98,22 @@ impl Shape {
 }
 
 impl Inner {
-    /// Imports the file at `location` into the blob store.
+    /// Copies the file at `location`, which showed `stat` when it hashed
+    /// to `hash`, into the blob store: `false` when the file changed
+    /// meanwhile, which someone still writes.
     pub(crate) async fn import(
         &self,
         work: &mut Work,
         location: &Path,
         stat: &Stat,
-    ) -> Result<Content> {
-        let (tag, size) = self.blobs.import(location).await?;
-        let content = Content {
-            hash: ContentHash(*tag.hash().as_bytes()),
-            size,
-            executable: stat.executable.unwrap_or(false),
-        };
+        hash: ContentHash,
+    ) -> Result<bool> {
+        let (tag, _) = self.blobs.import(location).await?;
+        let whole = ContentHash(*tag.hash().as_bytes()) == hash
+            && Stat::read(location).ok().as_ref() == Some(stat);
         work.tags.push(tag);
         work.protect_due = true;
-        Ok(content)
+        Ok(whole)
     }
 
     /// Whether the edit `pending` is a draft, which other machines learn
@@ -361,7 +361,9 @@ impl Inner {
 
     /// The change a settled edit makes, with the index entry it leaves, or
     /// `None` when the file only changed its time: the same content where
-    /// the disk spelled the same path.
+    /// the disk spelled the same path; or when it changed while it was
+    /// copied, which waits anew. A file is hashed first, and copied into
+    /// the blob store only when it changed.
     async fn prepare(
         &self,
         work: &mut Work,
@@ -372,12 +374,9 @@ impl Inner {
         let spelled = entry.as_ref().map(|entry| entry.path.clone());
         let synced = entry.as_ref().and_then(|entry| entry.synced);
         let synced_change = self.synced_at(key)?;
+        let previous = entry.as_ref().and_then(|entry| entry.seen);
         let seen = match pending.stat {
-            Some(stat) => {
-                let read_at = now_nanos();
-                let content = self.import(work, &pending.location, &stat).await?;
-                Some(Seen::read(stat, content, read_at))
-            }
+            Some(stat) => Some(observe(&pending.location, stat, previous.as_ref())?),
             None => None,
         };
         let content = seen.map(|seen| seen.content);
@@ -396,6 +395,18 @@ impl Inner {
             if entry.synced.is_some() || entry.seen.is_some() {
                 self.state.update_index([(key, Some(&entry))])?;
             }
+            return Ok(None);
+        }
+        if let (Some(stat), Some(content)) = (pending.stat, content)
+            && !self
+                .import(work, &pending.location, &stat, content.hash)
+                .await?
+        {
+            let again = Pending {
+                since: Instant::now(),
+                ..pending.clone()
+            };
+            work.pending.insert(key.clone(), again);
             return Ok(None);
         }
         let change = Change {

@@ -18,6 +18,7 @@ pub struct Scan {
     pub unportable: Vec<Unportable>,
     /// Why folders, files or ignore files could not be read.
     pub errors: Vec<String>,
+    /// The temporary files pigeon writes before moving them into place.
     pub temporaries: Vec<PathBuf>,
 }
 
