@@ -2,9 +2,10 @@
 //! them and stay writable everywhere, two machines with one name are one
 //! member, a restarted machine resumes without publishing again, the quota
 //! drops history, keeping history keeps the past versions of others' files
-//! too, every machine follows the relay the group names, a root reached
-//! through a link syncs both ways, and an engine with nothing to do looks
-//! at the disk no more.
+//! too, a file fetched that the disk cannot take yet stays until it lands,
+//! every machine follows the relay the group names, a root reached through
+//! a link syncs both ways, and an engine with nothing to do looks at the
+//! disk no more.
 
 mod common;
 
@@ -188,6 +189,51 @@ async fn keeping_history_keeps_past_versions_of_others_files() {
     })
     .await;
     shut_down(machines).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[cfg_attr(
+    windows,
+    ignore = "a read-only folder takes new files on Windows, so nothing holds the file back"
+)]
+async fn a_fetched_file_the_disk_cannot_take_yet_stays_until_it_lands_with_its_source_gone() {
+    let mut machines = group(&["alice", "bob"]).await;
+    joined(&machines).await;
+    let (bob, alice) = (machines.pop().unwrap(), machines.pop().unwrap());
+    let locked = bob.file("+alice/locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    let writable = std::fs::metadata(&locked).unwrap().permissions();
+    let mut read_only = writable.clone();
+    read_only.set_readonly(true);
+    std::fs::set_permissions(&locked, read_only).unwrap();
+    alice.edit("+alice/locked/plan.txt", "alice's plan");
+    bob.follow("+alice/").await;
+    eventually("bob fetched the plan but cannot write it", || async {
+        bob.engine
+            .status()
+            .errors
+            .iter()
+            .any(|error| error.starts_with("+alice/locked/plan.txt"))
+    })
+    .await;
+    alice.edit("+alice/open.txt", "open");
+    eventually("bob writes another file", || async {
+        bob.read("+alice/open.txt").is_some()
+    })
+    .await;
+    bob.wait_past_collection().await;
+    let plan = bob.engine.history(&path("+alice/locked/plan.txt"))[0]
+        .content
+        .unwrap();
+    assert!(bob.engine.read(&plan).await.unwrap().is_some());
+    alice.engine.shutdown().await.unwrap();
+    std::fs::set_permissions(&locked, writable).unwrap();
+    let bob = bob.restart().await;
+    eventually("bob writes the plan it holds, alone", || async {
+        bob.read("+alice/locked/plan.txt").as_deref() == Some("alice's plan")
+    })
+    .await;
+    bob.engine.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -77,16 +77,16 @@ pub(crate) fn stat_time(stat: &Stat) -> u64 {
 /// The version the disk should show at `key` under `cutoff`: the head
 /// when followed, the version current at the time when pinned, and when
 /// freed, the head only where the disk holds the path (`held`).
-pub(crate) fn target(
-    ledger: &Ledger,
+pub(crate) fn target<'a>(
+    ledger: &'a Ledger,
     key: &PathKey,
     cutoff: Cutoff,
     held: bool,
-) -> Option<Version> {
+) -> Option<&'a Version> {
     match cutoff {
-        Cutoff::PlusInfinity => ledger.head(key).cloned(),
-        Cutoff::At(time) => ledger.version_at(key, time).cloned(),
-        Cutoff::MinusInfinity => ledger.head(key).filter(|_| held).cloned(),
+        Cutoff::PlusInfinity => ledger.head(key),
+        Cutoff::At(time) => ledger.version_at(key, time),
+        Cutoff::MinusInfinity => ledger.head(key).filter(|_| held),
     }
 }
 
@@ -176,7 +176,7 @@ impl Inner {
     ) -> Look {
         let ledger = self.ledger.lock();
         let cutoff = work.config.selection.cutoff(path);
-        let target = target(&ledger, key, cutoff, entry.is_some());
+        let target = target(&ledger, key, cutoff, entry.is_some()).cloned();
         let synced = entry
             .and_then(|entry| entry.synced)
             .and_then(|stamp| change_at(&ledger, &stamp, key));

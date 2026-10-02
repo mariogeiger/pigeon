@@ -1,12 +1,13 @@
 //! Which blobs garbage collection must keep: the current versions of the
 //! member's files and those the member made, which another member's
-//! machines may not have fetched yet, what the disk holds, the statements,
-//! the blobs being fetched and the contents that live suggestions carry;
-//! then, within the quota, the past versions retention keeps of the
-//! member's files, or of every file with `everything`, with what the past
-//! suggestions among them carried. A member's files are those of their
-//! personal path, the files of no personal path whose current version they
-//! made, and the suggestions they made.
+//! machines may not have fetched yet, what the disk is to hold whether it
+//! landed yet or not, statements included, the blobs being fetched and the
+//! contents that live suggestions carry; then, within the quota, the past
+//! versions retention keeps of the member's files, or of every file with
+//! `everything`, with what the past suggestions among them carried. A
+//! member's files are those of their personal path, the files of no
+//! personal path whose current version they made, and the suggestions they
+//! made.
 
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -15,11 +16,12 @@ use anyhow::Result;
 use iroh_blobs::Hash;
 use pigeon_core::patch::Content;
 use pigeon_core::patch::ContentHash;
+use pigeon_core::path::PathKey;
 use pigeon_core::retention::{Dated, within_quota};
-use pigeon_core::statement::{Suggestion, is_statement, is_suggestion_path};
+use pigeon_core::statement::{Suggestion, is_suggestion_path};
 use pigeon_store::blobs::blob_hash;
 
-use crate::disk_sync::change_at;
+use crate::disk_sync::target;
 use crate::engine::{Inner, Work};
 
 fn seconds(time: SystemTime) -> u64 {
@@ -33,7 +35,12 @@ impl Inner {
     pub(crate) async fn protect(&self, work: &mut Work) -> Result<()> {
         let retention = work.config.retention;
         let now = seconds(SystemTime::now());
-        let entries = self.state.index(None)?;
+        let indexed: HashSet<PathKey> = self
+            .state
+            .index(None)?
+            .iter()
+            .map(|entry| entry.path.key())
+            .collect();
         let mut anyway: HashSet<ContentHash> = HashSet::new();
         let mut keep = |content: Option<Content>| {
             if let Some(content) = content {
@@ -59,6 +66,11 @@ impl Inner {
                 if own || head.author == self.member {
                     keep(head.content);
                 }
+                let cutoff = work.config.selection.cutoff(&head.path);
+                keep(
+                    target(&ledger, key, cutoff, indexed.contains(key))
+                        .and_then(|version| version.content),
+                );
                 if own || retention.everything {
                     let dated: Vec<Dated> = versions
                         .iter()
@@ -79,17 +91,6 @@ impl Inner {
                             }
                         }
                     }
-                }
-                if is_statement(&head.path.key()) {
-                    keep(head.content);
-                }
-            }
-            for entry in &entries {
-                if let Some(stamp) = entry.synced {
-                    keep(
-                        change_at(&ledger, &stamp, &entry.path.key())
-                            .and_then(|change| change.content),
-                    );
                 }
             }
         }
