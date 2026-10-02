@@ -7,8 +7,12 @@
 //! still downloading, and reach each other through the group's relay; a
 //! machine speaking another version of the protocol is reported with the
 //! pigeon it says it runs, or as predating the hello protocol, until it
-//! updates and opens a session.
+//! updates and opens a session. A node shutting down ends every blob
+//! request it serves and leaves its blob store running for its owner to
+//! stop, so that no request reaches a stopped store.
 
+use std::pin::pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -19,8 +23,10 @@ use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, RelayMap, RelayUrl};
 use iroh_base::SecretKey;
 use iroh_blobs::Hash;
-use iroh_blobs::protocol::{ChunkRanges, GetRequest};
+use iroh_blobs::protocol::{ChunkRanges, GetRequest, ObserveRequest};
+use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::store::mem::MemStore;
+use n0_future::StreamExt;
 use pigeon_core::identity::{GroupSecret, MachineCert};
 use pigeon_core::ledger::{Digests, Ledger};
 use pigeon_core::patch::SignedPatch;
@@ -617,4 +623,102 @@ async fn a_machine_reported_incompatible_is_no_longer_once_it_updates_and_dials_
     for machine in [a, updated] {
         machine.node.shutdown().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn a_node_shut_down_leaves_its_blob_store_running_for_its_owner_to_stop() {
+    let lookup = MemoryLookup::new();
+    let a = Machine::start(secret(5), &lookup).await;
+    a.node.shutdown().await.unwrap();
+    let added = a
+        .blobs
+        .add_bytes(b"after the node".to_vec())
+        .temp_tag()
+        .await;
+    assert!(added.is_ok(), "the node stopped its blob store");
+    a.blobs.shutdown().await.unwrap();
+}
+
+/// Asks the machine at the end of `connection` again and again what it
+/// holds of blobs it never loaded, counting its answers in `answered`,
+/// until the connection closes.
+async fn observe_unloaded(
+    blobs: MemStore,
+    connection: Connection,
+    lane: u8,
+    answered: Arc<AtomicUsize>,
+) {
+    for count in 0u64.. {
+        let hash = Hash::new([&[lane][..], &count.to_le_bytes()].concat());
+        let mut offers = pin!(
+            blobs
+                .remote()
+                .observe(connection.clone(), ObserveRequest::new(hash))
+        );
+        if !matches!(offers.next().await, Some(Ok(_))) {
+            return;
+        }
+        answered.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_shut_down_while_a_peer_observes_its_blobs_ends_every_request_before_its_store_stops()
+ {
+    let panics = Arc::new(AtomicUsize::new(0));
+    let counted = panics.clone();
+    let reported = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        reported(info);
+    }));
+    let lookup = MemoryLookup::new();
+    let b = Machine::start(secret(5), &lookup).await;
+    for _ in 0..10 {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FsStore::load(dir.path()).await.unwrap();
+        let key = SecretKey::generate();
+        let endpoint = bind_local(key.clone(), &lookup).await.unwrap();
+        let log = Arc::new(Held(Mutex::new(Ledger::new(test_machines::group()))));
+        let (node, _received) = Node::spawn(
+            endpoint,
+            Announcement::speaking_ours("0.1.0", "test"),
+            test_machines::group(),
+            secret(5),
+            log,
+            &store,
+            TIMINGS,
+        );
+        b.node.dial(node.id());
+        until("the machines meet", || async {
+            node.peers().contains(&b.node.id())
+        })
+        .await;
+        let connection = b
+            .node
+            .endpoint()
+            .connect(node.id(), iroh_blobs::ALPN)
+            .await
+            .unwrap();
+        let answered = Arc::new(AtomicUsize::new(0));
+        let observing: Vec<_> = (0..8)
+            .map(|lane| {
+                let (blobs, connection) = (b.blobs.clone(), connection.clone());
+                tokio::spawn(observe_unloaded(blobs, connection, lane, answered.clone()))
+            })
+            .collect();
+        until("the peer observes blobs", || async {
+            answered.load(Ordering::Relaxed) >= 64
+        })
+        .await;
+        node.shutdown().await.unwrap();
+        store.wait_idle().await.unwrap();
+        store.shutdown().await.unwrap();
+        for lane in observing {
+            lane.await.unwrap();
+        }
+    }
+    let _ = std::panic::take_hook();
+    assert_eq!(panics.load(Ordering::SeqCst), 0, "a thread panicked");
+    b.node.shutdown().await.unwrap();
 }

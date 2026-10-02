@@ -21,12 +21,14 @@ use anyhow::{Context, Result, ensure};
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, RelayMap, RelayUrl};
+use iroh_blobs::Hash;
 use iroh_blobs::api::Store;
 use iroh_blobs::provider::events::{
-    AbortReason, ConnectMode, EventMask, EventSender, ProviderMessage,
+    AbortReason, ClientConnected, ConnectMode, EventMask, EventSender, HasErrorCode,
+    ProviderMessage,
 };
+use iroh_blobs::provider::{self, StreamPair};
 use iroh_blobs::util::connection_pool::{self, ConnectionPool};
-use iroh_blobs::{BlobsProtocol, Hash};
 use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
 use n0_future::StreamExt;
 use pigeon_core::clock::MachineId;
@@ -35,6 +37,7 @@ use pigeon_core::identity::{GroupId, GroupSecret, MachineCert};
 use pigeon_core::ledger::Digests;
 use pigeon_core::name::MemberName;
 use tokio::sync::{broadcast, mpsc, watch};
+use tokio::task::JoinSet;
 
 use crate::hello::{self, Announcement, Announcing, HELLO_ALPN, Heard};
 use crate::swarm;
@@ -387,6 +390,63 @@ impl ProtocolHandler for SyncProtocol {
     }
 }
 
+/// Serves blobs as iroh-blobs does, each request on a task its connection
+/// owns, and leaves the store running when the router shuts down: the
+/// shutdown ends every connection and waits until each request served is
+/// over, so that none reaches the store once its owner stops it.
+#[derive(Debug)]
+struct ServingBlobs {
+    store: Store,
+    events: EventSender,
+    /// Set once the router shuts down; each connection served holds a
+    /// receiver until its requests are over.
+    stopping: watch::Sender<bool>,
+}
+
+impl ServingBlobs {
+    fn new(store: Store, events: EventSender) -> Self {
+        Self {
+            store,
+            events,
+            stopping: watch::channel(false).0,
+        }
+    }
+}
+
+impl ProtocolHandler for ServingBlobs {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        let mut stopping = self.stopping.subscribe();
+        let (id, remote) = (connection.stable_id() as u64, connection.remote_id());
+        let connected = self.events.client_connected(|| ClientConnected {
+            connection_id: id,
+            endpoint_id: Some(remote),
+        });
+        if let Err(refused) = connected.await {
+            connection.close(refused.code(), refused.reason());
+            return Ok(());
+        }
+        let mut requests = JoinSet::new();
+        loop {
+            tokio::select! {
+                biased;
+                _ = stopping.wait_for(|stopping| *stopping) => break,
+                Some(_) = requests.join_next() => {}
+                request = StreamPair::accept(&connection, self.events.clone()) => {
+                    let Ok(request) = request else { break };
+                    requests.spawn(provider::handle_stream(request, self.store.clone()));
+                }
+            }
+        }
+        requests.shutdown().await;
+        Ok(())
+    }
+
+    async fn shutdown(&self) {
+        self.stopping.send_replace(true);
+        self.stopping.closed().await;
+    }
+}
+
 /// Lets only admitted machines fetch blobs.
 fn blob_gate(shared: &Arc<Shared>) -> EventSender {
     let mask = EventMask {
@@ -506,7 +566,7 @@ impl Node {
             .accept(HELLO_ALPN, Announcing(announcement))
             .accept(
                 iroh_blobs::ALPN,
-                BlobsProtocol::new(blobs, Some(blob_gate(&shared))),
+                ServingBlobs::new(blobs.clone(), blob_gate(&shared)),
             )
             .spawn();
         let redial = Arc::downgrade(&shared);
@@ -681,7 +741,8 @@ impl Node {
             .with_context(|| format!("fetching {hash}"))
     }
 
-    /// Closes every session and the endpoint.
+    /// Closes every session, every blob connection once each blob request
+    /// it served is over, and the endpoint, leaving the blob store running.
     ///
     /// # Errors
     ///

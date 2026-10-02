@@ -317,12 +317,13 @@ impl Blobs {
         self.store.shutdown().await.map_err(blob_error)
     }
 
-    /// Stops the store, unless the network's shutdown stopped it already,
-    /// and waits until it stopped whole: its collector, its threads and its
-    /// files gone, once every other copy of it went too. Stopping a store
-    /// again fails, finding its database gone, which is all such a failure
-    /// tells, so none is reported.
+    /// Stops the store, unless it stopped already, once the requests it
+    /// was given are over, and waits until it stopped whole: its
+    /// collector, its threads and its files gone, once every other copy of
+    /// it went too. Stopping a store again fails, finding its database
+    /// gone, which is all such a failure tells, so none is reported.
     pub async fn stop_whole(self) {
+        let _ = self.store.wait_idle().await;
         let _ = self.store.shutdown().await;
         self.stopping.store(true, Ordering::Release);
         let mut whole = self.whole.clone();

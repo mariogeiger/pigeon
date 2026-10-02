@@ -676,9 +676,10 @@ impl Engine {
         self.inner.me()
     }
 
-    /// Stops the loop, ends the fetches, closes every session and stops the
-    /// blob store whole, so that nothing holds the group's state once it
-    /// returns; closing the blob protocol flushes the blob store.
+    /// Stops the loop, ends the fetches, closes every session and blob
+    /// connection, then stops the blob store whole, flushing it, so that
+    /// nothing holds the group's state once it returns and no request
+    /// reaches a stopped store.
     ///
     /// # Errors
     ///
