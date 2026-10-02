@@ -768,6 +768,7 @@ async fn run(
             Some(rescan) = rescan_events.recv() => {
                 merge(&mut gathered, rescan);
                 gathered_until.get_or_insert_with(|| tokio::time::Instant::now() + DEBOUNCE);
+                continue;
             }
             () = tokio::time::sleep_until(gathered_until.unwrap_or_else(tokio::time::Instant::now)),
                 if gathered_until.is_some() => {
