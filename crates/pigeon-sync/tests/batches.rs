@@ -7,8 +7,9 @@ mod common;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use common::{eventually, group, group_with, joined, path, shut_down};
+use common::{eventually, eventually_reaches, group, group_with, joined, path, shut_down};
 use pigeon_net::wire::MAX_MESSAGE;
+use pigeon_store::disk::TEMPORARY_PREFIX;
 
 /// Paths under `folder` of under eight hundred bytes, each name within the
 /// 255 bytes and each path, once under a temporary folder, within the 1024
@@ -33,12 +34,25 @@ async fn edits_beyond_what_one_patch_carries_go_out_in_several_patches() {
     for file in &files {
         alice.edit(file, "x");
     }
-    eventually("bob holds every file of alice", || async {
-        files
-            .iter()
-            .all(|file| bob.read(file).as_deref() == Some("x"))
+    let folder = bob.file(files[0].rsplit_once('/').unwrap().0);
+    eventually_reaches("bob holds every file of alice", files.len(), || async {
+        std::fs::read_dir(&folder).map_or(0, |entries| {
+            entries
+                .filter(|entry| {
+                    !entry
+                        .as_ref()
+                        .unwrap()
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(TEMPORARY_PREFIX)
+                })
+                .count()
+        })
     })
     .await;
+    for file in &files {
+        assert_eq!(bob.read(file).as_deref(), Some("x"), "{file}");
+    }
     let mut patches: BTreeMap<_, usize> = BTreeMap::new();
     for file in &files {
         let history = alice.engine.history(&path(file));
@@ -71,10 +85,11 @@ async fn an_announcement_names_only_as_many_drafts_as_it_carries() {
     for file in &files {
         alice.edit(file, "x");
     }
-    eventually("alice holds every draft", || async {
-        alice.engine.pending(None).await.len() == files.len()
+    eventually_reaches("alice holds every draft", files.len(), || async {
+        alice.engine.pending(None).await.len()
     })
     .await;
+    assert_eq!(alice.engine.pending(None).await.len(), files.len());
     eventually("bob learns of alice's drafts", || async {
         bob.engine.pending(None).await.len() > files.len() / 2
     })

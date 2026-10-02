@@ -351,3 +351,30 @@ where
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
+
+/// Waits for `count` to reach `target`, failing once it went twenty
+/// seconds without a new high: a slow system gets there, a stuck one fails
+/// and tells how far it got.
+pub async fn eventually_reaches<F, Fut>(what: &str, target: usize, mut count: F)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = usize>,
+{
+    let mut best = 0;
+    let mut deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        let reached = count().await;
+        if reached >= target {
+            return;
+        }
+        if reached > best {
+            best = reached;
+            deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out: {what}, at {reached} of {target}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
