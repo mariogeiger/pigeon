@@ -139,20 +139,16 @@ async fn disagreement(machines: &[Machine]) -> Option<String> {
 }
 
 /// Waits up to twenty seconds until `machines` agree, or fails telling
-/// where they disagree and what errors each reported; then checks that
-/// every error they reported says one of `expected`, which the scenario
-/// makes, and that some machine holds the content of every version in the
-/// history of every file.
+/// where they disagree; then checks that every error they reported says
+/// one of `expected`, which the scenario makes, and that some machine
+/// holds the content of every version in the history of every file.
 pub async fn converged(machines: &[Machine], expected: &[&str]) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     while let Some(disagreement) = disagreement(machines).await {
-        if tokio::time::Instant::now() >= deadline {
-            let errors: Vec<Vec<String>> = machines
-                .iter()
-                .map(|machine| machine.engine.status().errors)
-                .collect();
-            panic!("the group never converged: {disagreement}, with errors {errors:?}");
-        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the group never converged: {disagreement}"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     for (index, machine) in machines.iter().enumerate() {

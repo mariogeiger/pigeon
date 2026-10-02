@@ -1,13 +1,16 @@
-//! A group of engines on this host, with short timings; the paths and
-//! rules tests name; and ways to wait for what the engines converge to, or
-//! past the time something that must not happen would take.
+//! A group of engines on this host, with short timings, each telling its
+//! status when a test fails; the paths and rules tests name; and ways to
+//! wait for what the engines converge to, or past the time something that
+//! must not happen would take.
 
 #![allow(dead_code)]
 
 mod converged;
+mod running;
 
 #[allow(unused_imports)]
 pub use converged::converged;
+pub use running::Running;
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -26,7 +29,7 @@ use pigeon_sync::{Engine, JoinState, Network, Options};
 use tempfile::TempDir;
 
 pub struct Machine {
-    pub engine: Engine,
+    pub engine: Running,
     pub root: PathBuf,
     pub dirs: GroupDirs,
     options: Options,
@@ -114,7 +117,7 @@ impl Machine {
         engine.shutdown().await.unwrap();
         meddle(&dirs, &root);
         Self {
-            engine: Engine::start(&dirs, options.clone()).await.unwrap(),
+            engine: Running::new(Engine::start(&dirs, options.clone()).await.unwrap()),
             root,
             dirs,
             options,
@@ -149,7 +152,7 @@ impl Machine {
         let mut config = dirs.load_config().unwrap();
         config.root = root.clone();
         ConfigFile::create(&dirs, config).unwrap();
-        let engine = Engine::start(&dirs, options.clone()).await?;
+        let engine = Running::new(Engine::start(&dirs, options.clone()).await?);
         Ok(Self {
             engine,
             root,
@@ -207,7 +210,7 @@ pub async fn reopen(dir: TempDir, options: Options) -> Machine {
     let mut config = dirs.load_config().unwrap();
     config.root = root.clone();
     ConfigFile::create(&dirs, config).unwrap();
-    let engine = Engine::start(&dirs, options.clone()).await.unwrap();
+    let engine = Running::new(Engine::start(&dirs, options.clone()).await.unwrap());
     Machine {
         engine,
         root,
@@ -229,7 +232,7 @@ async fn start(
     dirs.save_secrets(&secrets).unwrap();
     let config = Config::new(MemberName::parse(member).unwrap(), root.clone());
     ConfigFile::create(&dirs, config).unwrap();
-    let engine = Engine::start(&dirs, options.clone()).await.unwrap();
+    let engine = Running::new(Engine::start(&dirs, options.clone()).await.unwrap());
     Machine {
         engine,
         root,
