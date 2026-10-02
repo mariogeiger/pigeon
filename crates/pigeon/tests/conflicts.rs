@@ -9,6 +9,7 @@ mod common;
 
 use common::{Machine, content, eventually, family, published, settle};
 use iroh::address_lookup::MemoryLookup;
+use pigeon_core::statement::Reason;
 use serde_json::{Value, json};
 
 /// The change of `path` that `suggestion` makes.
@@ -57,7 +58,7 @@ async fn an_edit_made_offline_loses_to_a_later_one_and_its_disk_keeps_it_until_d
             &all,
             async || {
                 let suggested = machine.suggested("+papy/budget.txt").await;
-                suggested.len() == 1 && suggested[0]["reason"] == "Superseded"
+                suggested.len() == 1 && suggested[0]["reason"] == Reason::Superseded.to_string()
             },
         )
         .await;
@@ -113,7 +114,7 @@ async fn an_edit_of_someone_elses_file_is_suggested_and_anyone_validates_it_once
     let suggestion = alice.suggestion_at("+alice/recipe.txt").await;
     assert_eq!(
         (&suggestion["author"], &suggestion["reason"]),
-        (&json!("papy"), &json!("OutsideRules")),
+        (&json!("papy"), &json!(Reason::OutsideRules.to_string())),
         "{suggestion}"
     );
     assert!(alice.shows("+alice/recipe.txt", "flour\n"));
@@ -158,7 +159,11 @@ async fn two_members_adding_one_path_while_apart_both_keep_their_content() {
 
     let both = [&alice, &desktop];
     let suggestion = alice.suggestion_at("docs/plan.txt").await;
-    assert_eq!(suggestion["reason"], "Superseded", "{suggestion}");
+    assert_eq!(
+        suggestion["reason"],
+        Reason::Superseded.to_string(),
+        "{suggestion}"
+    );
     assert_eq!(
         change_of(&suggestion, "docs/plan.txt")["content"],
         content("alice's plan\n"),
@@ -200,7 +205,9 @@ async fn a_name_windows_cannot_hold_is_suggested_and_validated_under_one_it_can(
     let all = [&alice, &desktop, &laptop];
     let suggestion = desktop.suggestion_at("+papy/Facture: mars.txt").await;
     assert!(
-        suggestion["reason"]["Unportable"].is_string(),
+        suggestion["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.starts_with("a name not every machine can hold")),
         "{suggestion}"
     );
     let refused = desktop
@@ -272,7 +279,11 @@ async fn an_action_reaching_an_owner_who_edited_offline_wins_and_keeps_both_in_h
         "{history:?}"
     );
     let suggestion = alice.suggestion_at("+alice/list.txt").await;
-    assert_eq!(suggestion["reason"], "Superseded", "{suggestion}");
+    assert_eq!(
+        suggestion["reason"],
+        Reason::Superseded.to_string(),
+        "{suggestion}"
+    );
 }
 
 #[tokio::test]

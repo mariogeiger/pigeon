@@ -109,6 +109,17 @@ pub enum Reason {
     Superseded,
 }
 
+impl std::fmt::Display for Reason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OutsideRules => f.write_str("the rules leave it to the group"),
+            Self::Unportable(why) => write!(f, "a name not every machine can hold: {why}"),
+            Self::Rejected(why) => write!(f, "the group rejected it: {why}"),
+            Self::Superseded => f.write_str("another change of the same file came in meanwhile"),
+        }
+    }
+}
+
 /// One change of a suggestion, at a path that is not always a valid group
 /// path, its content, or `None` for a deletion, and the versions it
 /// replaces and continues.
@@ -169,6 +180,26 @@ mod tests {
         for other in [".pigeonx/a", "a/.pigeon/b", ".pigeonignore"] {
             assert!(!is_statement(&path(other).key()), "{other}");
         }
+    }
+
+    #[test]
+    fn each_reason_reads_as_why_a_change_waits_for_the_group() {
+        assert_eq!(
+            Reason::OutsideRules.to_string(),
+            "the rules leave it to the group"
+        );
+        assert_eq!(
+            Reason::Unportable("a colon".into()).to_string(),
+            "a name not every machine can hold: a colon"
+        );
+        assert_eq!(
+            Reason::Rejected("the name is taken".into()).to_string(),
+            "the group rejected it: the name is taken"
+        );
+        assert_eq!(
+            Reason::Superseded.to_string(),
+            "another change of the same file came in meanwhile"
+        );
     }
 
     #[test]

@@ -148,58 +148,27 @@ pub fn file_status(file: Option<&Value>, waiting: Option<&Value>, drafts: &[&Val
     }
 }
 
-/// Why a suggestion waits for the group, as its reason in `suggestion
-/// list` says.
-#[must_use]
-pub fn reason(reason: &Value) -> String {
-    match reason {
-        Value::String(name) if name == "OutsideRules" => {
-            "the rules leave it to the group".to_owned()
-        }
-        Value::String(name) if name == "Superseded" => {
-            "another change of the same file came in meanwhile".to_owned()
-        }
-        Value::Object(fields) => fields
-            .iter()
-            .map(|(name, detail)| {
-                let detail = detail.as_str().unwrap_or_default();
-                match name.as_str() {
-                    "Unportable" => format!("a name not every machine can hold: {detail}"),
-                    "Rejected" => format!("the group rejected it: {detail}"),
-                    _ => format!("{name}: {detail}"),
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(", "),
-        other => other.to_string(),
-    }
-}
-
 /// What the change `change` of `suggestion`, as `suggestion list` gives
 /// them, does and why it waits.
 #[must_use]
 pub fn suggestion_title(suggestion: &Value, change: &Value) -> String {
-    let author = suggestion["author"].as_str().unwrap_or_default();
-    let what = match (&change["content"], &change["continues"]["path"]) {
-        (Value::Null, _) => "a deletion".to_owned(),
-        (_, Value::String(from)) => format!("a move from {from}"),
-        _ if change["replaces"].is_null() => "a new file".to_owned(),
-        _ => "a new version".to_owned(),
-    };
+    let text = |value: &Value| value.as_str().unwrap_or_default().to_owned();
     let since = if change["outdated"] == true {
         "; the file changed since"
     } else {
         ""
     };
     format!(
-        "{author} suggests {what}, as {}{since}",
-        reason(&suggestion["reason"])
+        "{} suggests {}, as {}{since}",
+        text(&suggestion["author"]),
+        text(&change["what"]),
+        text(&suggestion["reason"])
     )
 }
 
 /// The suggested changes of one path, each with its suggestion.
 #[must_use]
-pub fn suggested_status(suggested: &[(&Value, &Value)]) -> Markup {
+pub fn suggested_status<'a>(suggested: impl IntoIterator<Item = (&'a Value, &'a Value)>) -> Markup {
     html! {
         @for (suggestion, change) in suggested {
             (mark(Status::Suggested, Some(suggestion_title(suggestion, change)),
@@ -306,29 +275,18 @@ mod tests {
 
     #[test]
     fn a_suggestion_says_who_suggests_what_and_why() {
-        let suggestion = json!({"author": "papy", "reason": "OutsideRules"});
-        let version = json!({"path": "a", "content": {"size": 1}, "replaces": {"time": 1}, "outdated": false});
-        let shown = suggested_status(&[(&suggestion, &version)]).into_string();
+        let suggestion = json!({"author": "papy", "reason": "the rules leave it to the group"});
+        let version = json!({"path": "a", "what": "a new version", "outdated": false});
+        let shown = suggested_status([(&suggestion, &version)]).into_string();
         assert!(shown.contains("📬 papy"), "{shown}");
         assert!(
             shown.contains("papy suggests a new version, as the rules leave it to the group"),
             "{shown}"
         );
-        let deletion = json!({"path": "a", "content": null, "outdated": true});
+        let deletion = json!({"path": "a", "what": "a deletion", "outdated": true});
         assert_eq!(
             suggestion_title(&suggestion, &deletion),
             "papy suggests a deletion, as the rules leave it to the group; the file changed since"
-        );
-        let moved = json!({"path": "b", "content": {"size": 1}, "continues": {"path": "a"}});
-        let lost = json!({"author": "papy", "reason": "Superseded"});
-        assert_eq!(
-            suggestion_title(&lost, &moved),
-            "papy suggests a move from a, as another change of the same file came in meanwhile"
-        );
-        let unportable = json!({"Unportable": "a colon"});
-        assert_eq!(
-            reason(&unportable),
-            "a name not every machine can hold: a colon"
         );
     }
 }

@@ -169,8 +169,8 @@ mod tests {
             {"time": "2026-01-01T00:00:00Z", "path": "a.txt", "stamp": {"time": 1}, "content": {"size": 1}, "author": "bob"},
             {"time": "2026-01-02T00:00:00Z", "path": "b.txt", "stamp": {"time": 2}, "content": {"size": 2}, "author": "papy"},
         ]);
-        let suggestion = serde_json::json!({"id": "b.txt@1-m", "author": "papy", "reason": "OutsideRules",
-            "changes": [{"path": "b.txt", "content": {"size": 3}, "outdated": false}]});
+        let suggestion = serde_json::json!({"id": "b.txt@1-m", "author": "papy", "reason": "the rules leave it to the group",
+            "changes": [{"path": "b.txt", "what": "a new file", "content": {"size": 3}, "outdated": false}]});
         let change = suggestion["changes"][0].clone();
         let suggested = [(suggestion, change, html! {})];
         let shown = Shown {

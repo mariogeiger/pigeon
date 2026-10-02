@@ -61,9 +61,9 @@ pub enum Heard {
     Unheard,
 }
 
-/// How the pigeon a machine runs compares with this one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
+/// How the pigeon a machine runs compares with this one, which reads, and
+/// serializes, as what it says of the machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Standing {
     /// It speaks an earlier sync protocol.
     Older,
@@ -102,6 +102,23 @@ impl Standing {
             Heard::PreHello => Self::PreHello,
             Heard::Unheard => Self::Unknown,
         }
+    }
+}
+
+impl std::fmt::Display for Standing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Older => "older",
+            Self::Newer => "newer",
+            Self::PreHello => "older, from before hello",
+            Self::Unknown => "unknown",
+        })
+    }
+}
+
+impl Serialize for Standing {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
     }
 }
 
@@ -171,5 +188,19 @@ impl ProtocolHandler for Announcing {
             Ok(result) => result.map_err(|error| AcceptError::from_boxed(error.into())),
             Err(_) => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_standing_reads_and_serializes_as_what_it_says_of_the_machine() {
+        assert_eq!(Standing::PreHello.to_string(), "older, from before hello");
+        assert_eq!(
+            serde_json::to_value(Standing::Newer).unwrap(),
+            serde_json::json!("newer")
+        );
     }
 }

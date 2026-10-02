@@ -43,17 +43,6 @@ fn status_line(status: &Value) -> String {
     )
 }
 
-/// How a machine that runs another version of pigeon compares with this
-/// one, as its standing says.
-fn standing_text(standing: &Value) -> &'static str {
-    match standing.as_str() {
-        Some("older") => "older",
-        Some("newer") => "newer",
-        Some("pre-hello") => "older, from before hello",
-        _ => "unknown",
-    }
-}
-
 /// The machines that run a version of pigeon this one cannot talk to, each
 /// with its member, whether it is older or newer, and its version.
 fn incompatible_section(machines: &[Value]) -> Markup {
@@ -72,7 +61,7 @@ fn incompatible_section(machines: &[Value]) -> Markup {
                     tr {
                         td { (told(machine, "member")) }
                         td { (told(machine, "machine")) }
-                        td { (standing_text(&machine["standing"])) }
+                        td { (told(machine, "standing")) }
                         td { (told(machine, "version")) }
                         td { (told(machine, "commit")) }
                         td { (told(machine, "protocol")) }

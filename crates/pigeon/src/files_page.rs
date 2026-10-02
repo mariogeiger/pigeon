@@ -37,15 +37,19 @@ fn follows(item: &Value) -> bool {
     item["cutoff"] == "PlusInfinity"
 }
 
+/// A change suggested at a path: the place of its suggestion among all,
+/// oldest first, the suggestion, and the change.
+type Suggested<'a> = (usize, &'a Value, &'a Value);
+
 /// One path of the group: its published file, the edit of it waiting
 /// here, the drafts of it other machines announced, and the changes of it
-/// suggested, each with its suggestion.
+/// suggested.
 struct Entry<'a> {
     path: &'a str,
     file: Option<&'a Value>,
     waiting: Option<&'a Value>,
     drafts: Vec<&'a Value>,
-    suggested: Vec<(&'a Value, &'a Value)>,
+    suggested: Vec<Suggested<'a>>,
 }
 
 impl Leaf for Entry<'_> {
@@ -60,7 +64,7 @@ impl Leaf for Entry<'_> {
             (None, None, None) => self
                 .suggested
                 .first()
-                .map_or(&Value::Null, |(_, change)| &change["content"]["size"]),
+                .map_or(&Value::Null, |(_, _, change)| &change["content"]["size"]),
         };
         Facts {
             size: size.as_u64().unwrap_or_default(),
@@ -107,12 +111,12 @@ fn entries<'a>(
             _ => entry.file = Some(item),
         }
     }
-    for suggestion in suggestions {
+    for (order, suggestion) in suggestions.iter().enumerate() {
         for change in listed(&suggestion["changes"]) {
             let path = change["path"].as_str().unwrap_or_default();
             entry_at(&mut entries, path)
                 .suggested
-                .push((suggestion, change));
+                .push((order, suggestion, change));
         }
     }
     entries.into_values().collect()
@@ -168,20 +172,16 @@ fn first_open(rows: &[Row<Entry>], member: &str, under: &str) -> BTreeSet<String
 /// takes a single file's content.
 fn suggestions_offered<'a>(entries: impl Iterator<Item = &'a Entry<'a>>) -> Value {
     let mut offered = BTreeMap::new();
-    for (suggestion, change) in entries.flat_map(|entry| entry.suggested.iter()) {
+    for (order, suggestion, change) in entries.flat_map(|entry| entry.suggested.iter()) {
         let elsewhere =
             matches!(listed(&suggestion["changes"]), [one] if one["content"].is_object());
-        let stamp = &suggestion["statement"]["stamp"];
-        let id = suggestion["id"].as_str().unwrap_or_default();
-        offered
-            .entry((stamp["time"].as_u64(), id))
-            .or_insert_with(|| {
-                json!({
-                    "id": suggestion["id"],
-                    "title": suggestion_title(suggestion, change),
-                    "elsewhere": elsewhere,
-                })
-            });
+        offered.entry(order).or_insert_with(|| {
+            json!({
+                "id": suggestion["id"],
+                "title": suggestion_title(suggestion, change),
+                "elsewhere": elsewhere,
+            })
+        });
     }
     Value::Array(offered.into_values().collect())
 }
@@ -343,7 +343,7 @@ fn row(group: &str, under: &str, row: &Row<Entry>, open: &BTreeSet<String>) -> M
                     td { @if let Some(time) = facts.time { (short_time(time)) } }
                     td {
                         (file_status(entry.file, entry.waiting, &entry.drafts))
-                        (suggested_status(&entry.suggested))
+                        (suggested_status(entry.suggested.iter().map(|(_, suggestion, change)| (*suggestion, *change))))
                     }
                     td {
                         @if item.is_some() || !entry.suggested.is_empty() {
@@ -530,23 +530,23 @@ mod tests {
     fn suggestions_show_on_the_rows_they_change_with_what_decides_them() {
         let list = json!([file("docs/list.txt", &json!("PlusInfinity"))]);
         let suggestion = |time: u64, author: &str, changes: Value| {
-            json!({"id": format!("s{time}"), "statement": {"stamp": {"time": time}},
-                "author": author, "reason": "OutsideRules", "changes": changes})
+            json!({"id": format!("s{time}"), "author": author,
+                "reason": "the rules leave it to the group", "changes": changes})
         };
         let suggestions = json!([
             suggestion(
                 1,
                 "bob",
-                json!([{"path": "docs/list.txt", "content": {"size": 3},
+                json!([{"path": "docs/list.txt", "what": "a new version", "content": {"size": 3},
                 "replaces": {"time": 0}, "outdated": false}])
             ),
             suggestion(
                 2,
                 "papy",
                 json!([
-                    {"path": "docs/list.txt", "content": null, "replaces": {"time": 0}, "outdated": false},
-                    {"path": "docs/Plan.txt", "content": {"size": 9}, "continues": {"path": "docs/list.txt"},
-                     "outdated": false},
+                    {"path": "docs/list.txt", "what": "a deletion", "content": null, "replaces": {"time": 0}, "outdated": false},
+                    {"path": "docs/Plan.txt", "what": "a move from docs/list.txt", "content": {"size": 9},
+                     "continues": {"path": "docs/list.txt"}, "outdated": false},
                 ])
             ),
         ]);

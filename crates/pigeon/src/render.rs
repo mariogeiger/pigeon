@@ -192,7 +192,7 @@ mod tests {
         );
         assert_eq!(lines[1], "+alice/a.txt  alice  bob     2.0 KB  t     yes");
         let suggestions = json!([
-            {"id": "s", "author": "bob", "reason": "OutsideRules",
+            {"id": "s", "author": "bob", "reason": "the rules leave it to the group",
              "changes": [{"path": "a", "outdated": false}, {"path": "b", "outdated": true}]},
         ]);
         let lines = super::text(find("suggestion", "list").unwrap(), &suggestions);
@@ -201,7 +201,7 @@ mod tests {
                 .lines()
                 .nth(1)
                 .unwrap()
-                .ends_with("OutsideRules  a, b"),
+                .ends_with("the rules leave it to the group  a, b"),
             "{lines}"
         );
         let key = json!({"key": "cheapmo-abc"});

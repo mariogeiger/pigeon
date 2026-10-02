@@ -22,7 +22,7 @@ use pigeon_core::statement::{
 use pigeon_store::disk::{self, fs_path};
 use pigeon_store::index::{IndexEntry, hash_file};
 use pigeon_store::state::Kept;
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
 use crate::disk_sync::file_stat;
 use crate::engine::{Engine, Inner, Work};
@@ -34,16 +34,26 @@ pub(crate) struct Live {
     pub suggestion: Suggestion,
 }
 
-/// A suggestion as anyone may decide it.
+/// `value` serialized as the text it reads as.
+fn as_text<S: Serializer>(
+    value: &impl std::fmt::Display,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(value)
+}
+
+/// A suggestion as anyone may decide it, its statement and reason
+/// serialized as text.
 #[derive(Clone, Debug, Serialize)]
 pub struct SuggestionView {
-    /// The version of its statement this view shows, which deciding names.
+    /// The version of its statement this view shows, which deciding names,
+    /// and interfaces by its text, as its id.
+    #[serde(rename = "id", serialize_with = "as_text")]
     pub statement: VersionRef,
-    /// The same version as text, which interfaces name it by.
-    pub id: String,
     pub author: MemberName,
     pub machine: MachineId,
     pub time: String,
+    #[serde(serialize_with = "as_text")]
     pub reason: Reason,
     pub changes: Vec<SuggestedChangeView>,
 }
@@ -53,6 +63,9 @@ pub struct SuggestionView {
 pub struct SuggestedChangeView {
     /// The path it changes, not always portable.
     pub path: String,
+    /// What it is, as text: a new file, a new version, a move from a path
+    /// or a deletion.
+    pub what: String,
     /// The content it gives the path, or `None` for a deletion.
     pub content: Option<Content>,
     pub replaces: Option<Stamp>,
@@ -61,6 +74,16 @@ pub struct SuggestedChangeView {
     /// Whether its path's current version is another than the one it
     /// replaces.
     pub outdated: bool,
+}
+
+/// What `change` is, as text.
+fn what(change: &SuggestedChange) -> String {
+    match (&change.content, &change.continues) {
+        (None, _) => "a deletion".to_owned(),
+        (Some(_), Some(moved)) => format!("a move from {}", moved.path),
+        (Some(_), None) if change.replaces.is_none() => "a new file".to_owned(),
+        (Some(_), None) => "a new version".to_owned(),
+    }
 }
 
 /// What a suggested path is compared by: its key when it is portable.
@@ -405,7 +428,6 @@ impl Engine {
             .values()
             .map(|live| SuggestionView {
                 statement: live.version.reference(),
-                id: live.version.reference().to_string(),
                 author: live.version.author.clone(),
                 machine: live.version.stamp.machine,
                 time: live.version.stamp.rfc3339(),
@@ -416,6 +438,7 @@ impl Engine {
                     .iter()
                     .map(|change| SuggestedChangeView {
                         path: change.path.clone(),
+                        what: what(change),
                         content: change.content,
                         replaces: change.replaces,
                         continues: change.continues.clone(),
