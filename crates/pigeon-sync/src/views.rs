@@ -146,32 +146,30 @@ impl Engine {
     pub async fn status(&self) -> Status {
         let inner = &self.inner;
         let work = inner.work.lock().await;
+        let ledger = inner.ledger.lock();
+        let owners: HashMap<MachineId, &MemberName> = ledger
+            .patches()
+            .map(|patch| (patch.cert.machine, &patch.cert.name))
+            .collect();
         Status {
             member: inner.member.clone(),
             machine: inner.me(),
             root: inner.root.clone(),
             join: work.join.clone(),
             peers: inner.node.peers(),
-            incompatible: {
-                let ledger = inner.ledger.lock();
-                let owners: HashMap<MachineId, &MemberName> = ledger
-                    .patches()
-                    .map(|patch| (patch.cert.machine, &patch.cert.name))
-                    .collect();
-                inner
-                    .node
-                    .incompatible()
-                    .into_iter()
-                    .map(|(machine, heard)| {
-                        let member = owners.get(&machine).map(|name| (*name).clone());
-                        IncompatibleMachine::new(machine, member, &heard)
-                    })
-                    .collect()
-            },
+            incompatible: inner
+                .node
+                .incompatible()
+                .into_iter()
+                .map(|(machine, heard)| {
+                    let member = owners.get(&machine).map(|name| (*name).clone());
+                    IncompatibleMachine::new(machine, member, &heard)
+                })
+                .collect(),
             relay: inner.node.home_relay().map(|url| url.to_string()),
             pending: work.pending.len(),
             fetching: work.fetching.len(),
-            patches: inner.ledger.lock().patches().count(),
+            patches: ledger.patches().count(),
             errors: inner
                 .errors
                 .lock()

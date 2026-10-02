@@ -366,7 +366,12 @@ fn a_vector_names_exactly_the_missing_patches() {
         .map(|p| p.stamp().time)
         .collect();
     assert_eq!(missing, vec![2, 3, 4]);
+    assert_eq!(
+        ledger.vector(),
+        BTreeMap::from([(mario.key.public(), 3), (bob.key.public(), 4)])
+    );
     assert!(ledger.missing_from(&ledger.vector()).is_empty());
+    assert_eq!(ledger.missing_from(&BTreeMap::new()).len(), 4);
 }
 
 #[test]

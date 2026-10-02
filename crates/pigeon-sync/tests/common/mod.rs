@@ -1,5 +1,6 @@
-//! A group of engines on this host, with short timings, and a way to wait
-//! for what they converge to.
+//! A group of engines on this host, with short timings; the paths and
+//! rules tests name; and ways to wait for what the engines converge to, or
+//! past the time something that must not happen would take.
 
 #![allow(dead_code)]
 
@@ -10,6 +11,8 @@ use std::time::Duration;
 use iroh::address_lookup::MemoryLookup;
 use pigeon_core::clock::MachineId;
 use pigeon_core::name::MemberName;
+use pigeon_core::path::GroupPath;
+use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_store::config::{Config, ConfigFile};
 use pigeon_store::group_dirs::GroupDirs;
 use pigeon_store::group_key::GroupKey;
@@ -33,6 +36,27 @@ impl Machine {
 
     pub fn read(&self, relative: &str) -> Option<String> {
         std::fs::read_to_string(self.file(relative)).ok()
+    }
+
+    /// Makes the machine follow `pattern`.
+    pub async fn follow(&self, pattern: &str) {
+        self.engine
+            .set_rule(rule(pattern, Cutoff::PlusInfinity))
+            .await
+            .unwrap();
+    }
+
+    /// Waits past the time an edit takes to settle and be published, for
+    /// what must not happen by then.
+    pub async fn wait_past_settling(&self) {
+        let settle = self.options.settle_personal.max(self.options.settle_draft);
+        tokio::time::sleep(settle + self.options.tick * 4).await;
+    }
+
+    /// Waits past a garbage collection after the engine recomputed what it
+    /// protects, by when a blob nothing protects would be gone.
+    pub async fn wait_past_collection(&self) {
+        tokio::time::sleep(self.options.tick * 2 + self.options.gc * 2).await;
     }
 
     /// Writes a file as a person would.
@@ -118,6 +142,26 @@ async fn start(
         dirs,
         options,
         dir,
+    }
+}
+
+/// The group path `text`.
+pub fn path(text: &str) -> GroupPath {
+    GroupPath::parse(text).unwrap()
+}
+
+/// The rule giving the files `pattern` matches `cutoff`.
+pub fn rule(pattern: &str, cutoff: Cutoff) -> Rule {
+    Rule {
+        pattern: pattern.into(),
+        cutoff,
+    }
+}
+
+/// Stops every machine.
+pub async fn shut_down(machines: impl IntoIterator<Item = Machine>) {
+    for machine in machines {
+        machine.engine.shutdown().await.unwrap();
     }
 }
 

@@ -10,21 +10,9 @@ mod common;
 
 use std::time::Duration;
 
-use common::{Machine, eventually, group_with, joined};
-use pigeon_core::path::GroupPath;
-use pigeon_core::selection::{Cutoff, Rule};
+use common::{Machine, eventually, group_with, joined, path, rule};
+use pigeon_core::selection::Cutoff;
 use pigeon_sync::{Amount, Changed, Delta, DeltaFiles, OwnFreed, Preview, RuleEffect};
-
-fn path(text: &str) -> GroupPath {
-    GroupPath::parse(text).unwrap()
-}
-
-fn rule(pattern: &str, cutoff: Cutoff) -> Rule {
-    Rule {
-        pattern: pattern.into(),
-        cutoff,
-    }
-}
 
 fn amount(files: u64, bytes: u64) -> Amount {
     Amount { files, bytes }
@@ -259,7 +247,7 @@ async fn a_file_created_outside_the_selection_stays_through_selection_changes_an
     .await;
     assert_eq!(bob.read("shared/idea.txt").as_deref(), Some("idea"));
     let bob = bob.restart().await;
-    tokio::time::sleep(Duration::from_millis(600)).await;
+    bob.wait_past_settling().await;
     assert_eq!(bob.read("shared/idea.txt").as_deref(), Some("idea"));
     assert_eq!(bob.read("+alice/a.txt").as_deref(), Some("aaaa"));
 }

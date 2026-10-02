@@ -196,11 +196,6 @@ pub(crate) struct Work {
     pub suggestions: BTreeMap<PathKey, Live>,
 }
 
-/// Work for the loop from outside it.
-pub(crate) enum Wake {
-    Keys(Vec<PathKey>),
-}
-
 pub(crate) struct Inner {
     /// The member this machine speaks for.
     pub member: MemberName,
@@ -218,7 +213,8 @@ pub(crate) struct Inner {
     pub node: Node,
     pub options: Options,
     pub work: tokio::sync::Mutex<Work>,
-    pub wake: mpsc::UnboundedSender<Wake>,
+    /// Keys to bring into agreement, sent from outside the loop.
+    pub wake: mpsc::UnboundedSender<Vec<PathKey>>,
     pub rescans: mpsc::UnboundedSender<Rescan>,
     pub errors: Mutex<VecDeque<String>>,
     pub started: Instant,
@@ -618,7 +614,7 @@ async fn run(
     inner: Arc<Inner>,
     mut received: mpsc::Receiver<Received>,
     mut rescan_events: mpsc::UnboundedReceiver<Rescan>,
-    mut wakes: mpsc::UnboundedReceiver<Wake>,
+    mut wakes: mpsc::UnboundedReceiver<Vec<PathKey>>,
     mut stopped: oneshot::Receiver<()>,
 ) {
     let mut ticks = tokio::time::interval(inner.options.tick);
@@ -665,9 +661,8 @@ async fn run(
                     inner.refresh(&mut work, rescan).await;
                 }
             }
-            Some(wake) = wakes.recv() => {
+            Some(keys) = wakes.recv() => {
                 let mut work = inner.work.lock().await;
-                let Wake::Keys(keys) = wake;
                 inner.refresh_keys(&mut work, &keys).await;
                 if keys.iter().any(is_statement) {
                     inner.follow_suggestions(&mut work).await;

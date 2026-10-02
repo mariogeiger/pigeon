@@ -57,6 +57,21 @@ fn secret(byte: u8) -> GroupSecret {
     GroupSecret([byte; 32])
 }
 
+/// Waits up to ten seconds for `condition`, failing with `what` if it
+/// never holds.
+async fn until<F, Fut>(what: &str, mut condition: F)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = bool>,
+{
+    let waited = timeout(Duration::from_secs(10), async {
+        while !condition().await {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    });
+    assert!(waited.await.is_ok(), "timed out: {what}");
+}
+
 struct Machine {
     signer: test_machines::Machine,
     log: Arc<Held>,
@@ -87,13 +102,10 @@ impl Machine {
             .node
             .use_relays(&RelayMap::from(relay.clone()))
             .await;
-        timeout(Duration::from_secs(10), async {
-            while machine.node.home_relay().as_ref() != Some(relay) {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
+        until("the machine reaches the relay", || async {
+            machine.node.home_relay().as_ref() == Some(relay)
         })
-        .await
-        .expect("the machine reaches the relay");
+        .await;
         lookup
             .add_endpoint_info(EndpointAddr::new(machine.node.id()).with_relay_url(relay.clone()));
         machine
@@ -130,13 +142,10 @@ impl Machine {
 
     async fn meet(&self, other: &Machine) {
         self.node.dial(other.node.id());
-        timeout(Duration::from_secs(10), async {
-            while !self.node.peers().contains(&other.node.id()) {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
+        until("the machines meet", || async {
+            self.node.peers().contains(&other.node.id())
         })
-        .await
-        .expect("the machines meet");
+        .await;
     }
 
     /// Takes chunks `range` of `hash` from `other` alone.
@@ -316,20 +325,18 @@ async fn a_machine_serves_what_it_holds_while_still_downloading() {
     let node = c.node.clone();
     let (hash, from) = (tag.hash(), b.node.id());
     let fetching = tokio::spawn(async move { node.fetch(hash, vec![from]).await });
-    timeout(Duration::from_secs(10), async {
-        while !c
-            .blobs
-            .observe(tag.hash())
-            .await
-            .unwrap()
-            .ranges
-            .contains(&ChunkNum(0))
-        {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("the first piece arrives before the rest exists there");
+    until(
+        "the first piece arrives before the rest exists there",
+        || async {
+            c.blobs
+                .observe(tag.hash())
+                .await
+                .unwrap()
+                .ranges
+                .contains(&ChunkNum(0))
+        },
+    )
+    .await;
     assert!(!fetching.is_finished());
     b.take(&a, tag.hash(), 1024..4096).await;
     timeout(Duration::from_secs(20), fetching)
@@ -366,13 +373,10 @@ async fn machines_known_only_by_the_groups_relay_reach_each_other() {
         .unwrap();
     let moved = relay_url(&other, "127.0.0.1").unwrap();
     b.node.use_relays(&RelayMap::from(moved.clone())).await;
-    timeout(Duration::from_secs(10), async {
-        while b.node.home_relay() != Some(moved.clone()) {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+    until("the machine moves to the new relay", || async {
+        b.node.home_relay() == Some(moved.clone())
     })
-    .await
-    .expect("the machine moves to the new relay");
+    .await;
     for machine in [a, b] {
         machine.node.shutdown().await.unwrap();
     }
@@ -418,13 +422,11 @@ async fn a_machine_speaking_another_version_of_the_protocol_is_reported() {
         (newer.id(), Heard::Announced(announcement)),
     ];
     expected.sort_by_key(|(machine, _)| *machine);
-    timeout(Duration::from_secs(10), async {
-        while a.node.incompatible() != expected {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("each refusal is reported with what the machine told, and only for those machines");
+    until(
+        "each refusal is reported with what the machine told, and only for those machines",
+        || async { a.node.incompatible() == expected },
+    )
+    .await;
     assert_eq!(Standing::of(&Heard::PreHello), Standing::PreHello);
     for (_, heard) in &expected {
         if let Heard::Announced(_) = heard {
@@ -460,13 +462,10 @@ async fn a_machine_reported_incompatible_is_no_longer_once_it_updates_and_dials_
         .accept(b"pigeon/sync/1", Silent)
         .spawn();
     a.node.dial(older.id());
-    timeout(Duration::from_secs(10), async {
-        while a.node.incompatible().is_empty() {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+    until("the older machine is reported", || async {
+        !a.node.incompatible().is_empty()
     })
-    .await
-    .expect("the older machine is reported");
+    .await;
     older_router.shutdown().await.unwrap();
     let updated = Machine::on(
         bind_local(key.clone(), &lookup).await.unwrap(),
@@ -474,13 +473,11 @@ async fn a_machine_reported_incompatible_is_no_longer_once_it_updates_and_dials_
         secret(5),
     );
     updated.node.dial(a.node.id());
-    timeout(Duration::from_secs(10), async {
-        while !a.node.incompatible().is_empty() {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("once the machine speaks the protocol, it is no longer reported");
+    until(
+        "once the machine speaks the protocol, it is no longer reported",
+        || async { a.node.incompatible().is_empty() },
+    )
+    .await;
     for machine in [a, updated] {
         machine.node.shutdown().await.unwrap();
     }

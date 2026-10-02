@@ -6,28 +6,14 @@
 
 mod common;
 
-use common::{Machine, eventually, group, joined};
-use pigeon_core::path::GroupPath;
-use pigeon_core::selection::{Cutoff, Rule};
+use common::{eventually, group, joined, path, shut_down};
 use pigeon_sync::Edit;
-
-fn path(text: &str) -> GroupPath {
-    GroupPath::parse(text).unwrap()
-}
 
 fn write(name: &str, text: &str) -> Edit {
     Edit::Write {
         path: path(name),
         bytes: text.as_bytes().to_vec(),
     }
-}
-
-async fn hold(machine: &Machine, pattern: &str) {
-    let rule = Rule {
-        pattern: pattern.into(),
-        cutoff: Cutoff::PlusInfinity,
-    };
-    machine.engine.set_rule(rule).await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -80,9 +66,7 @@ async fn actions_publish_at_once_whoever_owns_the_files() {
         .unwrap_err();
     assert_eq!(missing.to_string(), "no file at +alice/docs");
     assert!(alice.engine.suggestions().await.is_empty());
-    for machine in machines {
-        machine.engine.shutdown().await.unwrap();
-    }
+    shut_down(machines).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -99,7 +83,7 @@ async fn an_action_reaches_the_owner_away_when_it_was_made() {
                         .edit(vec![write("+alice/away.txt", "while away")])
                         .await
                         .unwrap();
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    bob.wait_past_collection().await;
                 });
             });
         })
@@ -108,9 +92,7 @@ async fn an_action_reaches_the_owner_away_when_it_was_made() {
         alice.read("+alice/away.txt").as_deref() == Some("while away")
     })
     .await;
-    for machine in [alice, bob] {
-        machine.engine.shutdown().await.unwrap();
-    }
+    shut_down([alice, bob]).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -120,7 +102,7 @@ async fn renamed_and_moved_files_keep_their_history() {
     let [alice, bob] = &machines[..] else {
         unreachable!()
     };
-    hold(bob, "+alice/").await;
+    bob.follow("+alice/").await;
     alice
         .engine
         .edit(vec![write("+alice/docs/a.txt", "a")])
@@ -160,9 +142,7 @@ async fn renamed_and_moved_files_keep_their_history() {
         ]
     );
     assert!(alice.engine.suggestions().await.is_empty());
-    for machine in machines {
-        machine.engine.shutdown().await.unwrap();
-    }
+    shut_down(machines).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -209,7 +189,5 @@ async fn restoring_a_folder_brings_back_what_it_held_with_new_versions() {
         3
     );
     assert!(bob.engine.restore("+alice/notes/", then).await.is_err());
-    for machine in machines {
-        machine.engine.shutdown().await.unwrap();
-    }
+    shut_down(machines).await;
 }

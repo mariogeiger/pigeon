@@ -6,12 +6,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{eventually, group_with, is_read_only, joined};
-use pigeon_core::path::GroupPath;
-
-fn path(text: &str) -> GroupPath {
-    GroupPath::parse(text).unwrap()
-}
+use common::{eventually, group_with, is_read_only, joined, path};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn waiting_edits_are_listed_and_published_at_once_under_a_path() {

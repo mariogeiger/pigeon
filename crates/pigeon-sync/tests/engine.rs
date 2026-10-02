@@ -7,19 +7,11 @@
 
 mod common;
 
-use common::{eventually, group, is_read_only, joined};
-use pigeon_core::path::GroupPath;
+use common::{eventually, group, is_read_only, joined, path, rule, shut_down};
 use pigeon_core::retention::Retention;
-use pigeon_core::selection::{Cutoff, Rule};
+use pigeon_core::selection::Cutoff;
 use pigeon_net::relay::{relay_url, serve_relay};
 use pigeon_sync::{Edit, JoinState};
-
-fn rule(pattern: &str, cutoff: Cutoff) -> Rule {
-    Rule {
-        pattern: pattern.into(),
-        cutoff,
-    }
-}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_personal_file_reaches_the_machines_that_hold_it() {
@@ -30,10 +22,7 @@ async fn a_personal_file_reaches_the_machines_that_hold_it() {
     };
     alice.edit("+alice/notes.txt", "one");
     eventually("bob sees alice's file in the ledger", || async {
-        bob.engine
-            .history(&GroupPath::parse("+alice/notes.txt").unwrap())
-            .len()
-            == 1
+        bob.engine.history(&path("+alice/notes.txt")).len() == 1
     })
     .await;
     assert_eq!(
@@ -78,10 +67,10 @@ async fn a_personal_file_reaches_the_machines_that_hold_it() {
         None,
         "a released file leaves the disk"
     );
-    for machine in machines {
+    for machine in &machines {
         assert!(machine.engine.status().await.errors.is_empty());
-        machine.engine.shutdown().await.unwrap();
     }
+    shut_down(machines).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -91,9 +80,7 @@ async fn two_machines_with_one_name_are_one_member() {
     for machine in &machines {
         assert_eq!(machine.engine.members().len(), 1);
     }
-    for machine in machines {
-        machine.engine.shutdown().await.unwrap();
-    }
+    shut_down(machines).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -103,33 +90,21 @@ async fn a_restarted_machine_resumes_without_publishing_again() {
     let alice = machines.remove(0);
     alice.edit("+alice/a.txt", "a");
     eventually("the file is published", || async {
-        alice
-            .engine
-            .history(&GroupPath::parse("+alice/a.txt").unwrap())
-            .len()
-            == 1
+        alice.engine.history(&path("+alice/a.txt")).len() == 1
     })
     .await;
     let patches = alice.engine.status().await.patches;
     let alice = alice.restart().await;
     assert_eq!(alice.engine.status().await.join, JoinState::Joined);
-    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    alice.wait_past_settling().await;
     assert_eq!(alice.engine.status().await.patches, patches);
     assert_eq!(alice.read("+alice/a.txt").as_deref(), Some("a"));
     alice.edit("+alice/a.txt", "b");
     eventually("an edit after the restart is published", || async {
-        alice
-            .engine
-            .history(&GroupPath::parse("+alice/a.txt").unwrap())
-            .len()
-            == 2
+        alice.engine.history(&path("+alice/a.txt")).len() == 2
     })
     .await;
     alice.engine.shutdown().await.unwrap();
-}
-
-fn path(text: &str) -> GroupPath {
-    GroupPath::parse(text).unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -153,7 +128,7 @@ async fn the_quota_drops_past_versions_and_keeps_current_ones() {
         panic!("two versions: {history:?}")
     };
     let (old, current) = (old.content.unwrap(), current.content.unwrap());
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    alice.wait_past_collection().await;
     assert!(alice.engine.read(&old).await.unwrap().is_some());
     let retention = Retention {
         quota_percent: 0,
@@ -168,6 +143,7 @@ async fn the_quota_drops_past_versions_and_keeps_current_ones() {
         alice.engine.read(&current).await.unwrap().as_deref(),
         Some(&b"two"[..])
     );
+    shut_down(machines).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -196,17 +172,14 @@ async fn keeping_history_keeps_past_versions_of_others_files() {
     }
     let history = bob.engine.history(&path("+alice/a.txt"));
     let old = history[0].content.unwrap();
-    bob.engine.set_retention(&keep(true)).await.unwrap();
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    bob.wait_past_collection().await;
     assert!(bob.engine.read(&old).await.unwrap().is_some());
     bob.engine.set_retention(&keep(false)).await.unwrap();
     eventually("without it the past version goes", || async {
         bob.engine.read(&old).await.unwrap().is_none()
     })
     .await;
-    for machine in machines {
-        machine.engine.shutdown().await.unwrap();
-    }
+    shut_down(machines).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -232,6 +205,8 @@ async fn every_machine_follows_the_relay_the_group_names() {
         bob.engine.status().await.relay.as_deref() == Some(url.as_str())
     })
     .await;
+    machines.push(bob);
+    shut_down(machines).await;
 }
 
 #[cfg(unix)]
@@ -262,8 +237,5 @@ async fn a_root_reached_through_a_link_syncs_both_ways() {
     })
     .await;
     assert!(bob.engine.status().await.errors.is_empty());
-    bob.engine.shutdown().await.unwrap();
-    for machine in machines {
-        machine.engine.shutdown().await.unwrap();
-    }
+    shut_down(machines.into_iter().chain([bob])).await;
 }

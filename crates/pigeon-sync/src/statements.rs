@@ -8,7 +8,7 @@ use pigeon_core::patch::{Change, Content};
 use pigeon_core::path::GroupPath;
 use serde::de::DeserializeOwned;
 
-use crate::engine::{Inner, Wake, Work};
+use crate::engine::{Inner, Work};
 
 impl Inner {
     /// Reads a statement's body from the blob store.
@@ -36,7 +36,7 @@ impl Inner {
             continues: None,
         };
         self.publish_at(stamp, vec![change])?;
-        let _ = self.wake.send(Wake::Keys(vec![path.key()]));
+        let _ = self.wake.send(vec![path.key()]);
         Ok(())
     }
 }

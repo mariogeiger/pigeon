@@ -35,16 +35,21 @@ pub struct Edited {
     pub published: Vec<GroupPath>,
 }
 
-/// The content one path is to hold.
+/// The content a published path is to hold.
 enum Target {
     Bytes(Vec<u8>),
     /// The content of the published version it moves from.
     Moved(Content, VersionRef),
-    /// The draft at `from`, which only this machine's disk holds.
-    Draft {
-        from: GroupPath,
-    },
     Gone,
+}
+
+/// What an edit does at one path.
+enum Planned {
+    /// Publish that the path holds `Target`.
+    Publish(Target),
+    /// Move this machine's draft to the path from where it lies, or, with
+    /// `None`, remove the draft there: only this machine's disk holds it.
+    Draft(Option<GroupPath>),
 }
 
 /// The live files at `path` or inside the folder `path`.
@@ -67,12 +72,12 @@ fn drafts_at<'a>(ledger: &Ledger, drafts: &'a [GroupPath], path: &GroupPath) -> 
         .collect()
 }
 
-/// Spells out `edit` as the content each path is to hold, given the
-/// `drafts` this machine holds, moves first so that a moved file leaves
-/// its source before the source is deleted.
-fn targets(ledger: &Ledger, drafts: &[GroupPath], edit: Edit) -> Result<Vec<(GroupPath, Target)>> {
+/// Spells out `edit` as what it does at each path, given the `drafts` this
+/// machine holds, moves first so that a moved file leaves its source
+/// before the source is deleted.
+fn plan(ledger: &Ledger, drafts: &[GroupPath], edit: Edit) -> Result<Vec<(GroupPath, Planned)>> {
     match edit {
-        Edit::Write { path, bytes } => Ok(vec![(path, Target::Bytes(bytes))]),
+        Edit::Write { path, bytes } => Ok(vec![(path, Planned::Publish(Target::Bytes(bytes)))]),
         Edit::Delete { path } => {
             let files = files_at(ledger, &path);
             let drafts = drafts_at(ledger, drafts, &path);
@@ -81,9 +86,12 @@ fn targets(ledger: &Ledger, drafts: &[GroupPath], edit: Edit) -> Result<Vec<(Gro
             }
             Ok(files
                 .into_iter()
-                .map(|version| &version.path)
-                .chain(drafts)
-                .map(|path| (path.clone(), Target::Gone))
+                .map(|version| (version.path.clone(), Planned::Publish(Target::Gone)))
+                .chain(
+                    drafts
+                        .into_iter()
+                        .map(|draft| (draft.clone(), Planned::Draft(None))),
+                )
                 .collect())
         }
         Edit::Rename { from, to } => {
@@ -97,19 +105,22 @@ fn targets(ledger: &Ledger, drafts: &[GroupPath], edit: Edit) -> Result<Vec<(Gro
                 .filter_map(|version| {
                     let content = version.content?;
                     let moved = Target::Moved(content, version.reference());
-                    Some((version.path.clone(), moved))
+                    Some((
+                        version.path.clone(),
+                        Planned::Publish(moved),
+                        Planned::Publish(Target::Gone),
+                    ))
                 })
                 .chain(moved_drafts.into_iter().map(|draft| {
                     (
                         draft.clone(),
-                        Target::Draft {
-                            from: draft.clone(),
-                        },
+                        Planned::Draft(Some(draft.clone())),
+                        Planned::Draft(None),
                     )
                 }));
             let mut moves = Vec::new();
             let mut gone = Vec::new();
-            for (source, moved) in sources {
+            for (source, moved, left) in sources {
                 let target = source.moved(&from, &to)?;
                 let taken = ledger.head(&target.key()).is_some_and(Version::is_live)
                     || drafts.iter().any(|draft| draft.key() == target.key());
@@ -117,7 +128,7 @@ fn targets(ledger: &Ledger, drafts: &[GroupPath], edit: Edit) -> Result<Vec<(Gro
                     bail!("{target} exists");
                 }
                 if source.key() != target.key() {
-                    gone.push((source, Target::Gone));
+                    gone.push((source, left));
                 }
                 moves.push((target, moved));
             }
@@ -128,13 +139,13 @@ fn targets(ledger: &Ledger, drafts: &[GroupPath], edit: Edit) -> Result<Vec<(Gro
 }
 
 impl Inner {
-    /// Makes the disk at `path` hold the draft `target`, which moves from
-    /// its place or goes.
-    fn edit_draft(&self, path: &GroupPath, target: &Target) -> Result<()> {
+    /// Makes the disk at `path` hold the draft that moves from `from`, or
+    /// no draft.
+    fn edit_draft(&self, path: &GroupPath, from: Option<&GroupPath>) -> Result<()> {
         let root = &self.root;
         let location = fs_path(root, path);
-        match target {
-            Target::Draft { from } => {
+        match from {
+            Some(from) => {
                 if let Some(parent) = location.parent() {
                     std::fs::create_dir_all(parent)
                         .with_context(|| format!("creating {}", parent.display()))?;
@@ -144,7 +155,7 @@ impl Inner {
                     .with_context(|| format!("moving {from} to {path}"))?;
                 disk::remove(root, &source)?;
             }
-            _ => {
+            None => {
                 if file_stat(&location).is_some() {
                     disk::remove(root, &location)?;
                 }
@@ -174,9 +185,6 @@ impl Inner {
                 Some(content),
                 Some(from).filter(|from| from.path.key() != path.key()),
             ),
-            Target::Draft { from } => {
-                bail!("{from} is not published yet: only its machine moves it")
-            }
             Target::Gone => (None, None),
         };
         Ok(Change {
@@ -225,26 +233,20 @@ impl Inner {
         {
             let ledger = self.ledger.lock();
             for edit in edits {
-                planned.extend(targets(&ledger, &drafts, edit)?);
+                planned.extend(plan(&ledger, &drafts, edit)?);
             }
         }
         let mut moved = Vec::new();
         let mut changes = Vec::new();
-        for (path, target) in planned {
-            let draft = match &target {
-                Target::Draft { .. } => true,
-                Target::Gone => !self
-                    .ledger
-                    .lock()
-                    .head(&path.key())
-                    .is_some_and(Version::is_live),
-                Target::Bytes(_) | Target::Moved(..) => false,
-            };
-            if draft {
-                self.edit_draft(&path, &target)?;
-                moved.push(path);
-            } else {
-                changes.push(self.edit_change(work, path, target).await?);
+        for (path, planned) in planned {
+            match planned {
+                Planned::Publish(target) => {
+                    changes.push(self.edit_change(work, path, target).await?);
+                }
+                Planned::Draft(from) => {
+                    self.edit_draft(&path, from.as_ref())?;
+                    moved.push(path);
+                }
             }
         }
         let mut published: Vec<GroupPath> =

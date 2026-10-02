@@ -4,29 +4,15 @@
 //! one brings the group's version back and stays in history, a folder's
 //! suggestions are decided together, an outdated one stays decidable, the
 //! loser of concurrent edits is suggested, a move is one suggestion that
-//! keeps the file's history, an unportable file is validated at another
-//! path, and what pigeon 0.6 left becomes writable files and suggestions.
+//! keeps the file's history, and an unportable file is validated at
+//! another path, as only one suggestion of one file's content can be.
 
 mod common;
 
-use common::{Machine, eventually, group, is_read_only, joined};
+use common::{Machine, eventually, group, is_read_only, joined, path};
 use pigeon_core::patch::VersionRef;
-use pigeon_core::path::GroupPath;
-use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_core::statement::Reason;
 use pigeon_sync::SuggestionView;
-
-fn path(text: &str) -> GroupPath {
-    GroupPath::parse(text).unwrap()
-}
-
-async fn hold(machine: &Machine, pattern: &str) {
-    let rule = Rule {
-        pattern: pattern.into(),
-        cutoff: Cutoff::PlusInfinity,
-    };
-    machine.engine.set_rule(rule).await.unwrap();
-}
 
 /// The statements of every suggestion `machine` shows.
 async fn shown(machine: &Machine) -> Vec<VersionRef> {
@@ -44,7 +30,7 @@ async fn bob_suggests_a_plan(machines: &[Machine]) -> SuggestionView {
     let [alice, bob] = machines else {
         unreachable!()
     };
-    hold(bob, "+alice/").await;
+    bob.follow("+alice/").await;
     alice.edit("+alice/plan.txt", "alice's plan");
     eventually("bob holds the plan", || async {
         bob.read("+alice/plan.txt").is_some()
@@ -126,7 +112,7 @@ async fn a_discarded_suggestion_brings_the_group_version_back_and_stays_in_histo
     let history = bob.engine.history(&suggestion.statement.path);
     assert_eq!(history.len(), 2, "{history:?}");
     let content = suggestion.changes[0].content.unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    bob.wait_past_collection().await;
     assert_eq!(
         bob.engine.read(&content).await.unwrap().as_deref(),
         Some(&b"bob's plan"[..]),
@@ -142,7 +128,7 @@ async fn a_folders_suggestions_are_validated_together_deletions_included() {
     let [alice, bob] = &machines[..] else {
         unreachable!()
     };
-    hold(bob, "shared/").await;
+    bob.follow("shared/").await;
     alice.edit("shared/a.txt", "a");
     alice.edit("shared/b.txt", "b");
     eventually("bob holds the published files", || async {
@@ -163,11 +149,31 @@ async fn a_folders_suggestions_are_validated_together_deletions_included() {
         "bob's disk keeps the deletion"
     );
     assert_eq!(alice.read("shared/b.txt").as_deref(), Some("b"));
-    alice
+    let elsewhere = path("shared/c.txt");
+    let both = shown(alice).await;
+    assert!(
+        alice
+            .engine
+            .validate(&both, Some(&elsewhere))
+            .await
+            .is_err()
+    );
+    let deletion = alice
         .engine
-        .validate(&shown(alice).await, None)
+        .suggestions()
         .await
+        .into_iter()
+        .find(|view| view.changes[0].content.is_none())
         .unwrap();
+    assert!(
+        alice
+            .engine
+            .validate(&[deletion.statement], Some(&elsewhere))
+            .await
+            .is_err(),
+        "only a content goes to another path"
+    );
+    alice.engine.validate(&both, None).await.unwrap();
     for machine in [alice, bob] {
         eventually("both suggestions land everywhere", || async {
             machine.read("shared/a.txt").as_deref() == Some("bob's a")
@@ -267,7 +273,7 @@ async fn a_move_outside_the_rules_is_one_suggestion_that_keeps_the_history() {
     let [alice, bob] = &machines[..] else {
         unreachable!()
     };
-    hold(bob, "+alice/").await;
+    bob.follow("+alice/").await;
     alice.edit("+alice/old.txt", "moving text");
     eventually("bob holds the file", || async {
         bob.read("+alice/old.txt").is_some()

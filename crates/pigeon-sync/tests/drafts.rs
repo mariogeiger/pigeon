@@ -8,13 +8,8 @@ mod common;
 
 use std::time::Duration;
 
-use common::{eventually, group_with, joined};
-use pigeon_core::path::GroupPath;
+use common::{eventually, group_with, joined, path};
 use pigeon_sync::Edit;
-
-fn path(text: &str) -> GroupPath {
-    GroupPath::parse(text).unwrap()
-}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn drafts_of_one_path_warn_both_members_until_one_goes() {

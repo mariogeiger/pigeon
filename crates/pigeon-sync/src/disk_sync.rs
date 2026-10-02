@@ -1,7 +1,7 @@
 //! Bringing disk and ledger into agreement: how each path's disk compares
 //! with the version it last matched, with the one the selection holds and
 //! with what a suggestion of this machine keeps there, and carrying out the
-//! steps `reconcile` returns.
+//! step `reconcile` returns.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -18,10 +18,10 @@ use pigeon_core::statement::{Reason, SuggestedChange, is_statement};
 use pigeon_store::disk::{self, Stat, fs_path};
 use pigeon_store::index::{IndexEntry, Seen, observe};
 use pigeon_store::scan::scan;
-use pigeon_store::state::Kept as KeptRecord;
+use pigeon_store::state::Kept;
 
-use crate::engine::{Inner, Pending, Wake, Work};
-use crate::reconcile::{Disk, Kept, Lost, Step, View, reconcile};
+use crate::engine::{Inner, Pending, Work};
+use crate::reconcile::{Disk, KeptSuggestion, Step, View, reconcile};
 use crate::watch::Rescan;
 
 /// Where a path is on disk and what is there.
@@ -59,7 +59,9 @@ pub(crate) fn stat_time(stat: &Stat) -> u64 {
     ntp_time(UNIX_EPOCH + Duration::from_nanos(nanos))
 }
 
-/// The version `selection` holds at `key`.
+/// The version the disk should show at `key` under `cutoff`: the head
+/// when followed, the version current at the time when pinned, and when
+/// freed, the head only where the disk holds the path (`held`).
 pub(crate) fn target(
     ledger: &Ledger,
     key: &PathKey,
@@ -118,7 +120,7 @@ fn compare_disk(
 struct Look {
     target: Option<Version>,
     synced: Option<Change>,
-    lost: Option<Lost>,
+    fell: Option<Reason>,
 }
 
 impl Inner {
@@ -135,23 +137,23 @@ impl Inner {
         let synced_stamp = entry.and_then(|entry| entry.synced);
         let synced = synced_stamp.and_then(|stamp| change_at(&ledger, &stamp, key));
         let target_stamp = target.as_ref().map(|version| version.stamp);
-        let lost = synced_stamp
+        let fell = synced_stamp
             .filter(|stamp| stamp.machine == self.me() && Some(*stamp) != target_stamp)
             .and_then(|stamp| match ledger.outcome(&stamp) {
-                Some(Err(rejection)) => Some(Lost::Rejected(rejection.to_string())),
+                Some(Err(rejection)) => Some(Reason::Rejected(rejection.to_string())),
                 _ if ledger
                     .unseen_versions(key)
                     .iter()
                     .any(|version| version.stamp == stamp) =>
                 {
-                    Some(Lost::Superseded)
+                    Some(Reason::Superseded)
                 }
                 _ => None,
             });
         Look {
             target,
             synced,
-            lost,
+            fell,
         }
     }
 
@@ -290,17 +292,16 @@ impl Inner {
         }
         let kept = match (record, disk_content) {
             (Some(record), Some(content)) => self.kept(&probe.path, &record, content)?,
-            _ => Kept::No,
+            _ => KeptSuggestion::No,
         };
         let view = View {
             synced: synced_stamp,
             target: target_stamp,
             kept,
             statement: is_statement(&probe.path.key()),
-            lost: look.lost.clone(),
+            fell: look.fell.clone(),
         };
-        let steps = reconcile(disk, &view);
-        if steps.is_empty() {
+        let Some(step) = reconcile(disk, &view) else {
             work.pending.remove(key);
             if let Some(entry) = &entry
                 && entry.seen != seen
@@ -313,14 +314,11 @@ impl Inner {
                 self.state.update_index([(key, Some(&refreshed))])?;
             }
             return Ok(());
-        }
-        if !steps.contains(&Step::Settle) {
+        };
+        if step != Step::Settle {
             work.pending.remove(key);
         }
-        for step in steps {
-            self.carry_out(work, key, &probe, step, &look).await?;
-        }
-        Ok(())
+        self.carry_out(work, key, &probe, step, &look).await
     }
 
     /// Whether the disk at `path`, holding `disk_content`, shows what
@@ -330,12 +328,12 @@ impl Inner {
     fn kept(
         &self,
         path: &GroupPath,
-        record: &KeptRecord,
+        record: &Kept,
         disk_content: Option<Content>,
-    ) -> Result<Kept> {
+    ) -> Result<KeptSuggestion> {
         if disk_content != record.content {
             self.state.unkeep(path.as_str())?;
-            return Ok(Kept::No);
+            return Ok(KeptSuggestion::No);
         }
         let waiting = self
             .ledger
@@ -343,9 +341,9 @@ impl Inner {
             .head(&record.statement.key())
             .is_some_and(Version::is_live);
         Ok(if waiting {
-            Kept::Waiting
+            KeptSuggestion::Waiting
         } else {
-            Kept::Decided
+            KeptSuggestion::Decided
         })
     }
 
@@ -384,7 +382,7 @@ impl Inner {
             .await
     }
 
-    /// Carries out one step of `reconcile` at `key`.
+    /// Carries out the step of `reconcile` at `key`.
     async fn carry_out(
         self: &Arc<Self>,
         work: &mut Work,
@@ -471,6 +469,7 @@ impl Inner {
     /// Fetches a blob from its author's machine and every peer at once, then
     /// wakes the paths waiting for it; after a failure it waits before
     /// trying again.
+    ///
     /// The blob is protected from the start, so that garbage collection
     /// never takes it before the paths waiting for it protect it.
     pub(crate) fn fetch(
@@ -516,7 +515,7 @@ impl Inner {
     async fn release(&self, hash: ContentHash) {
         let keys = self.work.lock().await.fetching.remove(&hash);
         if let Some(keys) = keys {
-            let _ = self.wake.send(Wake::Keys(keys.into_iter().collect()));
+            let _ = self.wake.send(keys.into_iter().collect());
         }
     }
 }

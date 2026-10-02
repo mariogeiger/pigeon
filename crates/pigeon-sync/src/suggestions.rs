@@ -86,6 +86,16 @@ fn what(change: &SuggestedChange) -> String {
     }
 }
 
+/// What deciding suggestions does with their changes.
+#[derive(Clone, Copy)]
+enum Decision<'a> {
+    /// Publishes them, the one content change of a single suggestion at
+    /// the path given.
+    Validate(Option<&'a GroupPath>),
+    /// Publishes none; the history keeps them.
+    Discard,
+}
+
 /// What a suggested path is compared by: its key when it is portable.
 fn path_key(path: &str) -> String {
     GroupPath::parse(path).map_or_else(|_| path.to_owned(), |path| path.key().as_str().to_owned())
@@ -364,19 +374,21 @@ impl Inner {
     }
 
     /// Decides the suggestions `shown`, as their versions were shown, in
-    /// one patch: deleting their statements, and when `validate`,
-    /// publishing their changes, the later suggestion winning at a path;
-    /// `to` places the one content change of a single suggestion there.
+    /// one patch: deleting their statements, and as `decision` says,
+    /// publishing their changes, the later suggestion winning at a path.
     async fn decide(
         self: &Arc<Self>,
         work: &mut Work,
         shown: &[VersionRef],
-        validate: bool,
-        to: Option<&GroupPath>,
+        decision: Decision<'_>,
     ) -> Result<()> {
         self.ensure_joined(work)?;
         if shown.is_empty() {
             bail!("no suggestion to decide");
+        }
+        let placed = "only a suggestion of one file's content can be placed at another path";
+        if matches!(decision, Decision::Validate(Some(_))) && shown.len() != 1 {
+            bail!(placed);
         }
         let mut shown = shown.to_vec();
         shown.sort_by_key(|statement| statement.stamp);
@@ -390,14 +402,13 @@ impl Inner {
                 replaces: Some(statement.stamp),
                 continues: None,
             });
-            if !validate {
+            let Decision::Validate(to) = decision else {
                 continue;
-            }
+            };
             if to.is_some()
-                && (shown.len() != 1
-                    || !matches!(&suggestion.changes[..], [change] if change.content.is_some()))
+                && !matches!(&suggestion.changes[..], [change] if change.content.is_some())
             {
-                bail!("only a suggestion of one file's content can be placed at another path");
+                bail!(placed);
             }
             for change in suggestion.changes {
                 let change = self.validated(change, to)?;
@@ -464,7 +475,9 @@ impl Engine {
     /// places it, or `to` is taken.
     pub async fn validate(&self, shown: &[VersionRef], to: Option<&GroupPath>) -> Result<()> {
         let mut work = self.inner.work.lock().await;
-        self.inner.decide(&mut work, shown, true, to).await
+        self.inner
+            .decide(&mut work, shown, Decision::Validate(to))
+            .await
     }
 
     /// Discards the suggestions `shown`, as they were shown: decides them
@@ -476,6 +489,6 @@ impl Engine {
     /// changed since it was shown.
     pub async fn discard(&self, shown: &[VersionRef]) -> Result<()> {
         let mut work = self.inner.work.lock().await;
-        self.inner.decide(&mut work, shown, false, None).await
+        self.inner.decide(&mut work, shown, Decision::Discard).await
     }
 }

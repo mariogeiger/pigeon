@@ -244,7 +244,8 @@ impl State {
 pub struct Ledger {
     group: GroupId,
     patches: BTreeMap<Stamp, SignedPatch>,
-    by_machine: BTreeSet<(MachineId, u64)>,
+    /// The times of each machine's patches.
+    by_machine: BTreeMap<MachineId, BTreeSet<u64>>,
     state: State,
 }
 
@@ -254,7 +255,7 @@ impl Ledger {
         Self {
             group,
             patches: BTreeMap::new(),
-            by_machine: BTreeSet::new(),
+            by_machine: BTreeMap::new(),
             state: State::default(),
         }
     }
@@ -276,7 +277,10 @@ impl Ledger {
         }
         signed.verify(&self.group)?;
         self.patches.insert(stamp, signed);
-        self.by_machine.insert((stamp.machine, stamp.time));
+        self.by_machine
+            .entry(stamp.machine)
+            .or_default()
+            .insert(stamp.time);
         let later: Vec<Stamp> = self
             .state
             .outcomes
@@ -443,40 +447,30 @@ impl Ledger {
     /// The latest time known from each machine.
     #[must_use]
     pub fn vector(&self) -> BTreeMap<MachineId, u64> {
-        let mut vector = BTreeMap::new();
-        for (machine, time) in &self.by_machine {
-            vector.insert(*machine, *time);
-        }
-        vector
+        self.by_machine
+            .iter()
+            .filter_map(|(machine, times)| Some((*machine, *times.last()?)))
+            .collect()
     }
 
     /// Every patch that `vector` does not cover.
     #[must_use]
     pub fn missing_from(&self, vector: &BTreeMap<MachineId, u64>) -> Vec<&SignedPatch> {
-        let mut missing: Vec<&SignedPatch> = Vec::new();
-        let machines: BTreeSet<MachineId> = self
+        let mut missing: Vec<&SignedPatch> = self
             .by_machine
             .iter()
-            .map(|(machine, _)| *machine)
-            .collect();
-        for machine in machines {
-            let after = vector
-                .get(&machine)
-                .map_or(Bound::Included((machine, 0)), |time| {
-                    Bound::Excluded((machine, *time))
-                });
-            for (_, time) in self
-                .by_machine
-                .range((after, Bound::Included((machine, u64::MAX))))
-            {
-                missing.push(
+            .flat_map(|(machine, times)| {
+                let after = vector
+                    .get(machine)
+                    .map_or(Bound::Unbounded, |time| Bound::Excluded(*time));
+                times.range((after, Bound::Unbounded)).map(|time| {
                     &self.patches[&Stamp {
                         time: *time,
-                        machine,
-                    }],
-                );
-            }
-        }
+                        machine: *machine,
+                    }]
+                })
+            })
+            .collect();
         missing.sort_by_key(|signed| signed.stamp());
         missing
     }
