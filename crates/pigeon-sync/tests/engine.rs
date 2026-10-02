@@ -2,8 +2,9 @@
 //! them and stay writable everywhere, two machines with one name are one
 //! member, a restarted machine resumes without publishing again, the quota
 //! drops history, keeping history keeps the past versions of others' files
-//! too, every machine follows the relay the group names, and a root
-//! reached through a link syncs both ways.
+//! too, every machine follows the relay the group names, a root reached
+//! through a link syncs both ways, and an engine with nothing to do looks
+//! at the disk no more.
 
 mod common;
 
@@ -245,4 +246,21 @@ async fn a_root_reached_through_a_link_syncs_both_ways() {
     .await;
     assert!(bob.engine.status().errors.is_empty());
     shut_down(machines.into_iter().chain([bob])).await;
+}
+
+#[tokio::test]
+async fn an_engine_with_nothing_to_do_scans_the_disk_no_more() {
+    let machines = group(&["alice"]).await;
+    joined(&machines).await;
+    let alice = &machines[0];
+    alice.edit("+alice/notes.txt", "one");
+    eventually("alice publishes her file", || async {
+        alice.engine.history(&path("+alice/notes.txt")).len() == 1
+    })
+    .await;
+    alice.wait_past_settling().await;
+    let scans = alice.engine.status().scans;
+    alice.wait_for_ticks(10).await;
+    assert_eq!(alice.engine.status().scans, scans);
+    shut_down(machines).await;
 }

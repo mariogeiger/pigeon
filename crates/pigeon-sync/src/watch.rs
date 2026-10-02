@@ -1,9 +1,11 @@
 //! Watching a group's root and the destinations of its placed folders: the
 //! operating system reports changed paths, which become the group paths
-//! whose subtrees pigeon rescans.
+//! whose subtrees pigeon rescans; a path only opened or read changed
+//! nothing, so that pigeon's own scans wake no other.
 
 use std::path::{Path, PathBuf};
 
+use notify::event::{AccessKind, AccessMode, EventKind};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use pigeon_core::path::GroupPath;
 use pigeon_core::places::Place;
@@ -87,6 +89,16 @@ pub fn rescan_of(watched: &Watched, location: &Path) -> Option<Rescan> {
         .map_or(Some(Rescan::All), |path| Some(Rescan::Under(path)))
 }
 
+/// Whether an event of `kind` may come with a change on disk: anything
+/// but opening, reading or closing what was not written.
+fn changes_disk(kind: EventKind) -> bool {
+    match kind {
+        EventKind::Access(AccessKind::Close(AccessMode::Write)) => true,
+        EventKind::Access(_) => false,
+        _ => true,
+    }
+}
+
 /// Starts watching every folder of `watched`, each followed to the folder
 /// it may link to, since some systems report changes under that folder's
 /// own path; the watcher stops when dropped.
@@ -101,6 +113,7 @@ pub fn watch(
     let locations: Vec<PathBuf> = watched.iter().map(|one| one.location.clone()).collect();
     let mut system =
         notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
+            Ok(event) if !changes_disk(event.kind) => {}
             Ok(event) => {
                 if event.need_rescan() {
                     let _ = changes.send(Rescan::All);
@@ -152,6 +165,26 @@ mod tests {
             under("a/videos")
         );
         assert_eq!(rescan_of(disk, Path::new("/disk")), None);
+    }
+
+    #[tokio::test]
+    async fn reading_changes_nothing_while_writing_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("read.txt"), "x").unwrap();
+        let (sender, mut changes) = mpsc::unbounded_channel();
+        let _watcher = watch(Watched::all(root, &[]), sender).unwrap();
+        for entry in std::fs::read_dir(root).unwrap() {
+            std::fs::read(entry.unwrap().path()).unwrap();
+        }
+        std::fs::write(root.join("written.txt"), "y").unwrap();
+        let first = tokio::time::timeout(Duration::from_secs(5), changes.recv()).await;
+        assert_eq!(
+            first,
+            Ok(Some(Rescan::Under(
+                GroupPath::parse("written.txt").unwrap()
+            )))
+        );
     }
 
     #[tokio::test]
