@@ -4,6 +4,16 @@ All notable user-visible changes to pigeon are documented here. While the
 version is 0.x, a change that breaks compatibility increments the second
 number, and any other change the third.
 
+## 0.7.2 — 2026-10-02
+
+### Added
+
+- Tab completion in zsh, bash, fish, elvish and PowerShell completes the
+  values the daemon knows: groups, members, the group's paths and
+  patterns one folder at a time, version times and suggestion ids, each
+  with what `list` shows of it. `pigeon completions <shell>` prints the
+  script to source.
+
 ## 0.7.1 — 2026-10-02
 
 ### Changed

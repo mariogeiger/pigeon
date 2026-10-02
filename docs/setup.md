@@ -24,6 +24,17 @@ below answer: start at login, join or found a group, where its root folder
 goes, and what to follow. Running it again resumes where the machine
 stands.
 
+Tab completes commands, flags and the values the daemon knows: groups,
+members, the group's paths and patterns one folder at a time, version
+times and suggestion ids. To have it, add to `~/.zshrc`
+
+```sh
+source <(pigeon completions zsh)
+```
+
+or the same line with `bash` to `~/.bashrc`; `pigeon completions` prints
+the script of fish, elvish and PowerShell too.
+
 To update, run `pigeon update`. It brings a clone of pigeon kept in your
 cache folder to the head of the main branch with git, then builds it with
 cargo, in your terminal, in a build folder kept between updates, so only

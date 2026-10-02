@@ -8,6 +8,7 @@ pub mod args;
 pub mod catalog;
 pub mod cli;
 pub mod client;
+pub mod complete;
 pub mod config_preview;
 pub mod daemon;
 mod file_status;

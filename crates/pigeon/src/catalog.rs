@@ -31,6 +31,32 @@ pub struct Param {
     pub about: &'static str,
     pub kind: Kind,
     pub required: bool,
+    /// The action, by noun and verb, whose results list the values this
+    /// argument takes, in their first column.
+    pub listed_by: Option<(&'static str, &'static str)>,
+}
+
+impl Param {
+    const fn new(name: &'static str, about: &'static str, kind: Kind, required: bool) -> Self {
+        let listed_by = match kind {
+            Kind::Path | Kind::Pattern => Some(("file", "list")),
+            _ => None,
+        };
+        Self {
+            name,
+            about,
+            kind,
+            required,
+            listed_by,
+        }
+    }
+
+    const fn listed_by(self, noun: &'static str, verb: &'static str) -> Self {
+        Self {
+            listed_by: Some((noun, verb)),
+            ..self
+        }
+    }
 }
 
 /// Whether an action concerns the machine or one of its groups.
@@ -70,29 +96,19 @@ impl Action {
 }
 
 /// The argument naming a group.
-pub const GROUP: Param = Param {
-    name: "group",
-    about: "The group, which may be left out on a machine with a single group",
-    kind: Kind::Text,
-    required: false,
-};
+pub const GROUP: Param = optional(
+    "group",
+    "The group, which may be left out on a machine with a single group",
+    Kind::Text,
+)
+.listed_by("group", "list");
 
 const fn required(name: &'static str, about: &'static str, kind: Kind) -> Param {
-    Param {
-        name,
-        about,
-        kind,
-        required: true,
-    }
+    Param::new(name, about, kind, true)
 }
 
 const fn optional(name: &'static str, about: &'static str, kind: Kind) -> Param {
-    Param {
-        name,
-        about,
-        kind,
-        required: false,
-    }
+    Param::new(name, about, kind, false)
 }
 
 const MEMBER: Param = required(
@@ -101,7 +117,7 @@ const MEMBER: Param = required(
     Kind::Text,
 );
 const KEY: Param = required("key", "The group key a member shared", Kind::Text);
-const WHO: Param = required("member", "The member's name", Kind::Text);
+const WHO: Param = required("member", "The member's name", Kind::Text).listed_by("member", "list");
 const ROOT: Param = optional(
     "root",
     "The group's folder on this machine, by default /<group>, or C:\\<group> on Windows, the same path on every machine",
@@ -112,6 +128,12 @@ const PATTERN: Param = required(
     "Which files, as a .pigeonignore pattern such as /docs/ or *.pdf",
     Kind::Pattern,
 );
+const VERSION_TIME: Param = required(
+    "time",
+    "The time, such as 2026-10-01T12:00:00Z; `pigeon selection times` lists those of the versions",
+    Kind::Time,
+)
+.listed_by("selection", "times");
 const YES: Param = optional(
     "yes",
     "Apply it even where it frees space on this machine, without asking",
@@ -126,7 +148,8 @@ const SUGGESTIONS: Param = required(
     "suggestions",
     "The suggestions, by the ids `pigeon suggestion list` shows, separated by spaces: each is decided as it was then",
     Kind::Text,
-);
+)
+.listed_by("suggestion", "list");
 
 const FILE_COLUMNS: &[&str] = &[
     "path",
@@ -366,14 +389,7 @@ pub const ACTIONS: &[Action] = &[
         "file",
         "restore",
         "Bring files back as they were at a past time, as new versions that undo nothing of the history",
-        &[
-            PATTERN,
-            required(
-                "time",
-                "The time, such as 2026-10-01T12:00:00Z; `pigeon selection times` lists those of the versions",
-                Kind::Time,
-            ),
-        ],
+        &[PATTERN, VERSION_TIME],
     ),
     action(
         "selection",
@@ -404,10 +420,7 @@ pub const ACTIONS: &[Action] = &[
         "selection",
         "pin",
         "Hold files as they were at a past time",
-        &[
-            PATTERN,
-            required("time", "The time, such as 2026-10-01T12:00:00Z", Kind::Time),
-        ],
+        &[PATTERN, VERSION_TIME],
     ),
     view(
         "selection",
@@ -554,6 +567,11 @@ mod tests {
             }
             assert!(action.changes || action.params.iter().all(|param| param.kind != Kind::Bytes));
             assert!(NOUNS.iter().any(|(noun, _)| *noun == action.noun));
+            let params = std::iter::once(&GROUP).chain(action.params);
+            for (noun, verb) in params.filter_map(|param| param.listed_by) {
+                let listing = find(noun, verb).expect("a listing action");
+                assert!(!listing.changes && !listing.columns.is_empty());
+            }
         }
     }
 }

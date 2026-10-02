@@ -10,16 +10,18 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint};
-use clap_complete::Shell;
 use data_encoding::BASE64;
 use serde_json::{Map, Value};
 
 use crate::catalog::{ACTIONS, Action, GROUP, Kind, NOUNS, Param, Scope, find};
 use crate::home::Home;
-use crate::{api, client, config_preview, relay, render, serve, service, setup, update};
+use crate::{api, client, complete, config_preview, relay, render, serve, service, setup, update};
 
-fn param_arg(param: &Param) -> Arg {
-    let arg = Arg::new(param.name).long(param.name).help(param.about);
+fn param_arg(param: &'static Param) -> Arg {
+    let mut arg = Arg::new(param.name).long(param.name).help(param.about);
+    if let Some(completer) = complete::completer(param) {
+        arg = arg.add(completer);
+    }
     match param.kind {
         Kind::Flag => arg.action(ArgAction::SetTrue),
         Kind::Bytes | Kind::Document => arg.value_hint(ValueHint::FilePath).value_name("FILE"),
@@ -28,7 +30,7 @@ fn param_arg(param: &Param) -> Arg {
     }
 }
 
-fn action_command(action: &Action) -> Command {
+fn action_command(action: &'static Action) -> Command {
     let mut command = Command::new(action.verb).about(action.about);
     if action.scope == Scope::Group {
         command = command.arg(param_arg(&GROUP).short('g'));
@@ -130,11 +132,11 @@ pub fn command() -> Command {
     .subcommand(Command::new("ui").about("Print the link that opens the web UI"))
     .subcommand(
         Command::new("completions")
-            .about("Print the completion script of a shell")
+            .about("Print the script that completes commands, flags and the values the daemon lists, such as groups and paths, in a shell")
             .arg(
                 Arg::new("shell")
                     .required(true)
-                    .value_parser(clap::value_parser!(Shell)),
+                    .value_parser(clap::builder::PossibleValuesParser::new(complete::shells())),
             ),
     )
 }
@@ -303,11 +305,10 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
             Ok(())
         }
         "completions" => {
-            let Some(shell) = noun_matches.get_one::<Shell>("shell").copied() else {
+            let Some(shell) = noun_matches.get_one::<String>("shell") else {
                 bail!("run `pigeon completions --help`");
             };
-            clap_complete::generate(shell, &mut command(), "pigeon", &mut std::io::stdout());
-            Ok(())
+            complete::register(shell, &mut std::io::stdout())
         }
         _ => {
             let (verb, verb_matches) = noun_matches
