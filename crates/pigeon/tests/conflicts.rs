@@ -222,7 +222,7 @@ async fn a_name_windows_cannot_hold_stays_out_until_its_machine_renames_it_as_pr
             json!({"path": "+papy/Facture: mars.txt"}),
         )
         .await;
-    assert_eq!(renamed, "+papy/Facture_ mars.txt");
+    assert_eq!(renamed, json!({"renamed": "+papy/Facture_ mars.txt"}));
     alice
         .run("selection", "follow", json!({"pattern": "/+papy/"}))
         .await;

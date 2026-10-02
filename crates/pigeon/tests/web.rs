@@ -1,7 +1,7 @@
 //! The web UI of daemons on this host, driven as a browser drives it: its
 //! forms, the pages that follow files and hear each change, the
-//! configuration editor, and a file's page restoring versions and deciding
-//! suggestions.
+//! configuration editor, a file's page restoring versions and deciding
+//! suggestions, and the Files page renaming a name kept out of the group.
 
 mod common;
 
@@ -315,4 +315,38 @@ async fn the_web_restores_a_version_and_decides_the_suggestions_it_shows() {
     .await;
     let suggestions = peer.call("suggestion", "list", json!({})).await.unwrap();
     assert_eq!(suggestions, json!([]));
+}
+
+#[tokio::test]
+async fn the_files_page_renames_a_name_kept_out_to_the_one_proposed() {
+    let lookup = MemoryLookup::new();
+    let (peer, notes) = alice_with_notes(&lookup).await;
+    std::fs::write(notes.with_file_name("what?.txt"), "odd\n").unwrap();
+    eventually("the Files page offers the rename", &[], async || {
+        peer.page("/g/family")
+            .await
+            .contains(r#"<input type="hidden" name="path" value="+alice/what?.txt">"#)
+    })
+    .await;
+    let fields = [
+        ("back", "/g/family"),
+        ("group", GROUP),
+        ("path", "+alice/what?.txt"),
+    ];
+    let answer = peer.post_form("file/make-portable", &fields).await;
+    assert_eq!(answer.status, 303, "{}", answer.body);
+    assert_eq!(answer.location.as_deref(), Some("/g/family"));
+    assert!(notes.with_file_name("what_.txt").exists());
+    eventually("the renamed file is published", &[], async || {
+        peer.call("file", "history", json!({"path": "+alice/what_.txt"}))
+            .await
+            .is_ok_and(|history| {
+                history
+                    .as_array()
+                    .is_some_and(|versions| versions.len() == 1)
+            })
+    })
+    .await;
+    let page = peer.page("/g/family").await;
+    assert!(!page.contains("make-portable"), "{page}");
 }

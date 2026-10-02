@@ -140,6 +140,7 @@ async fn files(
     let list = view(&app, "file", "list", json!({ "group": group })).await?;
     let waiting = view(&app, "file", "pending", json!({ "group": group })).await?;
     let suggestions = view(&app, "suggestion", "list", json!({ "group": group })).await?;
+    let unportable = view(&app, "file", "unportable", json!({ "group": group })).await?;
     let member = status["member"].as_str().unwrap_or_default();
     let bar = bar_with(&group, Some(Tab::Files), &suggestions);
     Ok(html_page(&files_page::files(
@@ -149,6 +150,7 @@ async fn files(
         &list,
         &waiting,
         &suggestions,
+        &unportable,
     )))
 }
 
@@ -385,12 +387,14 @@ fn local_page(back: &str) -> bool {
 }
 
 /// Whether an action's `result` says nothing its page does not show: no
-/// result, or only the paths it published, which the group's pages show by
-/// themselves.
+/// result, or only the paths it published or renamed, which the group's
+/// pages show by themselves.
 fn shown_by_its_page(result: &Value) -> bool {
     match result {
         Value::Null => true,
-        Value::Object(fields) => fields.keys().all(|name| name == "published"),
+        Value::Object(fields) => fields
+            .keys()
+            .all(|name| name == "published" || name == "renamed"),
         _ => false,
     }
 }
@@ -481,6 +485,7 @@ mod tests {
     fn forms_return_to_their_page_unless_the_result_tells_more() {
         assert!(shown_by_its_page(&Value::Null));
         assert!(shown_by_its_page(&json!({"published": ["a.txt"]})));
+        assert!(shown_by_its_page(&json!({"renamed": "a_.txt"})));
         assert!(!shown_by_its_page(&json!({"published": [], "key": "k"})));
         assert!(!shown_by_its_page(&json!({"key": "k"})));
         assert!(!shown_by_its_page(&json!([])));

@@ -6,7 +6,9 @@
 //! the suggestions at it and under it included, which the page renders
 //! and `files.js` only shows. The drafts other machines announce, and the
 //! suggestions at paths without a file, show greyed. Every change asks to
-//! be confirmed, then publishes at once.
+//! be confirmed, then publishes at once. Above the tree, the names this
+//! machine's disk holds that some machine cannot hold each offer the
+//! rename to the portable name proposed.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -389,9 +391,31 @@ fn row(group: &str, back: &str, under: &str, row: &Row<Entry>, open: &BTreeSet<S
     }
 }
 
+/// The names this machine's disk holds that some machine cannot, which
+/// stay out of the group, each with why and the button that renames it to
+/// the portable name proposed.
+fn unportable_names(group: &str, back: &str, unportable: &[Value]) -> Markup {
+    let text = |name: &Value, field: &str| name[field].as_str().unwrap_or_default().to_owned();
+    html! {
+        @if !unportable.is_empty() {
+            p { "These names stay on this machine, out of the group, as some machine cannot hold them:" }
+            ul class="unportable" {
+                @for name in unportable {
+                    @let path = text(name, "path");
+                    li {
+                        code { (path) } ": " (text(name, "reason")) "; renamed, it becomes "
+                        code { (text(name, "proposal")) } ". "
+                        (form(action("file", "make-portable"), back, fill(group, &[("path", &path)], &[])))
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The whole group as a tree, with the changes suggested at each path:
 /// the folders above `under` open, and those of `member`, until one opens
-/// or closes others.
+/// or closes others; and above it the names kept out of the group.
 #[must_use]
 pub fn files(
     bar: &Bar<'_>,
@@ -400,6 +424,7 @@ pub fn files(
     files: &Value,
     waiting: &Value,
     suggestions: &Value,
+    unportable: &Value,
 ) -> Markup {
     let group = bar.group;
     let (files, waiting, suggestions) = (listed(files), listed(waiting), listed(suggestions));
@@ -420,6 +445,7 @@ pub fn files(
         @if here > 1 {
             p { (here) " edits wait to be published." (form(action("file", "publish"), &back, fill(group, &[("path", "")], &[]))) }
         }
+        (unportable_names(group, &back, listed(unportable)))
         table class="tree" data-group=(group) data-under=(under) {
             tr { th {} th { "Name" } th { "Size" } th { "Author" } th { "Time" } th { "State" } th {} }
             tr class="root" data-path="" {
@@ -472,7 +498,8 @@ mod tests {
             file("docs/none/e.txt", "free"),
             file("docs/[x].txt", "pin 2026-01-01T00:00:00Z"),
         ]);
-        let page = files(&BAR, "alice", "", &list, &json!([]), &json!([])).into_string();
+        let page =
+            files(&BAR, "alice", "", &list, &json!([]), &json!([]), &json!([])).into_string();
         assert!(
             row_of(&page, "docs/all")
                 .contains(r#"data-pattern="/docs/all/" data-state="checked" checked"#)
@@ -515,13 +542,55 @@ mod tests {
     }
 
     #[test]
+    fn a_name_kept_out_offers_its_rename_to_the_name_proposed() {
+        let unportable = json!([{"path": "+alice/what?.txt", "reason": "it holds a ?",
+            "proposal": "+alice/what_.txt"}]);
+        let page = files(
+            &BAR,
+            "alice",
+            "",
+            &json!([]),
+            &json!([]),
+            &json!([]),
+            &unportable,
+        );
+        let page = page.into_string();
+        assert!(page.contains("<code>+alice/what_.txt</code>"), "{page}");
+        assert!(
+            page.contains(r#"action="/act/file/make-portable""#),
+            "{page}"
+        );
+        assert!(page.contains(r#"<input type="hidden" name="path" value="+alice/what?.txt">"#));
+        assert!(page.contains(">Make portable</button>"), "{page}");
+        let none = files(
+            &BAR,
+            "alice",
+            "",
+            &json!([]),
+            &json!([]),
+            &json!([]),
+            &json!([]),
+        );
+        assert!(!none.into_string().contains("make-portable"));
+    }
+
+    #[test]
     fn under_and_the_members_own_folder_start_open() {
         let list = json!([
             file("docs/deep/a.txt", "follow"),
             file("team/+alice/b.txt", "follow"),
             file("team/+bob/c.txt", "follow"),
         ]);
-        let page = files(&BAR, "alice", "docs/deep", &list, &json!([]), &json!([])).into_string();
+        let page = files(
+            &BAR,
+            "alice",
+            "docs/deep",
+            &list,
+            &json!([]),
+            &json!([]),
+            &json!([]),
+        )
+        .into_string();
         assert!(row_of(&page, "docs").contains("data-open"));
         assert!(!row_of(&page, "docs/deep/a.txt").contains("hidden"));
         assert!(!row_of(&page, "team/+alice/b.txt").contains("hidden"));
@@ -539,7 +608,7 @@ mod tests {
             {"path": "+alice/new/b.txt", "here": true, "due_in": 3, "draft": false, "deleted": false, "cutoff": "follow", "size": 4},
             {"path": "+alice/c.txt", "here": true, "due_in": 192, "draft": false, "deleted": false, "cutoff": "free", "size": 5},
         ]);
-        let page = files(&BAR, "alice", "", &list, &waiting, &json!([])).into_string();
+        let page = files(&BAR, "alice", "", &list, &waiting, &json!([]), &json!([])).into_string();
         assert!(page.contains(r#"⏳ <span data-due="2">0:02</span>"#));
         assert!(page.contains(r#"<span data-due="192">3:12</span>"#));
         assert!(row_of(&page, "+alice/new").contains("⏳ 1"));
@@ -567,7 +636,16 @@ mod tests {
              "deleted": false, "cutoff": "free", "size": 7,
              "rivals": [{"author": "alice", "path": "inbox/Report.txt", "due_in": 200, "wins": false}]},
         ]);
-        let page = files(&BAR, "alice", "", &json!([]), &waiting, &json!([])).into_string();
+        let page = files(
+            &BAR,
+            "alice",
+            "",
+            &json!([]),
+            &waiting,
+            &json!([]),
+            &json!([]),
+        )
+        .into_string();
         let mine = row_of(&page, "inbox/Report.txt");
         assert!(mine.contains(r#"🛑 bob <span data-due="42">0:42</span>"#));
         assert!(mine.contains("rename it to keep both"));
@@ -605,7 +683,16 @@ mod tests {
                 ])
             ),
         ]);
-        let page = files(&BAR, "alice", "", &list, &json!([]), &suggestions).into_string();
+        let page = files(
+            &BAR,
+            "alice",
+            "",
+            &list,
+            &json!([]),
+            &suggestions,
+            &json!([]),
+        )
+        .into_string();
         let changed = row_of(&page, "docs/list.txt");
         assert!(
             changed.contains("📬 bob") && changed.contains("📬 papy"),

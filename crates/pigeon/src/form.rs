@@ -47,9 +47,11 @@ fn input(param: &Param, value: Option<&str>) -> Markup {
     }
 }
 
-/// The label of the button that runs `action`: its verb, capitalized.
+/// The label of the button that runs `action`: its verb, capitalized,
+/// its hyphens read as spaces.
 fn label(action: &Action) -> String {
-    let mut chars = action.verb.chars();
+    let words = action.verb.replace('-', " ");
+    let mut chars = words.chars();
     chars
         .next()
         .map(|first| first.to_uppercase().chain(chars).collect())
