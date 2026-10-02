@@ -566,6 +566,14 @@ pub const ACTIONS: &[Action] = &[
         &[],
         Handler::Daemon(perform::stop),
     )),
+    on_machine(view(
+        "daemon",
+        "program",
+        "Show the program file the daemon runs, which an update replaces",
+        &[],
+        &[],
+        Handler::Daemon(perform::program),
+    )),
     on_machine(action(
         "daemon",
         "restart",

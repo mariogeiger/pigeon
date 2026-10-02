@@ -38,6 +38,27 @@ fn action_command(action: &'static Action) -> Command {
     command.args(action.params.iter().map(param_arg))
 }
 
+/// The command that puts another program in the daemon's place.
+fn update_command() -> Command {
+    Command::new("update")
+            .about("Build pigeon's newest release with cargo, keep the program it replaces as pigeon.previous, and restart the daemon onto the new one if it changed")
+            .arg(
+                Arg::new("path")
+                    .long("path")
+                    .help("A clone of pigeon's repository to build instead, for development")
+                    .value_hint(ValueHint::DirPath)
+                    .value_name("FOLDER")
+                    .value_parser(clap::value_parser!(PathBuf)),
+            )
+            .arg(
+                Arg::new("rollback")
+                    .long("rollback")
+                    .action(ArgAction::SetTrue)
+                    .conflicts_with("path")
+                    .help("Go back to the previous program instead"),
+            )
+}
+
 /// The whole command line.
 #[must_use]
 pub fn command() -> Command {
@@ -75,18 +96,7 @@ pub fn command() -> Command {
                     .value_parser(clap::value_parser!(u16)),
             )
     })
-    .subcommand(
-        Command::new("update")
-            .about("Build the head of pigeon's main branch with cargo, and restart the daemon onto it if it changed")
-            .arg(
-                Arg::new("path")
-                    .long("path")
-                    .help("A clone of pigeon's repository to build instead")
-                    .value_hint(ValueHint::DirPath)
-                    .value_name("FOLDER")
-                    .value_parser(clap::value_parser!(PathBuf)),
-            ),
-    )
+    .subcommand(update_command())
     .subcommand(
         Command::new("relay")
             .about("Serve the group's relay, which carries as ciphertext what machines cannot send directly")
@@ -255,9 +265,15 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
         }
         "update" => update::run(
             &home,
-            noun_matches
-                .get_one::<PathBuf>("path")
-                .map(PathBuf::as_path),
+            &if noun_matches.get_flag("rollback") {
+                update::Update::Previous
+            } else {
+                noun_matches
+                    .get_one::<PathBuf>("path")
+                    .map_or(update::Update::Newest, |path| {
+                        update::Update::Checkout(path)
+                    })
+            },
         ),
         "relay" => {
             let hostname = noun_matches

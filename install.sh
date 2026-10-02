@@ -1,10 +1,12 @@
 #!/bin/sh
 # Installs pigeon on Linux or macOS: Rust if it is missing, then pigeon,
-# built by cargo from the clone of main and into the build folder that
-# `pigeon update` reuses, then `pigeon setup`, which asks the rest. With `server
-# --key <key> --member <name>`, it asks nothing and sets the machine up as
-# an always-on server of the group: started at boot, following everything
-# and keeping its history.
+# built by cargo from the newest release, the highest vMAJOR.MINOR.PATCH
+# tag, never from main, into the build folder that `pigeon update` reuses,
+# and keeping the program it replaces as pigeon.previous; then
+# `pigeon setup`, which asks the rest. With `server --key <key> --member
+# <name>`, it asks nothing and sets the machine up as an always-on server
+# of the group: started at boot, following everything and keeping its
+# history.
 #
 #   curl -sSf https://raw.githubusercontent.com/mariogeiger/pigeon/main/install.sh | sh
 #   curl -sSf https://raw.githubusercontent.com/mariogeiger/pigeon/main/install.sh | sh -s -- server --key <key> --member server
@@ -75,16 +77,25 @@ main() {
 
     source=$cache/pigeon/source
     stall="-c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30"
-    echo "Fetching the head of main from $repository"
+    # shellcheck disable=SC2086
+    listing=$(git $stall ls-remote --tags --refs "$repository" </dev/null) ||
+        fail "git could not list the releases: check the connection to GitHub and try again"
+    tag=$(printf '%s\n' "$listing" | sed -n 's|^.*refs/tags/\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$|\1|p' |
+        sort -t. -k1.2,1n -k2,2n -k3,3n | tail -n 1)
+    [ -n "$tag" ] || fail "pigeon has no release yet: $repository has no vMAJOR.MINOR.PATCH tag"
+    echo "Fetching $tag from $repository"
     if [ -d "$source/.git" ]; then
         # shellcheck disable=SC2086
-        git $stall -C "$source" fetch "$repository" main ||
+        git $stall -C "$source" fetch "$repository" "refs/tags/$tag:refs/tags/$tag" ||
             fail "git could not fetch pigeon: check the connection to GitHub and try again"
-        git -C "$source" checkout --quiet --force --detach FETCH_HEAD
+        git -c advice.detachedHead=false -C "$source" checkout --quiet --force --detach "$tag"
     else
         # shellcheck disable=SC2086
-        git $stall clone --branch main "$repository" "$source" ||
+        git $stall -c advice.detachedHead=false clone --branch "$tag" "$repository" "$source" ||
             fail "git could not clone pigeon: check the connection to GitHub and try again"
+    fi
+    if [ -f "$bin/pigeon" ]; then
+        cp -p "$bin/pigeon" "$bin/pigeon.previous"
     fi
     cargo install --locked --target-dir "$cache/pigeon/build" --path "$source/crates/pigeon" </dev/null
     echo "✓ pigeon built  $("$bin/pigeon" --version | sed 's/^pigeon //')"

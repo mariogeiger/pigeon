@@ -180,6 +180,10 @@ pub(crate) fn restart<'a>(daemon: &'a Daemon, _: &'a Args) -> Reply<'a> {
     Box::pin(async move { Ok(json!({ "restarts": daemon.restart()? })) })
 }
 
+pub(crate) fn program<'a>(daemon: &'a Daemon, _: &'a Args) -> Reply<'a> {
+    Box::pin(async move { Ok(json!({ "path": daemon.program().path })) })
+}
+
 pub(crate) fn show_status<'a>(engine: &'a Engine, _: &'a Args) -> Reply<'a> {
     Box::pin(async move { to_json(engine.status().await) })
 }

@@ -16,9 +16,10 @@ curl -sSf https://raw.githubusercontent.com/mariogeiger/pigeon/main/install.sh |
 ```
 
 installs Rust with rustup if cargo is missing, builds pigeon the way
-`pigeon update` does, and runs `pigeon setup`. Elsewhere, install
-[Rust](https://rustup.rs), then run
-`cargo install --git https://github.com/mariogeiger/pigeon pigeon` and
+`pigeon update` does, from the newest release, and runs `pigeon setup`.
+Elsewhere, install [Rust](https://rustup.rs), then run
+`cargo install --locked --git https://github.com/mariogeiger/pigeon --tag <newest release> pigeon`
+and
 `pigeon setup`. The setup asks, step by step, the questions the commands
 below answer: complete with Tab in the shell, start at login, join or
 create a group, where its root folder goes, and what to follow. Running it again resumes where the machine
@@ -36,12 +37,19 @@ source <(pigeon completions zsh)
 ```
 
 To update, run `pigeon update`. It brings a clone of pigeon kept in your
-cache folder to the head of the main branch with git, then builds it with
-cargo, in your terminal, in a build folder kept between updates, so only
-what moved recompiles. `--path <clone>` builds a
-local clone of the repository instead. The daemon then restarts onto the
-new program, unless the build left it unchanged, and web pages left open
-offer to reload. Machines whose versions of pigeon cannot talk to each
+cache folder to the newest release with git, the highest tag
+`vMAJOR.MINOR.PATCH` of the repository and never the head of main, then
+builds it with cargo, in your terminal, in a build folder kept between
+updates, so only what moved recompiles. It puts the program it built in
+the place of the one the daemon runs, keeping that one beside it as
+`pigeon.previous`, and says where. The daemon then restarts onto the new
+program, unless the build left it unchanged, and web pages left open
+offer to reload. `pigeon update --rollback` puts the previous program
+back the same way, keeping the one it replaces as the previous one, so
+that running it again undoes it. `--path <clone>` builds a local clone of
+the repository instead, for development. While the repository has no
+release, `pigeon update` says so and changes nothing.
+Machines whose versions of pigeon cannot talk to each
 other show as incompatible in `pigeon group status` and on the group's web
 page, each with its member, its version and commit, and whether it is
 older or newer than this one: each machine asks the others over

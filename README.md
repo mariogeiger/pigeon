@@ -15,7 +15,7 @@ On Linux or macOS:
 curl -sSf https://raw.githubusercontent.com/mariogeiger/pigeon/main/install.sh | sh
 ```
 
-It installs Rust if needed, builds pigeon, and runs `pigeon setup`, which
+It installs Rust if needed, builds pigeon's newest release, and runs `pigeon setup`, which
 joins or creates a group step by step and opens the web interface. Run
 `pigeon setup` again at any time, and `pigeon update` to update.
 
