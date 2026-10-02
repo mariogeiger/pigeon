@@ -10,7 +10,7 @@ use anyhow::Result;
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -65,14 +65,20 @@ fn addressed_to_localhost(headers: &HeaderMap) -> bool {
     matches!(name, "127.0.0.1" | "localhost" | "[::1]")
 }
 
-/// The token a request presents, in its authorization header or cookie.
-fn presented_token(headers: &HeaderMap) -> Option<&str> {
+/// The token a request presents in its authorization header or, unless it
+/// is for the API, in its cookie: a browser attaches the cookie to whatever
+/// a page asks of this address, so the API, which no page needs, does not
+/// take it.
+fn presented_token(headers: &HeaderMap, api: bool) -> Option<&str> {
     if let Some(bearer) = headers
         .get(TOKEN_HEADER)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
     {
         return Some(bearer.trim());
+    }
+    if api {
+        return None;
     }
     headers
         .get_all(header::COOKIE)
@@ -82,17 +88,43 @@ fn presented_token(headers: &HeaderMap) -> Option<&str> {
         .find_map(|pair| pair.trim().strip_prefix(COOKIE)?.strip_prefix('='))
 }
 
+/// Whether a request that changes something was made by a page of this
+/// server, or by no page: not by a page of another site, which the
+/// browser says in `Sec-Fetch-Site` and `Origin`.
+fn made_by_this_server(headers: &HeaderMap) -> bool {
+    let fetched_from_elsewhere = headers
+        .get("sec-fetch-site")
+        .is_some_and(|site| !matches!(site.as_bytes(), b"same-origin" | b"none"));
+    let origin_elsewhere = headers.get(header::ORIGIN).is_some_and(|origin| {
+        let host = headers.get(header::HOST).map(HeaderValue::as_bytes);
+        origin
+            .as_bytes()
+            .strip_prefix(b"http://")
+            .is_none_or(|origin| Some(origin) != host)
+    });
+    !fetched_from_elsewhere && !origin_elsewhere
+}
+
 async fn guard(State(app): State<Arc<App>>, request: Request, next: Next) -> Response {
     if !addressed_to_localhost(request.headers()) {
         return (StatusCode::FORBIDDEN, "pigeon answers only on localhost").into_response();
     }
+    let changes = !matches!(*request.method(), Method::GET | Method::HEAD);
+    if changes && !made_by_this_server(request.headers()) {
+        return (
+            StatusCode::FORBIDDEN,
+            "pigeon refuses a page of another site",
+        )
+            .into_response();
+    }
+    let api = request.uri().path().starts_with("/api/");
     let open = request.uri().path() == "/open";
     let authorized =
-        presented_token(request.headers()).is_some_and(|token| same(token, &app.token));
+        presented_token(request.headers(), api).is_some_and(|token| same(token, &app.token));
     if open || authorized {
         return next.run(request).await;
     }
-    if request.uri().path().starts_with("/api/") {
+    if api {
         let error = "missing or wrong token: the command line reads it from the pigeon folder";
         return (
             StatusCode::UNAUTHORIZED,
@@ -241,7 +273,6 @@ pub async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
 
     #[test]
     fn only_localhost_names_pass() {
@@ -260,16 +291,39 @@ mod tests {
     }
 
     #[test]
+    fn only_a_page_of_this_server_or_no_page_changes_anything() {
+        let made = |pairs: &[(&'static str, &'static str)]| {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::HOST, HeaderValue::from_static("127.0.0.1:7000"));
+            for (name, value) in pairs {
+                headers.insert(*name, HeaderValue::from_static(value));
+            }
+            made_by_this_server(&headers)
+        };
+        assert!(made(&[]));
+        assert!(made(&[("origin", "http://127.0.0.1:7000")]));
+        assert!(made(&[("sec-fetch-site", "same-origin")]));
+        assert!(made(&[("sec-fetch-site", "none")]));
+        assert!(!made(&[("origin", "http://evil.example")]));
+        assert!(!made(&[("origin", "null")]));
+        assert!(!made(&[("origin", "http://127.0.0.1:7001")]));
+        assert!(!made(&[("sec-fetch-site", "cross-site")]));
+        assert!(!made(&[("sec-fetch-site", "same-site")]));
+    }
+
+    #[test]
     fn the_token_comes_from_the_header_or_the_cookie() {
         let mut headers = HeaderMap::new();
-        assert_eq!(presented_token(&headers), None);
+        assert_eq!(presented_token(&headers, false), None);
         headers.insert(
             header::COOKIE,
             HeaderValue::from_static("a=b; pigeon_token=xyz"),
         );
-        assert_eq!(presented_token(&headers), Some("xyz"));
+        assert_eq!(presented_token(&headers, false), Some("xyz"));
+        assert_eq!(presented_token(&headers, true), None);
         headers.insert(TOKEN_HEADER, HeaderValue::from_static("Bearer abc"));
-        assert_eq!(presented_token(&headers), Some("abc"));
+        assert_eq!(presented_token(&headers, false), Some("abc"));
+        assert_eq!(presented_token(&headers, true), Some("abc"));
         assert!(same("abc", "abc"));
         assert!(!same("abc", "abd"));
         assert!(!same("abc", "abcd"));

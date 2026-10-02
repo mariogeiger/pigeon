@@ -100,6 +100,27 @@ impl Machine {
         fields: &[(&str, &str)],
         file: Option<(&str, &[u8])>,
     ) -> Answer {
+        self.post_multipart(action, fields, file, Vec::new()).await
+    }
+
+    /// Posts a web form of `fields` to `/act/<action>` with the headers
+    /// `extra` besides the cookie, as a page of another site would.
+    pub async fn post_form_with(
+        &self,
+        action: &str,
+        fields: &[(&str, &str)],
+        extra: Vec<(&'static str, String)>,
+    ) -> Answer {
+        self.post_multipart(action, fields, None, extra).await
+    }
+
+    async fn post_multipart(
+        &self,
+        action: &str,
+        fields: &[(&str, &str)],
+        file: Option<(&str, &[u8])>,
+        extra: Vec<(&'static str, String)>,
+    ) -> Answer {
         let boundary = "pigeonboundary";
         let mut form = Vec::new();
         for (name, value) in fields {
@@ -125,7 +146,7 @@ impl Machine {
         self.send(
             "POST",
             &format!("/act/{action}"),
-            vec![self.cookie()],
+            [vec![self.cookie()], extra].concat(),
             Some((kind, form)),
         )
         .await

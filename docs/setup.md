@@ -76,7 +76,10 @@ arrive by themselves, as does anything a session missed.
 web interface on localhost port 6767, or the one `--port` names. The link
 it prints at start, which `pigeon ui` prints again, leaves the browser a
 cookie that lasts 400 days, so afterwards <http://127.0.0.1:6767> opens the
-interface directly. `pigeon daemon stop` stops it.
+interface directly. The cookie opens the web interface only: the API takes
+the token in an `Authorization: Bearer` header, as the command line sends
+it, and the server refuses any request that changes something and comes
+from a page of another site. `pigeon daemon stop` stops it.
 
 On Linux, pigeon keeps its files in three `pigeon` folders, where the XDG
 base directories put configuration, data and state. On macOS one folder,
