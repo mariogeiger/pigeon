@@ -25,11 +25,13 @@ pub struct UnportableView {
 }
 
 impl Work {
-    /// Takes the names a scan of `under`, or of the whole root, kept out,
-    /// in place of those it saw before.
-    pub(crate) fn note_unportable(&mut self, under: Option<&GroupPath>, found: Vec<Unportable>) {
+    /// Takes the names a scan of the folders `under`, or of the whole root,
+    /// kept out, in place of those it saw before.
+    pub(crate) fn note_unportable(&mut self, under: Option<&[GroupPath]>, found: Vec<Unportable>) {
         match under {
-            Some(under) => self.unportable.retain(|_, known| !known.lies_within(under)),
+            Some(under) => self
+                .unportable
+                .retain(|_, known| !under.iter().any(|folder| known.lies_within(folder))),
             None => self.unportable.clear(),
         }
         self.unportable.extend(
@@ -89,7 +91,7 @@ impl Engine {
         }
         work.unportable.remove(path);
         inner
-            .refresh(&mut work, &Rescan::Under(proposed.clone()))
+            .refresh(&mut work, &[Rescan::Under(proposed.clone())])
             .await;
         Ok(proposed)
     }

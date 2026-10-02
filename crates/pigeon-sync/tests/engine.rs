@@ -4,12 +4,16 @@
 //! drops history, keeping history keeps the past versions of others' files
 //! too, a file fetched that the disk cannot take yet stays until it lands,
 //! every machine follows the relay the group names, a root reached through
-//! a link syncs both ways, and an engine with nothing to do looks at the
-//! disk no more.
+//! a link syncs both ways, an engine with nothing to do looks at the disk
+//! no more, and a burst of files takes a look per gathering, not per file.
 
 mod common;
 
-use common::{eventually, group, is_read_only, joined, path, rule, shut_down};
+use std::time::Duration;
+
+use common::{
+    eventually, eventually_reaches, group, group_with, is_read_only, joined, path, rule, shut_down,
+};
 use pigeon_core::retention::Retention;
 use pigeon_core::selection::Cutoff;
 use pigeon_net::relay::{relay_url, serve_relay};
@@ -308,5 +312,32 @@ async fn an_engine_with_nothing_to_do_scans_the_disk_no_more() {
     let scans = alice.engine.status().scans;
     alice.wait_for_ticks(10).await;
     assert_eq!(alice.engine.status().scans, scans);
+    shut_down(machines).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_burst_of_files_in_one_folder_takes_a_look_per_gathering_not_per_file() {
+    let machines = group_with(&["alice"], |options| {
+        options.settle_draft = Duration::from_secs(600);
+    })
+    .await;
+    joined(&machines).await;
+    let alice = &machines[0];
+    alice.edit("inbox/first.txt", "x");
+    eventually("alice holds her first draft", || async {
+        alice.engine.pending(None).await.len() == 1
+    })
+    .await;
+    let scans = alice.engine.status().scans;
+    let files: Vec<String> = (0..200).map(|n| format!("inbox/{n}.txt")).collect();
+    for file in &files {
+        alice.edit(file, "x");
+    }
+    eventually_reaches("alice holds every draft", files.len() + 1, || async {
+        alice.engine.pending(None).await.len()
+    })
+    .await;
+    let looks = alice.engine.status().scans - scans;
+    assert!(looks < 20, "{} files took {looks} looks", files.len());
     shut_down(machines).await;
 }

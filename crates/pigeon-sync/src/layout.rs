@@ -211,7 +211,7 @@ impl Engine {
     async fn settle_layout(&self, work: &mut Work, folder: &GroupPath) -> Result<()> {
         let inner = &self.inner;
         inner.lay_out(work).await;
-        inner.refresh(work, &Rescan::All).await;
+        inner.refresh(work, &[Rescan::All]).await;
         match work.problem(folder) {
             Some(problem) => bail!("{folder} waits: {problem}"),
             None => Ok(()),

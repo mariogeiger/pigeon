@@ -133,16 +133,25 @@ async fn compare_disk(
     Ok((disk, seen))
 }
 
-/// What `prober` sees walking the disk at `rescan`, on a thread for
-/// blocking work, having removed the temporary files a stopped run left
-/// there; why one could not be removed is among the errors.
-async fn scanned(mut prober: Prober, rescan: &Rescan) -> (Prober, Scan) {
-    let under = match rescan {
-        Rescan::Under(path) => Some(path.clone()),
-        Rescan::All => None,
-    };
+/// The subtrees `rescans` cover, `None` for the whole root.
+fn subtrees(rescans: &[Rescan]) -> Option<Vec<GroupPath>> {
+    rescans
+        .iter()
+        .map(|rescan| match rescan {
+            Rescan::Under(path) => Some(path.clone()),
+            Rescan::All => None,
+        })
+        .collect()
+}
+
+/// What `prober` sees walking the disk at every one of `rescans` in one
+/// look, on a thread for blocking work, having removed the temporary files
+/// a stopped run left there; why one could not be removed is among the
+/// errors.
+async fn scanned(mut prober: Prober, rescans: &[Rescan]) -> (Prober, Scan) {
+    let under = subtrees(rescans);
     blocking(move || {
-        let mut scan = prober.scan(under.as_ref());
+        let mut scan = prober.scan(under.as_deref());
         for temporary in scan
             .temporaries
             .iter()
@@ -193,47 +202,48 @@ impl Inner {
         Prober::new(&self.root, &placed)
     }
 
-    /// Compares every path the scan, the index, and, for the whole root,
-    /// the ledger know with the ledger, removing the temporary files a
-    /// stopped run left in the folders scanned; for the whole root, first
-    /// suggests the changes of this machine that did not last.
-    pub(crate) async fn refresh(self: &Arc<Self>, work: &mut Work, rescan: &Rescan) {
-        if !self.ready_to_scan(work, rescan).await {
+    /// Compares every path the scan of `rescans` in one look, the index,
+    /// and, for the whole root, the ledger know with the ledger, removing
+    /// the temporary files a stopped run left in the folders scanned; for
+    /// the whole root, first suggests the changes of this machine that did
+    /// not last.
+    pub(crate) async fn refresh(self: &Arc<Self>, work: &mut Work, rescans: &[Rescan]) {
+        if !self.ready_to_scan(work, rescans).await {
             return;
         }
-        let (prober, scan) = scanned(self.prober(work), rescan).await;
-        self.compare_scan(work, prober, rescan, scan).await;
+        let (prober, scan) = scanned(self.prober(work), rescans).await;
+        self.compare_scan(work, prober, rescans, scan).await;
     }
 
     /// Refreshes as [`Inner::refresh`] does, walking the disk without
     /// holding the work, which every view and action waits for; a scan
     /// that the layout or the root changed under is made again holding it.
-    pub(crate) async fn rescan(self: &Arc<Self>, rescan: &Rescan) {
+    pub(crate) async fn rescan(self: &Arc<Self>, rescans: &[Rescan]) {
         let mut work = self.work.lock().await;
-        if !self.ready_to_scan(&mut work, rescan).await {
+        if !self.ready_to_scan(&mut work, rescans).await {
             return;
         }
         let in_place = work.in_place();
         let prober = self.prober(&work);
         drop(work);
-        let (_, scan) = scanned(prober, rescan).await;
+        let (_, scan) = scanned(prober, rescans).await;
         let mut work = self.work.lock().await;
         self.lay_out(&mut work).await;
         if work.in_place() != in_place || work.root_problem.is_some() {
-            return self.refresh(&mut work, rescan).await;
+            return self.refresh(&mut work, rescans).await;
         }
         let prober = self.prober(&work);
-        self.compare_scan(&mut work, prober, rescan, scan).await;
+        self.compare_scan(&mut work, prober, rescans, scan).await;
     }
 
     /// Whether the disk can be scanned: the member's machine syncs and the
     /// root and the folders are laid out, having suggested first, for the
     /// whole root, the changes of this machine that did not last.
-    async fn ready_to_scan(&self, work: &mut Work, rescan: &Rescan) -> bool {
+    async fn ready_to_scan(&self, work: &mut Work, rescans: &[Rescan]) -> bool {
         if !work.join.syncs() {
             return false;
         }
-        if matches!(rescan, Rescan::All) {
+        if rescans.contains(&Rescan::All) {
             self.suggest_losses(work).await;
         }
         self.lay_out(work).await;
@@ -247,13 +257,10 @@ impl Inner {
         self: &Arc<Self>,
         work: &mut Work,
         mut prober: Prober,
-        rescan: &Rescan,
+        rescans: &[Rescan],
         scan: Scan,
     ) {
-        let under = match rescan {
-            Rescan::Under(path) => Some(path.clone()),
-            Rescan::All => None,
-        };
+        let under = subtrees(rescans);
         for error in &scan.errors {
             self.report(error);
         }
@@ -262,18 +269,23 @@ impl Inner {
             .into_iter()
             .map(|(key, file)| (key, Some((file.path.clone(), Probe::Present(file)))))
             .collect();
-        match self.state.index(under.as_ref()) {
-            Ok(entries) => {
-                for entry in entries {
-                    sought.entry(entry.path.key()).or_insert(None);
+        let folders: Vec<Option<&GroupPath>> = under
+            .as_ref()
+            .map_or_else(|| vec![None], |under| under.iter().map(Some).collect());
+        for folder in folders {
+            match self.state.index(folder) {
+                Ok(entries) => {
+                    for entry in entries {
+                        sought.entry(entry.path.key()).or_insert(None);
+                    }
                 }
+                Err(error) => self.report(error),
             }
-            Err(error) => self.report(error),
         }
         for (key, pending) in &work.pending {
             if under
                 .as_ref()
-                .is_none_or(|under| pending.path.is_within(under))
+                .is_none_or(|under| under.iter().any(|folder| pending.path.is_within(folder)))
             {
                 sought.entry(key.clone()).or_insert(None);
             }
@@ -284,7 +296,7 @@ impl Inner {
                 sought.entry(key.clone()).or_insert(None);
             }
         }
-        work.note_unportable(under.as_ref(), scan.unportable);
+        work.note_unportable(under.as_deref(), scan.unportable);
         for (key, probe) in sought {
             if let Err(error) = self.sync_key(work, &mut prober, &key, probe).await {
                 self.report(format!("{}: {error:#}", key.as_str()));

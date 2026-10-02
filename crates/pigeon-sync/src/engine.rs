@@ -317,10 +317,10 @@ const ERRORS_KEPT: usize = 100;
 const LAG_REPORTED: Duration = Duration::from_secs(1);
 const PROTECT_EVERY: Duration = Duration::from_secs(60);
 /// How long the rescans the watcher asks for gather, from the first, before
-/// the loop makes them, doing its other work meanwhile.
+/// the loop makes them in one look, doing its other work meanwhile.
 const DEBOUNCE: Duration = Duration::from_millis(200);
-/// The most subtrees rescanned one by one after a burst of changes; a
-/// larger burst rescans the whole tree once.
+/// The most subtrees one look rescans after a burst of changes; a larger
+/// burst rescans the whole tree.
 const RESCANS_KEPT: usize = 256;
 
 /// The current time in NTP64.
@@ -749,7 +749,7 @@ async fn run(
             ));
         }
         inner.follow_suggestions(&mut work).await;
-        inner.refresh(&mut work, &Rescan::All).await;
+        inner.refresh(&mut work, &[Rescan::All]).await;
     }
     loop {
         tokio::select! {
@@ -772,9 +772,7 @@ async fn run(
             () = tokio::time::sleep_until(gathered_until.unwrap_or_else(tokio::time::Instant::now)),
                 if gathered_until.is_some() => {
                 gathered_until = None;
-                for rescan in std::mem::take(&mut gathered) {
-                    inner.rescan(&rescan).await;
-                }
+                inner.rescan(&std::mem::take(&mut gathered)).await;
             }
             Some(keys) = wakes.recv() => {
                 let mut work = inner.work.lock().await;
@@ -790,7 +788,7 @@ async fn run(
                 drop(work);
                 if last_rescan.elapsed() >= inner.options.rescan {
                     last_rescan = Instant::now();
-                    inner.rescan(&Rescan::All).await;
+                    inner.rescan(&[Rescan::All]).await;
                     inner.follow_suggestions(&mut *inner.work.lock().await).await;
                 }
             }

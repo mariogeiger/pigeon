@@ -241,7 +241,7 @@ impl Engine {
         change(&mut config.selection)?;
         work.config.save(config)?;
         inner.free_unselected(&work, &before)?;
-        inner.refresh(&mut work, &Rescan::All).await;
+        inner.refresh(&mut work, &[Rescan::All]).await;
         Ok(())
     }
 

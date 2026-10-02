@@ -2,7 +2,8 @@
 //! sight with its metadata, the names no portable path holds, the folders
 //! that could not be read and the files pigeon was writing when it stopped.
 //! A walk under a path also sees the names its folder holds that differ
-//! from the path's last name only by case or spelling.
+//! from the path's last name only by case or spelling; a walk under many
+//! paths reads each folder once, however many of them it holds.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -23,20 +24,33 @@ pub struct Scan {
 }
 
 impl Prober {
-    /// Walks the folder or file at `under`, or the whole root.
-    pub fn scan(&mut self, under: Option<&GroupPath>) -> Scan {
+    /// Walks the folders or files at `under` in one look, each folder read
+    /// once however many of them it holds, or the whole root.
+    pub fn scan(&mut self, under: Option<&[GroupPath]>) -> Scan {
         let mut scan = Scan::default();
-        let names: Vec<&str> = under.map(|path| path.names().collect()).unwrap_or_default();
-        match names.split_last() {
+        match under {
             None => self.walk(self.root.clone(), Vec::new(), &mut scan),
-            Some((last, folders)) => match self.descend(folders) {
-                Ok((folder, spelled)) => self.scan_entry(&folder, spelled, last, &mut scan),
-                Err(Stop::Told(probe)) => scan.take(probe),
-                Err(Stop::Missing(..)) => {}
-            },
+            Some(under) => {
+                for path in outermost(under) {
+                    self.scan_under(path, &mut scan);
+                }
+            }
         }
         scan.errors.extend(self.rules.errors().iter().cloned());
         scan
+    }
+
+    /// Walks the folder or file at `path` into `scan`.
+    fn scan_under(&mut self, path: &GroupPath, scan: &mut Scan) {
+        let names: Vec<&str> = path.names().collect();
+        let Some((last, folders)) = names.split_last() else {
+            return self.walk(self.root.clone(), Vec::new(), scan);
+        };
+        match self.descend(folders) {
+            Ok((folder, spelled)) => self.scan_entry(&folder, spelled, last, scan),
+            Err(Stop::Told(probe)) => scan.take(probe),
+            Err(Stop::Missing(..)) => {}
+        }
     }
 
     /// Walks the entry `name` of `folder`, at `spelled`, with the names of
@@ -106,6 +120,19 @@ impl Prober {
     }
 }
 
+/// The paths of `paths` that lie within no other, each once.
+fn outermost(paths: &[GroupPath]) -> Vec<&GroupPath> {
+    let mut kept: Vec<&GroupPath> = Vec::new();
+    for path in paths {
+        if kept.iter().any(|known| path.is_within(known)) {
+            continue;
+        }
+        kept.retain(|known| !known.is_within(path));
+        kept.push(path);
+    }
+    kept
+}
+
 impl Scan {
     /// Keeps what a probe found: a file, or why nothing can be told.
     fn take(&mut self, probe: Probe) {
@@ -133,7 +160,7 @@ mod tests {
     }
 
     fn scan(root: &Path, under: Option<&GroupPath>, placed: &[GroupPath]) -> Scan {
-        Prober::new(root, placed).scan(under)
+        Prober::new(root, placed).scan(under.map(std::slice::from_ref))
     }
 
     fn paths(scan: &Scan) -> Vec<&str> {
@@ -182,6 +209,26 @@ mod tests {
         assert_eq!(paths(&scan(dir.path(), Some(&file), &[])), ["b/y"]);
         let missing = GroupPath::parse("c").unwrap();
         assert!(scan(dir.path(), Some(&missing), &[]).files.is_empty());
+    }
+
+    #[test]
+    fn scans_many_paths_in_one_look_seeing_each_name_once() {
+        let dir = tempfile::tempdir().unwrap();
+        for file in ["a/x", "a/y", "b/z", "b/sub/w", "c/v"] {
+            write(dir.path(), file, "");
+        }
+        if cfg!(unix) {
+            write(dir.path(), "b/sub/what?.txt", "");
+        }
+        let under =
+            ["b/sub", "a/x", "b", "a/x", "missing"].map(|text| GroupPath::parse(text).unwrap());
+        let scan = Prober::new(dir.path(), &[]).scan(Some(&under));
+        assert_eq!(paths(&scan), ["a/x", "b/sub/w", "b/z"]);
+        let unportable: Vec<String> = scan.unportable.iter().map(Unportable::path).collect();
+        if cfg!(unix) {
+            assert_eq!(unportable, ["b/sub/what?.txt"]);
+        }
+        assert!(scan.errors.is_empty());
     }
 
     fn proposals(scan: &Scan) -> Vec<(String, String)> {
