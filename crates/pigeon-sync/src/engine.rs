@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -213,6 +214,31 @@ pub(crate) struct Work {
     pub unportable: BTreeMap<String, Unportable>,
 }
 
+impl Work {
+    /// The work of an engine that starts with `config`, the disk holding
+    /// the folders `placed` at other destinations.
+    fn starting(config: ConfigFile, placed: Places) -> Self {
+        Self {
+            pending: HashMap::new(),
+            config,
+            fetching: HashMap::new(),
+            fetch_failures: HashMap::new(),
+            fetches: JoinSet::new(),
+            tags: Vec::new(),
+            join: JoinState::Pending,
+            protect_due: true,
+            placed,
+            out_of_place: Vec::new(),
+            root_problem: None,
+            watcher: None,
+            watched: Vec::new(),
+            announced: None,
+            suggestions: BTreeMap::new(),
+            unportable: BTreeMap::new(),
+        }
+    }
+}
+
 /// What the status view reads of [`Work`], copied each time the engine
 /// signals, so that reading it waits for no work in progress.
 #[derive(Clone)]
@@ -232,6 +258,24 @@ impl Glance {
             fetching: 0,
             paused: None,
         }
+    }
+}
+
+/// How many passes of each recurring kind of work the engine finished,
+/// counts that only grow, so that whoever waits for the engine to have
+/// looked at the disk or published what settled waits for them to grow.
+#[derive(Default)]
+pub(crate) struct Passes {
+    /// The passes of the timer, each publishing or suggesting what settled.
+    pub ticks: AtomicU64,
+    /// The scans of the disk, of the whole root or of some paths, each
+    /// compared with the ledger.
+    pub scans: AtomicU64,
+}
+
+impl Passes {
+    pub(crate) fn count(counter: &AtomicU64) {
+        counter.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -259,6 +303,7 @@ pub(crate) struct Inner {
     pub wake: mpsc::UnboundedSender<Vec<PathKey>>,
     pub rescans: mpsc::UnboundedSender<Rescan>,
     pub errors: Mutex<VecDeque<String>>,
+    pub passes: Passes,
     pub started: Instant,
     /// A fingerprint of what the engine shows, sent anew when it changes.
     pub changes: watch::Sender<u64>,
@@ -505,6 +550,7 @@ impl Inner {
                 self.report(format!("protecting blobs: {error}"));
             }
         }
+        Passes::count(&self.passes.ticks);
     }
 }
 
@@ -517,7 +563,9 @@ pub struct Engine {
 
 impl Engine {
     /// Opens the group kept in `data` and starts syncing its root as its
-    /// configuration says.
+    /// configuration says, returning once the engine's first pass over the
+    /// disk holds the work, which every view and action of the engine then
+    /// comes after.
     ///
     /// # Errors
     ///
@@ -576,27 +624,11 @@ impl Engine {
             blobs,
             node,
             options,
-            work: tokio::sync::Mutex::new(Work {
-                pending: HashMap::new(),
-                config,
-                fetching: HashMap::new(),
-                fetch_failures: HashMap::new(),
-                fetches: JoinSet::new(),
-                tags: Vec::new(),
-                join: JoinState::Pending,
-                protect_due: true,
-                placed,
-                out_of_place: Vec::new(),
-                root_problem: None,
-                watcher: None,
-                watched: Vec::new(),
-                announced: None,
-                suggestions: BTreeMap::new(),
-                unportable: BTreeMap::new(),
-            }),
+            work: tokio::sync::Mutex::new(Work::starting(config, placed)),
             wake,
             rescans,
             errors: Mutex::new(VecDeque::new()),
+            passes: Passes::default(),
             started: Instant::now(),
             changes: watch::Sender::new(0),
             glance: Mutex::new(Glance::starting()),
@@ -613,7 +645,15 @@ impl Engine {
         inner.glance_join();
         inner.want_peers();
         let (stop, stopped) = oneshot::channel();
-        let task = tokio::spawn(run(inner.clone(), received, rescan_events, wakes, stopped));
+        let (begun, first_pass) = oneshot::channel();
+        let task = tokio::spawn(run(
+            inner.clone(),
+            received,
+            rescan_events,
+            wakes,
+            (begun, stopped),
+        ));
+        first_pass.await?;
         Ok(Self {
             inner,
             stop: Some(stop),
@@ -682,15 +722,16 @@ async fn run(
     mut received: mpsc::Receiver<Received>,
     mut rescan_events: mpsc::UnboundedReceiver<Rescan>,
     mut wakes: mpsc::UnboundedReceiver<Vec<PathKey>>,
-    mut stopped: oneshot::Receiver<()>,
+    (begun, mut stopped): (oneshot::Sender<()>, oneshot::Receiver<()>),
 ) {
     let mut ticks = tokio::time::interval(inner.options.tick);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut last_rescan = Instant::now();
     let mut last_protect = Instant::now();
     {
-        inner.follow_relay().await;
         let mut work = inner.work.lock().await;
+        let _ = begun.send(());
+        inner.follow_relay().await;
         inner.lay_out(&mut work).await;
         if let Err(error) = inner
             .applied_selection(&work)

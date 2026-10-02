@@ -6,6 +6,7 @@
 //! the API.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::Ordering;
 
 use anyhow::Result;
 use pigeon_core::clock::{MachineId, Stamp, rfc3339};
@@ -52,6 +53,15 @@ pub struct Status {
     pub patches: usize,
     /// Why nothing syncs, if the root is out of place.
     pub paused: Option<String>,
+    /// The passes of the timer done, each publishing or suggesting the
+    /// edits that settled, a count that only grows.
+    pub ticks: u64,
+    /// The scans of the disk, of the whole root or of some paths, compared
+    /// with the ledger, a count that only grows.
+    pub scans: u64,
+    /// The garbage collections of the blob store begun, a count that only
+    /// grows: each one ends before the next begins.
+    pub collections: u64,
     /// The latest errors, oldest first.
     pub errors: Vec<String>,
 }
@@ -222,6 +232,9 @@ impl Engine {
             fetching: glance.fetching,
             patches: ledger.patches().count(),
             paused: glance.paused,
+            ticks: inner.passes.ticks.load(Ordering::Relaxed),
+            scans: inner.passes.scans.load(Ordering::Relaxed),
+            collections: inner.blobs.collections(),
             errors: inner
                 .errors
                 .lock()

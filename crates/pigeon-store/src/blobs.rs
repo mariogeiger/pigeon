@@ -5,6 +5,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -42,6 +43,8 @@ struct Protected {
 pub struct Blobs {
     store: FsStore,
     protected: Arc<Mutex<Protected>>,
+    /// The collections begun, each ending before the next begins.
+    collections: Arc<AtomicU64>,
     path: PathBuf,
 }
 
@@ -59,7 +62,9 @@ impl Blobs {
     /// set.
     pub async fn open(path: &Path, gc_interval: Duration) -> Result<Self> {
         let protected = Arc::new(Mutex::new(Protected::default()));
+        let collections = Arc::new(AtomicU64::new(0));
         let shared = protected.clone();
+        let begun = collections.clone();
         let options = Options {
             gc: Some(GcConfig {
                 interval: gc_interval,
@@ -67,6 +72,7 @@ impl Blobs {
                     let protected = shared.lock().expect("no panic holds the lock");
                     live.extend(protected.hashes.iter());
                     let outcome = if protected.computed {
+                        begun.fetch_add(1, Ordering::Relaxed);
                         ProtectOutcome::Continue
                     } else {
                         ProtectOutcome::Abort
@@ -82,8 +88,17 @@ impl Blobs {
         Ok(Self {
             store,
             protected,
+            collections,
             path: path.to_path_buf(),
         })
+    }
+
+    /// How many garbage collections began, each once pigeon said what to
+    /// keep, and each ending before the next begins: a collection that
+    /// begins after a moment is over once the count grew by two.
+    #[must_use]
+    pub fn collections(&self) -> u64 {
+        self.collections.load(Ordering::Relaxed)
     }
 
     /// The size in bytes of the disk holding the store.

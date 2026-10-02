@@ -47,17 +47,42 @@ impl Machine {
             .unwrap();
     }
 
-    /// Waits past the time an edit takes to settle and be published, for
-    /// what must not happen by then.
+    /// Waits until the edits made before the call had the time to settle
+    /// and a pass of the timer came after, for what must not happen by
+    /// then: the engine notices them by the end of the first scan begun
+    /// after the call, or, when none comes, within the time an edit takes
+    /// to settle, by which the watcher reported them.
     pub async fn wait_past_settling(&self) {
         let settle = self.options.settle_personal.max(self.options.settle_draft);
-        tokio::time::sleep(settle + self.options.tick * 4).await;
+        let scans = self.engine.status().scans;
+        let noticed = tokio::time::Instant::now() + settle;
+        while self.engine.status().scans < scans + 2 && tokio::time::Instant::now() < noticed {
+            tokio::time::sleep(self.options.tick).await;
+        }
+        tokio::time::sleep(settle).await;
+        self.wait_for_ticks(2).await;
     }
 
-    /// Waits past a garbage collection after the engine recomputed what it
-    /// protects, by when a blob nothing protects would be gone.
+    /// Waits until a garbage collection that began after a pass of the
+    /// timer recomputed what the engine protects ended, by when a blob
+    /// nothing protects is gone.
     pub async fn wait_past_collection(&self) {
-        tokio::time::sleep(self.options.tick * 2 + self.options.gc * 2).await;
+        self.wait_for_ticks(2).await;
+        let collections = self.engine.status().collections;
+        eventually("two garbage collections begin", || async {
+            self.engine.status().collections >= collections + 2
+        })
+        .await;
+    }
+
+    /// Waits until `count` passes of the timer ended since the call, the
+    /// last of them begun after it.
+    pub async fn wait_for_ticks(&self, count: u64) {
+        let ticks = self.engine.status().ticks;
+        eventually("passes of the timer end", || async {
+            self.engine.status().ticks >= ticks + count
+        })
+        .await;
     }
 
     /// Writes a file as a person would.

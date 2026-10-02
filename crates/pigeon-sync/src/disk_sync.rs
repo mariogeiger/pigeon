@@ -22,7 +22,7 @@ use pigeon_store::scan::Scan;
 use pigeon_store::state::Kept;
 
 use crate::blocking::{blocking, observed};
-use crate::engine::{Inner, Pending, Work};
+use crate::engine::{Inner, Passes, Pending, Work};
 use crate::reconcile::{Disk, KeptSuggestion, Step, View, reconcile};
 use crate::watch::Rescan;
 
@@ -290,6 +290,7 @@ impl Inner {
                 self.report(format!("{}: {error:#}", key.as_str()));
             }
         }
+        Passes::count(&self.passes.scans);
     }
 
     /// Compares the given paths with the ledger.
@@ -306,6 +307,9 @@ impl Inner {
             if let Err(error) = self.sync_key(work, &mut prober, key, None).await {
                 self.report(format!("{}: {error:#}", key.as_str()));
             }
+        }
+        if !keys.is_empty() {
+            Passes::count(&self.passes.scans);
         }
     }
 
