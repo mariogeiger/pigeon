@@ -174,17 +174,28 @@ mod tests {
         std::fs::write(root.join("read.txt"), "x").unwrap();
         let (sender, mut changes) = mpsc::unbounded_channel();
         let _watcher = watch(Watched::all(root, &[]), sender).unwrap();
+        let under = |text: &str| Rescan::Under(GroupPath::parse(text).unwrap());
+        let mut next = async || {
+            tokio::time::timeout(Duration::from_secs(5), changes.recv())
+                .await
+                .unwrap()
+                .unwrap()
+        };
+        std::fs::write(root.join("marker.txt"), "m").unwrap();
+        while next().await != under("marker.txt") {}
         for entry in std::fs::read_dir(root).unwrap() {
             std::fs::read(entry.unwrap().path()).unwrap();
         }
         std::fs::write(root.join("written.txt"), "y").unwrap();
-        let first = tokio::time::timeout(Duration::from_secs(5), changes.recv()).await;
-        assert_eq!(
-            first,
-            Ok(Some(Rescan::Under(
-                GroupPath::parse("written.txt").unwrap()
-            )))
-        );
+        let mut seen = Vec::new();
+        loop {
+            match next().await {
+                change if change == under("written.txt") => break,
+                change if change == under("marker.txt") => {}
+                change => seen.push(change),
+            }
+        }
+        assert_eq!(seen, []);
     }
 
     #[tokio::test]
