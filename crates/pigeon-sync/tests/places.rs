@@ -57,7 +57,7 @@ async fn a_placed_folder_moves_behind_a_link_and_keeps_syncing() {
     let views = bob.engine.places().await;
     assert_eq!(views.len(), 2);
     assert!(views.iter().all(|view| view.problem.is_none()));
-    assert!(bob.engine.status().await.errors.is_empty());
+    assert!(bob.engine.status().errors.is_empty());
     assert!(
         bob.engine
             .place(path("+alice/videos/old"), &disk.path().join("old"))

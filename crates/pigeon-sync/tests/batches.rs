@@ -52,7 +52,7 @@ async fn edits_beyond_what_one_patch_carries_go_out_in_several_patches() {
         );
     }
     for machine in [alice, &bob] {
-        assert!(machine.engine.status().await.errors.is_empty());
+        assert!(machine.engine.status().errors.is_empty());
     }
     machines.push(bob);
     shut_down(machines).await;
@@ -87,7 +87,7 @@ async fn an_announcement_names_only_as_many_drafts_as_it_carries() {
     );
     assert!(announced.iter().all(|view| !view.here && view.draft));
     for machine in &machines {
-        assert!(machine.engine.status().await.errors.is_empty());
+        assert!(machine.engine.status().errors.is_empty());
     }
     shut_down(machines).await;
 }

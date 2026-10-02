@@ -30,21 +30,21 @@ async fn a_root_gone_or_unmarked_deletes_nothing_and_syncs_again_once_back() {
     let away = alice.root.with_file_name("away");
     std::fs::rename(&alice.root, &away).unwrap();
     eventually("alice pauses", || async {
-        alice.engine.status().await.paused.is_some()
+        alice.engine.status().paused.is_some()
     })
     .await;
     alice.wait_past_settling().await;
     std::fs::create_dir(&alice.root).unwrap();
     alice.wait_past_settling().await;
     alice.wait_past_settling().await;
-    let paused = alice.engine.status().await.paused.unwrap_or_default();
+    let paused = alice.engine.status().paused.unwrap_or_default();
     assert!(paused.contains(".pigeon"), "{paused}");
     assert_eq!(alice.engine.history(&path("+alice/notes.txt")).len(), 1);
     assert_eq!(bob.read("+alice/notes.txt").as_deref(), Some("one"));
     std::fs::remove_dir(&alice.root).unwrap();
     std::fs::rename(&away, &alice.root).unwrap();
     eventually("alice resumes", || async {
-        alice.engine.status().await.paused.is_none()
+        alice.engine.status().paused.is_none()
     })
     .await;
     alice.edit("+alice/notes.txt", "two");

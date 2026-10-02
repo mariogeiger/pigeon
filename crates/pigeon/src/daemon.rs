@@ -361,7 +361,7 @@ impl Daemon {
         loop {
             let status = {
                 let groups = self.groups.read().await;
-                groups.choose(Some(group))?.1.status().await
+                groups.choose(Some(group))?.1.status()
             };
             match status.join {
                 JoinState::Pending if tokio::time::Instant::now() < deadline => {
@@ -386,7 +386,7 @@ impl Daemon {
     pub async fn claim(&self, group: &str, member: &str) -> Result<()> {
         let member = MemberName::parse(member).context("the member name")?;
         let mut groups = self.groups.write().await;
-        let status = groups.choose(Some(group))?.1.status().await;
+        let status = groups.choose(Some(group))?.1.status();
         if status.join == JoinState::Joined {
             bail!("{} has already joined {group}", status.member);
         }

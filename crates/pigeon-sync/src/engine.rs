@@ -212,6 +212,28 @@ pub(crate) struct Work {
     pub unportable: BTreeMap<String, Unportable>,
 }
 
+/// What the status view reads of [`Work`], copied each time the engine
+/// signals, so that reading it waits for no work in progress.
+#[derive(Clone)]
+pub(crate) struct Glance {
+    pub join: JoinState,
+    pub pending: usize,
+    pub fetching: usize,
+    pub paused: Option<String>,
+}
+
+impl Glance {
+    /// Before the first pass: joining, with nothing pending.
+    fn starting() -> Self {
+        Self {
+            join: JoinState::Pending,
+            pending: 0,
+            fetching: 0,
+            paused: None,
+        }
+    }
+}
+
 pub(crate) struct Inner {
     /// The member this machine speaks for.
     pub member: MemberName,
@@ -239,6 +261,7 @@ pub(crate) struct Inner {
     pub started: Instant,
     /// A fingerprint of what the engine shows, sent anew when it changes.
     pub changes: watch::Sender<u64>,
+    pub glance: Mutex<Glance>,
     _mdns: Option<MdnsAddressLookup>,
 }
 
@@ -312,8 +335,15 @@ impl Inner {
         hasher.finish()
     }
 
-    /// Sends the fingerprint when it changed.
+    /// Sends the fingerprint when it changed, and keeps what the status
+    /// view reads of `work`.
     pub(crate) fn signal(&self, work: &Work) {
+        *self.glance.lock().expect("no panic holds the glance") = Glance {
+            join: work.join.clone(),
+            pending: work.pending.len(),
+            fetching: work.fetching.len(),
+            paused: work.root_problem.clone(),
+        };
         let fingerprint = self.fingerprint(work);
         self.changes.send_if_modified(|sent| {
             let changed = *sent != fingerprint;
@@ -550,6 +580,7 @@ impl Engine {
             errors: Mutex::new(VecDeque::new()),
             started: Instant::now(),
             changes: watch::Sender::new(0),
+            glance: Mutex::new(Glance::starting()),
             _mdns: mdns,
         });
         if lead > LAG_REPORTED {

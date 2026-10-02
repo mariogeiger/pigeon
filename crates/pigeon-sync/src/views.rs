@@ -164,12 +164,20 @@ pub struct MemberView {
 }
 
 impl Engine {
+    /// What the engine shows as of its latest signal, without waiting for
+    /// the work in progress.
+    ///
     /// # Panics
     ///
     /// Panics if a panic poisoned the error list.
-    pub async fn status(&self) -> Status {
+    #[must_use]
+    pub fn status(&self) -> Status {
         let inner = &self.inner;
-        let work = inner.work.lock().await;
+        let glance = inner
+            .glance
+            .lock()
+            .expect("no panic holds the glance")
+            .clone();
         let ledger = inner.ledger.lock();
         let owners: HashMap<MachineId, &MemberName> = ledger
             .patches()
@@ -179,7 +187,7 @@ impl Engine {
             member: inner.member.clone(),
             machine: inner.me(),
             root: inner.root.clone(),
-            join: work.join.clone(),
+            join: glance.join,
             peers: inner.node.peers(),
             incompatible: inner
                 .node
@@ -201,10 +209,10 @@ impl Engine {
                 })
                 .collect(),
             relay: inner.node.home_relay().map(|url| url.to_string()),
-            pending: work.pending.len(),
-            fetching: work.fetching.len(),
+            pending: glance.pending,
+            fetching: glance.fetching,
             patches: ledger.patches().count(),
-            paused: work.root_problem.clone(),
+            paused: glance.paused,
             errors: inner
                 .errors
                 .lock()

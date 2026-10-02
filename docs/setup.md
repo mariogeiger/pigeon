@@ -79,7 +79,10 @@ cookie that lasts 400 days, so afterwards <http://127.0.0.1:6767> opens the
 interface directly. The cookie opens the web interface only: the API takes
 the token in an `Authorization: Bearer` header, as the command line sends
 it, and the server refuses any request that changes something and comes
-from a page of another site. `pigeon daemon stop` stops it.
+from a page of another site. A command gives up on a daemon that does
+not answer, after 5 seconds without connecting and 10 minutes without an
+answer, and the status of a group answers at once even while the group is
+busy. `pigeon daemon stop` stops it.
 
 On Linux, pigeon keeps its files in three `pigeon` folders, where the XDG
 base directories put configuration, data and state. On macOS one folder,

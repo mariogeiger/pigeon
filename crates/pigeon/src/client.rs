@@ -3,6 +3,7 @@
 //! is made again with `yes`, or whether the daemon answers at all.
 
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Map, Value};
@@ -32,6 +33,16 @@ impl std::fmt::Display for Unconfirmed {
 
 impl std::error::Error for Unconfirmed {}
 
+/// How long a call waits to connect to a daemon.
+const CONNECT_WITHIN: Duration = Duration::from_secs(5);
+
+/// How long a call waits for the daemon's answer, which an action on a
+/// large file or a whole group may take minutes to give, but not forever.
+const ANSWER_WITHIN: Duration = Duration::from_mins(10);
+
+/// How long a check that the daemon answers waits for it.
+const CHECK_WITHIN: Duration = Duration::from_secs(5);
+
 /// Calls `noun verb` with `args` on the daemon listening at `address`.
 ///
 /// # Errors
@@ -46,8 +57,22 @@ pub fn call_at(
     verb: &str,
     args: &Map<String, Value>,
 ) -> Result<Value> {
+    call_within(address, token, noun, verb, args, ANSWER_WITHIN)
+}
+
+/// As [`call_at`], giving up on an answer after `within`.
+fn call_within(
+    address: SocketAddr,
+    token: &str,
+    noun: &str,
+    verb: &str,
+    args: &Map<String, Value>,
+    within: Duration,
+) -> Result<Value> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
+        .timeout_connect(Some(CONNECT_WITHIN))
+        .timeout_global(Some(within))
         .build()
         .into();
     let mut response = agent
@@ -87,8 +112,45 @@ pub fn call(home: &Home, noun: &str, verb: &str, args: &Map<String, Value>) -> R
     call_at(home.address()?, &home.token()?, noun, verb, args)
 }
 
-/// Whether the daemon of `home` answers now.
+/// Whether the daemon of `home` answers now, which it does without
+/// asking any group's engine.
 #[must_use]
 pub fn answers(home: &Home) -> bool {
-    call(home, "group", "list", &Map::new()).is_ok()
+    let (Ok(address), Ok(token)) = (home.address(), home.token()) else {
+        return false;
+    };
+    call_within(
+        address,
+        &token,
+        "daemon",
+        "program",
+        &Map::new(),
+        CHECK_WITHIN,
+    )
+    .is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::TcpListener;
+    use std::time::Instant;
+
+    use super::*;
+
+    #[test]
+    fn a_daemon_that_never_answers_is_given_up_on() {
+        let silent = TcpListener::bind("127.0.0.1:0").unwrap();
+        let started = Instant::now();
+        let error = call_within(
+            silent.local_addr().unwrap(),
+            "token",
+            "group",
+            "list",
+            &Map::new(),
+            Duration::from_millis(300),
+        )
+        .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(error.to_string().contains("not running"), "{error}");
+    }
 }

@@ -75,7 +75,7 @@ async fn a_personal_file_reaches_the_machines_that_hold_it() {
         "a released file leaves the disk"
     );
     for machine in &machines {
-        assert!(machine.engine.status().await.errors.is_empty());
+        assert!(machine.engine.status().errors.is_empty());
     }
     shut_down(machines).await;
 }
@@ -100,11 +100,11 @@ async fn a_restarted_machine_resumes_without_publishing_again() {
         alice.engine.history(&path("+alice/a.txt")).len() == 1
     })
     .await;
-    let patches = alice.engine.status().await.patches;
+    let patches = alice.engine.status().patches;
     let alice = alice.restart().await;
-    assert_eq!(alice.engine.status().await.join, JoinState::Joined);
+    assert_eq!(alice.engine.status().join, JoinState::Joined);
     alice.wait_past_settling().await;
-    assert_eq!(alice.engine.status().await.patches, patches);
+    assert_eq!(alice.engine.status().patches, patches);
     assert_eq!(alice.read("+alice/a.txt").as_deref(), Some("a"));
     alice.edit("+alice/a.txt", "b");
     eventually("an edit after the restart is published", || async {
@@ -203,13 +203,13 @@ async fn every_machine_follows_the_relay_the_group_names() {
     alice.set_relay(Some(&url)).await.unwrap();
     for machine in &machines {
         eventually("the machine reaches the group's relay", || async {
-            machine.engine.status().await.relay.as_deref() == Some(url.as_str())
+            machine.engine.status().relay.as_deref() == Some(url.as_str())
         })
         .await;
     }
     let bob = machines.pop().unwrap().restart().await;
     eventually("a restarted machine follows it at once", || async {
-        bob.engine.status().await.relay.as_deref() == Some(url.as_str())
+        bob.engine.status().relay.as_deref() == Some(url.as_str())
     })
     .await;
     machines.push(bob);
@@ -243,6 +243,6 @@ async fn a_root_reached_through_a_link_syncs_both_ways() {
         alice.read("+bob/notes.txt").as_deref() == Some("from bob")
     })
     .await;
-    assert!(bob.engine.status().await.errors.is_empty());
+    assert!(bob.engine.status().errors.is_empty());
     shut_down(machines.into_iter().chain([bob])).await;
 }

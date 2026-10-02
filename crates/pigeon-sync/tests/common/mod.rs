@@ -274,10 +274,10 @@ pub async fn joined(machines: &[Machine]) {
     let mut names = Vec::new();
     for machine in machines {
         eventually("the member joins", || async {
-            machine.engine.status().await.join == JoinState::Joined
+            machine.engine.status().join == JoinState::Joined
         })
         .await;
-        names.push(machine.engine.status().await.member);
+        names.push(machine.engine.status().member);
     }
     for machine in machines {
         eventually("every machine knows every member", || async {

@@ -36,7 +36,7 @@ async fn a_folder_that_cannot_be_read_deletes_nothing() {
     let unreadable = std::fs::read_dir(&folder).is_err();
     alice.wait_past_settling().await;
     alice.wait_past_settling().await;
-    let errors = alice.engine.status().await.errors;
+    let errors = alice.engine.status().errors;
     std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
     if unreadable {
         assert!(
@@ -80,7 +80,7 @@ async fn an_ignored_path_is_neither_published_written_nor_deleted() {
     assert_eq!(alice.read("+alice/run.log").as_deref(), Some("two"));
     assert!(alice.engine.history(&path(".pigeonignore")).is_empty());
     for machine in &machines {
-        assert!(machine.engine.status().await.errors.is_empty());
+        assert!(machine.engine.status().errors.is_empty());
     }
     shut_down(machines).await;
 }
@@ -122,7 +122,7 @@ async fn a_rename_of_the_case_alone_moves_the_file() {
     alice.wait_past_settling().await;
     assert_eq!(alice.engine.history(&path("+alice/README.md")).len(), 2);
     for machine in &machines {
-        assert!(machine.engine.status().await.errors.is_empty());
+        assert!(machine.engine.status().errors.is_empty());
     }
     shut_down(machines).await;
 }
@@ -175,7 +175,7 @@ async fn a_name_some_machine_cannot_hold_waits_for_its_rename_to_the_name_propos
     assert!(alice.engine.unportable().await.is_empty());
     assert!(!alice.file("+alice/what?.txt").exists());
     for machine in &machines {
-        assert!(machine.engine.status().await.errors.is_empty());
+        assert!(machine.engine.status().errors.is_empty());
     }
     shut_down(machines).await;
 }

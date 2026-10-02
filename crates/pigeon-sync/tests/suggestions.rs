@@ -46,7 +46,7 @@ async fn bob_suggests_a_plan(machines: &[Machine]) -> SuggestionView {
 
 async fn shut_down(machines: Vec<Machine>) {
     for machine in machines {
-        let errors = machine.engine.status().await.errors;
+        let errors = machine.engine.status().errors;
         assert!(errors.is_empty(), "{errors:?}");
         machine.engine.shutdown().await.unwrap();
     }

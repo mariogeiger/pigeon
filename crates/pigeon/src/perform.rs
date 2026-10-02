@@ -68,7 +68,7 @@ pub(crate) fn list_groups<'a>(daemon: &'a Daemon, _: &'a Args) -> Reply<'a> {
         let groups = daemon.groups().await;
         let mut list = BTreeMap::new();
         for (name, engine) in groups.running() {
-            let status = engine.status().await;
+            let status = engine.status();
             let item = json!({
                 "name": name,
                 "member": status.member,
@@ -197,7 +197,7 @@ pub(crate) fn program<'a>(daemon: &'a Daemon, _: &'a Args) -> Reply<'a> {
 }
 
 pub(crate) fn show_status<'a>(engine: &'a Engine, _: &'a Args) -> Reply<'a> {
-    Box::pin(async move { to_json(engine.status().await) })
+    Box::pin(async move { to_json(engine.status()) })
 }
 
 pub(crate) fn show_key<'a>(engine: &'a Engine, _: &'a Args) -> Reply<'a> {

@@ -38,7 +38,7 @@ async fn patches_pass_through_a_machine_between_two_that_cannot_reach_each_other
     .await;
     let carol_id = carol.engine.machine();
     eventually("alice tells why she cannot reach carol", || async {
-        let status = alice.engine.status().await;
+        let status = alice.engine.status();
         !status.peers.contains(&carol_id)
             && status.unreached.iter().any(|unreached| {
                 unreached.machine == carol_id
@@ -84,7 +84,6 @@ async fn a_machine_whose_clock_was_set_back_dates_its_patches_after_its_own() {
     eventually("bob says his clock lags", || async {
         bob.engine
             .status()
-            .await
             .errors
             .iter()
             .any(|error| error.contains("after its clock"))
@@ -118,7 +117,6 @@ async fn patches_refused_as_dated_too_far_ahead_arrive_once_the_clock_caught_up(
         mario
             .engine
             .status()
-            .await
             .errors
             .iter()
             .any(|error| error.contains("ahead of this machine's clock"))

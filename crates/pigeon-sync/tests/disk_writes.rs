@@ -47,7 +47,7 @@ async fn a_stop_between_writing_a_file_and_recording_it_publishes_nothing() {
     assert_eq!(bob.read("+alice/a.txt").as_deref(), Some("two"));
     for machine in [alice, &bob] {
         assert!(machine.engine.suggestions().await.is_empty());
-        assert!(machine.engine.status().await.errors.is_empty());
+        assert!(machine.engine.status().errors.is_empty());
     }
     machines.push(bob);
     shut_down(machines).await;
@@ -73,7 +73,7 @@ async fn the_temporary_files_a_stopped_run_left_go() {
     })
     .await;
     assert!(written.exists(), "a write of this run stays");
-    assert!(alice.engine.status().await.errors.is_empty());
+    assert!(alice.engine.status().errors.is_empty());
     shut_down(machines).await;
 }
 

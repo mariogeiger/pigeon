@@ -85,7 +85,7 @@ async fn an_action_that_lost_is_suggested_once_by_its_machine_holding_nothing_th
     assert!(alice.engine.suggestions().await.is_empty());
     assert!(bob.engine.suggestions().await.is_empty());
     for machine in [alice, &bob] {
-        assert!(machine.engine.status().await.errors.is_empty());
+        assert!(machine.engine.status().errors.is_empty());
     }
     machines.push(bob);
     shut_down(machines).await;
