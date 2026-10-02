@@ -300,9 +300,9 @@ does all of this. Manage it over SSH:
 
 Machines connect directly when they can. Otherwise a relay carries their
 traffic. It sees only ciphertext. By default these are iroh's public
-relays. The group can run its own relay instead, on a machine reachable
-from the internet on ports 80 and 443 under a domain name, such as the
-server:
+relays. The group can also run its own relay, used alongside them, on a
+machine reachable from the internet on ports 80 and 443 under a domain
+name, such as the server:
 
 ```sh
 pigeon relay --hostname relay.example.org --contact you@example.org
@@ -317,5 +317,7 @@ names the relay for every machine of the group:
 pigeon group relay --url https://relay.example.org
 ```
 
-`pigeon group status` shows the relay each machine reached.
-`pigeon group relay` without `--url` goes back to iroh's public relays.
+Every machine keeps iroh's public relays too, so a relay that goes down
+or is misconfigured never cuts the group apart. `pigeon group status`
+shows the relay each machine reached. `pigeon group relay` without
+`--url` goes back to iroh's public relays alone.

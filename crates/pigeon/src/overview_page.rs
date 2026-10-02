@@ -191,7 +191,7 @@ pub fn overview(bar: &Bar<'_>, shown: &Overview<'_>) -> Markup {
         details {
             summary { "Details" }
             (fields(&ids))
-            p class="quiet" { "Machines that cannot connect directly talk through a relay, which sees only ciphertext: iroh's public relays, or the group's own, served by " code { "pigeon relay" } "." }
+            p class="quiet" { "Machines that cannot connect directly talk through a relay, which sees only ciphertext: iroh's public relays, and the group's own if it names one, served by " code { "pigeon relay" } "." }
             (form(action("group", "relay"), &back, fill(group, &[], &[])))
         }
     };

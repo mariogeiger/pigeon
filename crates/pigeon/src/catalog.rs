@@ -292,10 +292,10 @@ pub const ACTIONS: &[Action] = &[
     action(
         "group",
         "relay",
-        "Name the relay that carries, for every machine of the group, what no direct connection can",
+        "Name a relay that carries, for every machine of the group, what no direct connection can, alongside iroh's public relays",
         &[optional(
             "url",
-            "The URL `pigeon relay` printed; leave it out for iroh's public relays",
+            "The URL `pigeon relay` printed; leave it out for iroh's public relays alone",
             Kind::Text,
         )],
         Handler::Engine(perform::set_relay),

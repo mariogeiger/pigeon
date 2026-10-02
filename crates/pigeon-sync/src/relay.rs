@@ -1,6 +1,7 @@
-//! The group's relay: the latest relay statement names the relay that
+//! The group's relay: the latest relay statement names a relay that
 //! carries, for every machine of the group, the traffic no direct
-//! connection can, or names none, which leaves iroh's public relays.
+//! connection can, alongside iroh's public relays, or names none, which
+//! leaves the public relays alone.
 
 use anyhow::{Context, Result, bail};
 use iroh::endpoint::RelayMode;
@@ -10,8 +11,8 @@ use pigeon_core::statement::{RelayStatement, is_relay_path, relay_path};
 use crate::engine::{Engine, Inner, JoinState, Network};
 
 impl Inner {
-    /// The relays used when the group names none: iroh's public relays on
-    /// the internet, none on this host alone.
+    /// The relays used whether the group names one or not: iroh's public
+    /// relays on the internet, none on this host alone.
     fn public_relays(&self) -> RelayMap {
         match self.options.network {
             Network::Internet => RelayMode::Default.relay_map(),
@@ -19,8 +20,8 @@ impl Inner {
         }
     }
 
-    /// The relays the latest relay statement names, or `None` while its
-    /// body has not arrived.
+    /// The public relays with the one the latest relay statement names, or
+    /// `None` while its body has not arrived.
     async fn group_relays(&self) -> Result<Option<RelayMap>> {
         let latest = self
             .ledger
@@ -36,13 +37,7 @@ impl Inner {
             return Ok(None);
         }
         let statement: RelayStatement = self.read_statement(&content).await?;
-        Ok(Some(match statement.url {
-            Some(url) => RelayMap::from(
-                url.parse::<RelayUrl>()
-                    .with_context(|| format!("the group's relay {url} is no URL"))?,
-            ),
-            None => self.public_relays(),
-        }))
+        with_group_relay(self.public_relays(), statement.url.as_deref()).map(Some)
     }
 
     /// Makes the node use the relay the group names.
@@ -55,9 +50,21 @@ impl Inner {
     }
 }
 
+/// The relays `public` holds, with the group's relay at `url` if it names
+/// one.
+fn with_group_relay(public: RelayMap, url: Option<&str>) -> Result<RelayMap> {
+    if let Some(url) = url {
+        let url = url
+            .parse::<RelayUrl>()
+            .with_context(|| format!("the group's relay {url} is no URL"))?;
+        public.extend(&RelayMap::from(url));
+    }
+    Ok(public)
+}
+
 impl Engine {
-    /// Names `url` as the relay of every machine of the group, or none for
-    /// iroh's public relays.
+    /// Names `url` as a relay of every machine of the group, alongside
+    /// iroh's public relays, or none for the public relays alone.
     ///
     /// # Errors
     ///
@@ -82,5 +89,22 @@ impl Engine {
         self.inner
             .publish_statement(&mut work, stamp, relay_path(&stamp), body)
             .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_groups_relay_joins_the_public_relays() {
+        let public = || RelayMode::Default.relay_map();
+        let both = with_group_relay(public(), Some("https://relay.example.org")).unwrap();
+        assert_eq!(both.len(), public().len() + 1);
+        assert!(both.contains(&"https://relay.example.org".parse().unwrap()));
+        let urls: Vec<RelayUrl> = public().urls();
+        assert!(urls.iter().all(|url| both.contains(url)));
+        assert_eq!(with_group_relay(public(), None).unwrap(), public());
+        assert!(with_group_relay(public(), Some("not a url")).is_err());
     }
 }
