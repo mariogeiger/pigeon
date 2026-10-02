@@ -235,16 +235,15 @@ fn follow(home: &Home, list: &mut Checklist, membership: &Membership) -> Result<
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|file| {
-            GroupPath::parse(file["path"].as_str().unwrap_or_default())
-                .is_ok_and(|path| !is_statement(&path.key()))
-        })
-        .map(|file| File {
-            path: file["path"].as_str().unwrap_or_default().to_owned(),
-            size: file["content"]["size"].as_u64().unwrap_or(0),
-            followed: mode(file) == "follow",
-            held: file["held"].as_bool().unwrap_or(false),
-            own: file["owner"] == membership.member.as_str(),
+        .filter_map(|file| {
+            let path = GroupPath::parse(file["path"].as_str().unwrap_or_default()).ok()?;
+            (!is_statement(&path.key())).then(|| File {
+                path,
+                size: file["content"]["size"].as_u64().unwrap_or(0),
+                followed: mode(file) == "follow",
+                held: file["held"].as_bool().unwrap_or(false),
+                own: file["owner"] == membership.member.as_str(),
+            })
         })
         .collect();
     if files.is_empty() {

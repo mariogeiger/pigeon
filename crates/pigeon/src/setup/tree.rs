@@ -18,7 +18,7 @@ use crate::render;
 
 /// A file of the group as the tree shows it.
 pub struct File {
-    pub path: String,
+    pub path: GroupPath,
     pub size: u64,
     pub followed: bool,
     pub held: bool,
@@ -65,7 +65,7 @@ impl Line {
 
 impl Leaf for File {
     fn path(&self) -> &str {
-        &self.path
+        self.path.as_str()
     }
 
     fn facts(&self) -> Facts<'_> {
@@ -85,7 +85,7 @@ pub struct Tree {
     followed_at_first: Vec<bool>,
     open: BTreeSet<String>,
     cursor: usize,
-    changes: Vec<(String, bool)>,
+    toggles: Vec<(String, bool)>,
 }
 
 impl Tree {
@@ -96,7 +96,7 @@ impl Tree {
             files,
             open: BTreeSet::new(),
             cursor: 0,
-            changes: Vec::new(),
+            toggles: Vec::new(),
         }
     }
 
@@ -125,7 +125,7 @@ impl Tree {
                     own: folder.leaves().all(|file| file.own),
                 },
                 Row::File { leaf, depth } => Line {
-                    path: leaf.path.clone(),
+                    path: leaf.path.as_str().to_owned(),
                     depth,
                     folder: false,
                     size: leaf.size,
@@ -151,28 +151,30 @@ impl Tree {
     }
 
     /// Follows the files of the line under the cursor, or unfollows them
-    /// if all are followed.
+    /// if all are followed, recording the rule that does so; a line that
+    /// no pattern names, which no file of a group has, toggles nothing.
     fn toggle(&mut self) {
         let Some(line) = self.lines().into_iter().nth(self.cursor) else {
             return;
         };
+        let Ok(path) = GroupPath::parse(&line.path) else {
+            return;
+        };
+        let pattern = if line.folder {
+            folder_pattern(&path)
+        } else {
+            exact_pattern(&path)
+        };
         let follow = self
             .files
             .iter()
-            .any(|file| line.covers(&file.path) && !file.followed);
+            .any(|file| line.covers(file.path.as_str()) && !file.followed);
         for file in &mut self.files {
-            if line.covers(&file.path) {
+            if line.covers(file.path.as_str()) {
                 file.followed = follow;
             }
         }
-        if let Ok(path) = GroupPath::parse(&line.path) {
-            let pattern = if line.folder {
-                folder_pattern(&path)
-            } else {
-                exact_pattern(&path)
-            };
-            self.changes.push((pattern, follow));
-        }
+        self.toggles.push((pattern, follow));
     }
 
     /// Carries out a key: moves, opens or closes a folder, or toggles.
@@ -251,7 +253,7 @@ impl Tree {
                         download: self.to_download(),
                         unchecked_here: self.unchecked_here().count(),
                         unchecked_bytes: self.unchecked_here().map(|file| file.size).sum(),
-                        toggles: std::mem::take(&mut self.changes),
+                        toggles: std::mem::take(&mut self.toggles),
                     }));
                 }
                 Ok(Key::Escape) => break Ok(None),
@@ -270,7 +272,7 @@ mod tests {
 
     fn file(path: &str, size: u64, followed: bool) -> File {
         File {
-            path: path.into(),
+            path: GroupPath::parse(path).unwrap(),
             size,
             followed,
             held: followed,
@@ -325,7 +327,7 @@ mod tests {
         tree.press(&Key::Char(' '));
         assert_eq!(tree.to_download(), 1);
         assert_eq!(
-            tree.changes,
+            tree.toggles,
             [
                 ("/docs/".to_owned(), true),
                 ("/docs/".to_owned(), false),
@@ -345,7 +347,7 @@ mod tests {
             "{drawn}"
         );
         tree.press(&Key::Char(' '));
-        assert_eq!(tree.changes, [("/docs/+mario/".to_owned(), false)]);
+        assert_eq!(tree.toggles, [("/docs/+mario/".to_owned(), false)]);
         assert!(
             tree.render(40)
                 .contains("\n›   ▸ [ ] +mario/  5 B  (yours)\n")
