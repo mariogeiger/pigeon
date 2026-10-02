@@ -68,7 +68,7 @@ fn the_panel_lists_the_largest_files_then_counts_the_rest() {
     assert!(panel.contains("free: -134 files, -890.0 MB"), "{panel}");
     assert!(!panel.contains("pin:"), "{panel}");
     assert!(panel.contains("… and 34 more (889.9 MB)"), "{panel}");
-    assert!(panel.contains("href=\"/g/g/files?under=big\""), "{panel}");
+    assert!(panel.contains("href=\"/g/g?under=big\""), "{panel}");
     assert!(
         panel.contains("href=\"/g/g/file?path=%2Bmario/a%20b.txt\""),
         "{panel}"
@@ -138,7 +138,7 @@ fn the_page_holds_the_file_and_offers_to_leave() {
     );
     assert!(page.contains("Files (2)"), "{page}");
     assert!(
-        page.contains(r#"class="current" href="/g/cheapmo""#),
+        page.contains(r#"class="current" href="/g/cheapmo/overview""#),
         "{page}"
     );
 }

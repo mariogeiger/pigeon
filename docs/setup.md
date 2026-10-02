@@ -237,8 +237,8 @@ and time picked in local time, and rewrites its line. Nothing changes until
 Save, which asks first when it frees space, applies the file to this group
 only, and refuses if the file changed elsewhere since the page loaded it.
 
-The Files page shows the whole group as one tree whose folders open and
-close in place, as `pigeon setup` does, with each folder's size, latest
+A group's page is its Files page: the whole group as one tree whose
+folders open and close in place, as `pigeon setup` does, with each folder's size, latest
 time and waiting edits; `?under=docs/report` opens it down to a folder.
 Each file and folder has a box: checked when followed, mixed when only part
 of a folder is. Unchecking asks whether to pin the current copy here, as

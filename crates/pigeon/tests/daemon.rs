@@ -98,7 +98,7 @@ async fn two_daemons_share_files_and_decide_suggestions() {
         page.contains(r#"action="/act/suggestion/validate""#),
         "{page}"
     );
-    let page = a.page("/g/family/files").await;
+    let page = a.page("/g/family").await;
     assert!(page.contains("Files (1)"), "{page}");
     assert!(page.contains("📬 bob"), "{page}");
     let suggestions = a.call("suggestion", "list", json!({})).await.unwrap();
@@ -183,7 +183,7 @@ async fn a_machine_hears_the_group_before_choosing_its_name() {
 async fn a_group_that_does_not_start_says_why_and_leaving_forgets_any_keeping_its_files() {
     let lookup = MemoryLookup::new();
     let (mut peer, notes) = alice_with_notes(&lookup).await;
-    let page = peer.page("/g/family").await;
+    let page = peer.page("/g/family/overview").await;
     assert!(page.contains(r#"action="/act/group/leave""#), "{page}");
     assert!(
         page.contains("<td>alice (you)</td><td>1</td><td>1</td>"),

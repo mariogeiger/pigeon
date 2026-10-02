@@ -58,10 +58,10 @@ impl Status {
             Self::Deleting => "your deletion waits to be published",
             Self::Drafted => "another member is adding this file",
             Self::Rival => {
-                "another draft of the same path: the first published wins, the other becomes a suggestion"
+                "a rival draft of this path: the first published wins, the other is suggested"
             }
             Self::Overtaken => {
-                "another draft of the same path is published first: yours becomes a suggestion, unless you rename it"
+                "a rival draft publishes first: yours becomes a suggestion unless renamed"
             }
             Self::Suggested => {
                 "a change suggested to the group: anyone validates or discards it from its menu"

@@ -407,9 +407,9 @@ pub fn files(
     let rows = tree.rows();
     let open = first_open(&rows, member, under);
     let back = if under.is_empty() {
-        format!("/g/{group}/files")
+        format!("/g/{group}")
     } else {
-        format!("/g/{group}/files?under={}", encode(under))
+        format!("/g/{group}?under={}", encode(under))
     };
     let here = waiting.iter().filter(|item| item["here"] != false).count();
     let body = html! {
@@ -528,7 +528,7 @@ mod tests {
         assert!(row_of(&page, "team/+bob/c.txt").contains("hidden"));
         assert!(page.contains(r#"data-under="docs/deep""#));
         assert!(row_of(&page, "docs/deep").contains(r#"class="target""#));
-        assert!(page.contains(r#"name="back" value="/g/cheapmo/files?under=docs/deep""#));
+        assert!(page.contains(r#"name="back" value="/g/cheapmo?under=docs/deep""#));
     }
 
     #[test]

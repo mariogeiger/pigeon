@@ -293,7 +293,7 @@ async fn raw(
     Path(group): Path<String>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
-    let back = format!("/g/{group}/files");
+    let back = format!("/g/{group}");
     let Some(Ok(path)) = query.get("path").map(|path| GroupPath::parse(path)) else {
         return Failure::new(StatusCode::BAD_REQUEST, "Which file?", &back).into_response();
     };
@@ -461,8 +461,8 @@ async fn act(
 pub fn routes() -> Router<Arc<App>> {
     Router::new()
         .route("/", get(home))
-        .route("/g/{group}", get(overview))
-        .route("/g/{group}/files", get(files))
+        .route("/g/{group}", get(files))
+        .route("/g/{group}/overview", get(overview))
         .route("/g/{group}/file", get(file))
         .route("/g/{group}/config/preview", post(config_preview))
         .route("/g/{group}/raw", get(raw))
@@ -488,7 +488,7 @@ mod tests {
 
     #[test]
     fn forms_return_only_to_local_pages() {
-        assert!(local_page("/g/cheapmo/files?under=docs"));
+        assert!(local_page("/g/cheapmo?under=docs"));
         assert!(!local_page("//evil.example/"));
         assert!(!local_page("https://evil.example/"));
         assert!(!local_page("/\\evil.example"));

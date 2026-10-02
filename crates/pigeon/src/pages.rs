@@ -168,8 +168,8 @@ fn bar(bar: Option<&Bar<'_>>) -> Markup {
             @if let Some(bar) = bar {
                 span class="tabs" {
                     @for (tab, label, address) in [
-                        (Tab::Overview, "Overview", ""),
-                        (Tab::Files, "Files", "/files"),
+                        (Tab::Files, "Files", ""),
+                        (Tab::Overview, "Overview", "/overview"),
                     ] {
                         a class=[(bar.tab == Some(tab)).then_some("current")] href={ "/g/" (bar.group) (address) } {
                             (label)

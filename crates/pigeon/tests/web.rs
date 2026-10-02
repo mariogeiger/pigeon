@@ -20,15 +20,15 @@ async fn web_forms_run_their_action_and_return() {
     let peer = Machine::start("alice's machine", &lookup).await;
     peer.create("alice").await;
     let fields = [
-        ("back", "/g/family/files"),
+        ("back", "/g/family"),
         ("group", GROUP),
         ("pattern", "/docs/"),
     ];
     let answer = peer.post_form("selection/follow", &fields).await;
     assert_eq!(answer.status, 303, "{}", answer.body);
-    assert_eq!(answer.location.as_deref(), Some("/g/family/files"));
+    assert_eq!(answer.location.as_deref(), Some("/g/family"));
     assert_eq!(peer.selection().await, ["follow +alice/", "follow /docs/"]);
-    let page = peer.page("/g/family").await;
+    let page = peer.page("/g/family/overview").await;
     assert!(page.contains("follow /docs/"), "{page}");
 }
 
@@ -43,7 +43,7 @@ async fn group_pages_follow_files_and_hear_each_change() {
         .await;
     assert_eq!(script.status, 200);
     assert!(script.body.contains("new EventSource("));
-    let page = peer.page("/g/family/files").await;
+    let page = peer.page("/g/family").await;
     assert!(page.contains(r#"<script src="/live.js" defer></script>"#));
     assert!(page.contains(r#"<body data-group="family">"#));
 
@@ -57,7 +57,7 @@ async fn group_pages_follow_files_and_hear_each_change() {
     .unwrap();
     let lines = next_event(lines).await;
 
-    let page = peer.page("/g/family/files?under=%2Balice").await;
+    let page = peer.page("/g/family?under=%2Balice").await;
     assert!(
         page.contains(r#"data-pattern="/+alice/notes.txt" data-state="checked" checked"#),
         "{page}"
@@ -72,7 +72,7 @@ async fn group_pages_follow_files_and_hear_each_change() {
     .unwrap();
     let after = ntp_time(SystemTime::now());
     drop(next_event(lines).await);
-    let page = peer.page("/g/family/files?under=%2Balice").await;
+    let page = peer.page("/g/family?under=%2Balice").await;
     assert!(
         page.contains(r#"title="a copy kept here, pinned at a time: it no longer syncs">📌"#),
         "{page}"
@@ -87,7 +87,7 @@ async fn group_pages_follow_files_and_hear_each_change() {
         .await
         .unwrap();
     eventually("the notes are freed", &[], async || !notes.exists()).await;
-    let page = peer.page("/g/family/files").await;
+    let page = peer.page("/g/family").await;
     assert!(page.contains(r#"data-pattern="/+alice/" data-state="unchecked">"#));
     peer.call("selection", "follow", json!({"pattern": "/+alice/"}))
         .await
@@ -108,7 +108,7 @@ async fn group_pages_follow_files_and_hear_each_change() {
 async fn the_config_editor_previews_what_a_text_changes() {
     let lookup = MemoryLookup::new();
     let (peer, _) = alice_with_notes(&lookup).await;
-    let page = peer.page("/g/family").await;
+    let page = peer.page("/g/family/overview").await;
     for part in [
         r#"<section id="config" data-keep"#,
         r#"<script src="/config_editor.js" defer></script>"#,
@@ -287,12 +287,12 @@ async fn the_web_restores_a_version_and_decides_the_suggestions_it_shows() {
         .await;
         let suggestions = peer.call("suggestion", "list", json!({})).await.unwrap();
         ids.push(suggestions[0]["id"].as_str().unwrap().to_owned());
-        let page = peer.page("/g/family/files?under=docs").await;
+        let page = peer.page("/g/family?under=docs").await;
         assert!(page.contains("alice suggests a new version"), "{page}");
         assert!(page.contains("Files (1)"), "{page}");
     }
     let stale = [
-        ("back", "/g/family/files"),
+        ("back", "/g/family"),
         ("group", GROUP),
         ("suggestions", ids[0].as_str()),
     ];
@@ -303,7 +303,7 @@ async fn the_web_restores_a_version_and_decides_the_suggestions_it_shows() {
     );
     assert_eq!(read(&plan), "second idea\n");
     let shown = [
-        ("back", "/g/family/files"),
+        ("back", "/g/family"),
         ("group", GROUP),
         ("suggestions", ids[1].as_str()),
     ];

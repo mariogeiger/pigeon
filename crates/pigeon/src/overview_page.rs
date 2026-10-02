@@ -74,7 +74,7 @@ fn incompatible_section(machines: &[Value]) -> Markup {
 /// Each member with their machines and how many are online, and, for this
 /// member, the button to leave.
 fn members_section(group: &str, me: &str, members: &Value) -> Markup {
-    let back = format!("/g/{group}");
+    let back = format!("/g/{group}/overview");
     html! {
         section {
             h2 { "Members" }
@@ -135,7 +135,7 @@ fn editor(config: &Value) -> Markup {
 /// The folders this machine keeps elsewhere, and the forms to place one
 /// or bring one back.
 fn places_section(group: &str, places: &Value) -> Markup {
-    let back = format!("/g/{group}");
+    let back = format!("/g/{group}/overview");
     html! {
         section {
             h2 { "Places" }
@@ -154,7 +154,7 @@ fn places_section(group: &str, places: &Value) -> Markup {
 pub fn overview(bar: &Bar<'_>, shown: &Overview<'_>) -> Markup {
     let group = bar.group;
     let status = shown.status;
-    let back = format!("/g/{group}");
+    let back = format!("/g/{group}/overview");
     let me = status["member"].as_str().unwrap_or_default();
     let ids = json!({
         "machine": status["machine"],
@@ -301,7 +301,7 @@ fn changed_file(group: &str, preview: &Value, file: &Value) -> Markup {
     html! {
         li {
             @if !folder.is_empty() {
-                a href={ "/g/" (group) "/files?under=" (encode(folder)) } { (folder) "/" }
+                a href={ "/g/" (group) "?under=" (encode(folder)) } { (folder) "/" }
             }
             a href=(file_link(group, path)) { (name) }
             " " (size(file["size"].as_u64().unwrap_or_default()))
