@@ -7,7 +7,7 @@
 
 mod common;
 
-use common::{Machine, content, eventually, family, published, settle};
+use common::{content, eventually, family, published, settle};
 use iroh::address_lookup::MemoryLookup;
 use pigeon_core::statement::Reason;
 use serde_json::{Value, json};
@@ -20,17 +20,6 @@ fn change_of<'a>(suggestion: &'a Value, path: &str) -> &'a Value {
         .iter()
         .find(|change| change["path"] == path)
         .unwrap_or_else(|| panic!("{suggestion} does not change {path}"))
-}
-
-/// The file `machine` lists at `path`.
-async fn listed(machine: &Machine, path: &str) -> Option<Value> {
-    let files = machine.run("file", "list", json!({})).await;
-    files
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|file| file["path"] == path)
-        .cloned()
 }
 
 #[tokio::test]
@@ -170,7 +159,8 @@ async fn two_members_adding_one_path_while_apart_both_keep_their_content() {
         "{suggestion}"
     );
     eventually("papy's later plan holds the name", &both, async || {
-        listed(&alice, "docs/Plan.txt")
+        alice
+            .listed("docs/Plan.txt")
             .await
             .is_some_and(|file| file["content"] == content("papy's plan\n"))
     })
@@ -189,7 +179,7 @@ async fn two_members_adding_one_path_while_apart_both_keep_their_content() {
             && alice.suggestions().await.is_empty()
     })
     .await;
-    let placed = listed(&desktop, "docs/plan (alice).txt").await.unwrap();
+    let placed = desktop.listed("docs/plan (alice).txt").await.unwrap();
     assert_eq!(
         (&placed["owner"], &placed["author"]),
         (&Value::Null, &json!("alice")),
@@ -268,7 +258,8 @@ async fn an_action_reaching_an_owner_who_edited_offline_wins_and_keeps_both_in_h
     let both = [&alice, &desktop];
     eventually("the later action wins", &both, async || {
         desktop.shows("+alice/list.txt", "milk, bread\n")
-            && listed(&alice, "+alice/list.txt")
+            && alice
+                .listed("+alice/list.txt")
                 .await
                 .is_some_and(|file| file["content"] == content("milk, bread\n"))
     })

@@ -25,10 +25,10 @@ async fn waiting_edits_are_listed_and_published_at_once_under_a_path() {
         alice.engine.pending(None).await.len() == 2
     })
     .await;
-    assert!(
-        changes.has_changed().unwrap(),
-        "waiting edits are signalled"
-    );
+    eventually("waiting edits are signalled", || async {
+        changes.has_changed().unwrap()
+    })
+    .await;
     let pending = alice.engine.pending(None).await;
     let [notes, drop] = &pending[..] else {
         unreachable!()

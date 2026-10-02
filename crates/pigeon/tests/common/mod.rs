@@ -245,6 +245,17 @@ impl Machine {
         file.set_modified(SystemTime::now() - ago).unwrap();
     }
 
+    /// The file `pigeon file list` shows at `path`.
+    pub async fn listed(&self, path: &str) -> Option<Value> {
+        let files = self.run("file", "list", json!({})).await;
+        files
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|file| file["path"] == path)
+            .cloned()
+    }
+
     /// The suggestions `pigeon suggestion list` shows, oldest first.
     pub async fn suggestions(&self) -> Vec<Value> {
         let list = self.run("suggestion", "list", json!({})).await;

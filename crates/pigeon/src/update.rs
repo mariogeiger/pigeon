@@ -48,7 +48,7 @@ fn run_git(command: &mut Command, what: &str) -> Result<()> {
         .context("running git: install it from https://git-scm.com")?;
     if !status.success() {
         bail!(
-            "git could not {what}: check the connection to GitHub and run pigeon update again; the daemon keeps running the program it has"
+            "git could not {what}: check the connection to {REPOSITORY} and run pigeon update again; the daemon keeps running the program it has"
         );
     }
     Ok(())
@@ -87,8 +87,7 @@ fn fetch_main(source: &Path) -> Result<()> {
 
 /// The cargo command that installs pigeon from `checkout`, a clone of its
 /// repository, compiling into `build`.
-#[must_use]
-pub fn install_command(checkout: &Path, build: &Path) -> Command {
+fn install_command(checkout: &Path, build: &Path) -> Command {
     let mut command = Command::new("cargo");
     command
         .args(["install", "--locked", "--target-dir"])
