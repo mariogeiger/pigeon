@@ -4,6 +4,11 @@
 
 #![allow(dead_code)]
 
+mod converged;
+
+#[allow(unused_imports)]
+pub use converged::converged;
+
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
