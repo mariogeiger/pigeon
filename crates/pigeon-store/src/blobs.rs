@@ -23,8 +23,19 @@ use tokio::sync::watch;
 use crate::disk;
 use crate::error::{Result, StoreError};
 
-fn blob_error(error: impl std::fmt::Display) -> StoreError {
-    StoreError::Blobs(error.to_string())
+/// A store error telling `error` and each cause under it that it does not
+/// tell already.
+fn blob_error(error: impl std::error::Error) -> StoreError {
+    let mut told = error.to_string();
+    let mut cause = error.source();
+    while let Some(next) = cause {
+        let text = next.to_string();
+        if !told.contains(&text) {
+            told = format!("{told}: {text}");
+        }
+        cause = next.source();
+    }
+    StoreError::Blobs(told)
 }
 
 /// The iroh-blobs hash of a content hash; both are BLAKE3.
@@ -344,6 +355,19 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), vec![7u8; 100_000]);
         assert!(!std::fs::metadata(&target).unwrap().permissions().readonly());
         assert!(!disk::temporary_path(&target).exists());
+        blobs.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_failed_import_tells_the_cause_under_the_store_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = Blobs::open(&dir.path().join("blobs"), Duration::from_secs(3600))
+            .await
+            .unwrap();
+        let Err(StoreError::Blobs(told)) = blobs.import(&dir.path().join("missing")).await else {
+            panic!("a missing file is imported");
+        };
+        assert!(told.contains("not a file"), "{told}");
         blobs.shutdown().await.unwrap();
     }
 
