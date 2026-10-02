@@ -78,30 +78,6 @@ impl GroupDirs {
     }
 }
 
-/// Moves the file or folder `from` to `to`, unless `to` exists or `from`
-/// does not; says whether it moved.
-///
-/// # Errors
-///
-/// Fails, saying to move it by hand, if it cannot move, as from one disk to
-/// another.
-pub fn move_into_place(from: &Path, to: &Path) -> Result<bool> {
-    if from == to || !from.exists() || to.exists() {
-        return Ok(false);
-    }
-    if let Some(parent) = to.parent() {
-        fs::create_dir_all(parent).map_err(StoreError::io(parent))?;
-    }
-    fs::rename(from, to).map_err(|error| {
-        StoreError::Invalid(format!(
-            "moving {} to {}: {error}; move it there by hand",
-            from.display(),
-            to.display()
-        ))
-    })?;
-    Ok(true)
-}
-
 /// Reads the text file at `path`, none if it does not exist.
 ///
 /// # Errors
@@ -146,17 +122,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_file_moves_into_place_once_and_never_over_another() {
+    fn removing_a_group_removes_both_folders_once() {
         let dir = tempfile::tempdir().unwrap();
-        let (from, to) = (dir.path().join("a"), dir.path().join("b").join("a"));
-        assert!(!move_into_place(&from, &to).unwrap());
-        fs::write(&from, "one").unwrap();
-        assert!(move_into_place(&from, &to).unwrap());
-        assert_eq!(fs::read_to_string(&to).unwrap(), "one");
-        fs::write(&from, "two").unwrap();
-        assert!(!move_into_place(&from, &to).unwrap());
-        assert_eq!(fs::read_to_string(&to).unwrap(), "one");
-        assert!(!move_into_place(&to, &to).unwrap());
         let group = GroupDirs::new(dir.path().join("config"), dir.path().join("data"));
         write_private(&group.config_path(), b"").unwrap();
         write_private(&group.secrets_path(), b"").unwrap();

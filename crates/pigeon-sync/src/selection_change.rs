@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use anyhow::{Result, bail};
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::selection::{Cutoff, Rule, Selection};
-use pigeon_core::statement::STATEMENTS;
+use pigeon_core::statement::is_statement;
 use pigeon_store::config::Config;
 use pigeon_store::disk::{self, fs_path};
 use pigeon_store::index::IndexEntry;
@@ -231,7 +231,7 @@ impl Engine {
             .filter(|entry| draft.cutoff(&entry.path) == Cutoff::MinusInfinity);
         let modified = inner.modified(&work, freed);
         let indexed: HashSet<PathKey> = entries.iter().map(|entry| entry.path.key()).collect();
-        let own = inner.member.tag();
+        let own = inner.member.own_folder();
         let mut tally = Tally::new(work.config.selection.version(), draft.rules().count());
         let ledger = inner.ledger.lock();
         for key in ledger.keys() {
@@ -239,7 +239,7 @@ impl Engine {
                 continue;
             };
             let path = &head.path;
-            if path.is_inside(STATEMENTS) {
+            if is_statement(&path.key()) {
                 continue;
             }
             let cutoff = draft.cutoff(path);
@@ -264,7 +264,7 @@ impl Engine {
                     size,
                     rule,
                 };
-                tally.change(delta, file, path.is_inside(&own));
+                tally.change(delta, file, path.is_within(&own));
             }
         }
         Ok(tally.preview())

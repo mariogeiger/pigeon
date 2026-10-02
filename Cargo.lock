@@ -3203,8 +3203,6 @@ dependencies = [
  "pigeon-core",
  "pigeon-net",
  "pigeon-store",
- "postcard",
- "redb",
  "serde",
  "serde_json",
  "tempfile",

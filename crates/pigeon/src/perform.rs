@@ -6,7 +6,6 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
-use pigeon_core::name::MemberName;
 use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_sync::{Edit, Engine};
 use serde::Serialize;
@@ -102,6 +101,14 @@ pub async fn perform(daemon: &Daemon, args: &Args) -> Result<Value> {
         }
         ("daemon", "restart") => Ok(json!({ "restarts": daemon.restart()? })),
         ("daemon", "reload") => Ok(Value::Array(daemon.reload(args.flag("yes")).await?)),
+        ("group", "leave") => {
+            let group = match args.text(GROUP.name) {
+                Some(group) => group.to_owned(),
+                None => choose(&*daemon.groups().await, None)?.0.to_owned(),
+            };
+            daemon.leave(&group).await?;
+            Ok(Value::Null)
+        }
         ("config", verb) => on_config(daemon, args, verb).await,
         _ if action.scope == Scope::Group => {
             let groups = daemon.groups().await;
@@ -143,11 +150,6 @@ async fn on_config(daemon: &Daemon, args: &Args, verb: &str) -> Result<Value> {
     }
 }
 
-/// The member a call names.
-fn member(args: &Args) -> Result<MemberName> {
-    MemberName::parse(args.required("member")?).context("the member name")
-}
-
 /// Carries out a call on one group.
 async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
     let action = args.action;
@@ -161,16 +163,8 @@ async fn perform_in_group(engine: &Engine, args: &Args) -> Result<Value> {
         ("group", "status") => to_json(engine.status().await),
         ("group", "key") => Ok(json!({ "key": engine.group_key() })),
         ("member", "list") => to_json(engine.members()),
-        ("member", "exclude") => {
-            engine.exclude(&member(args)?).await?;
-            Ok(Value::Null)
-        }
         ("group", "relay") => {
             engine.set_relay(args.text("url")).await?;
-            Ok(Value::Null)
-        }
-        ("group", "leave") => {
-            engine.exclude(&engine.status().await.member).await?;
             Ok(Value::Null)
         }
         ("file", verb) => on_files(engine, args, verb).await,

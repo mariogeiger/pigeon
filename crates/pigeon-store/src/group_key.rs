@@ -18,7 +18,7 @@ pub struct GroupKey {
     pub name: MemberName,
     /// The identity every signature commits to, which never changes.
     pub group: GroupId,
-    /// The secret that admits new machines, which each exclusion renews.
+    /// The secret that admits new machines.
     pub secret: GroupSecret,
     pub bootstrap: Vec<MachineId>,
 }
@@ -152,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn a_renewed_secret_keeps_the_group_identity() {
+    fn the_group_identity_reads_back_apart_from_the_secret() {
         let mut key = GroupKey::generate(name("g"), Vec::new());
         let group = key.group;
         key.secret = random_secret();

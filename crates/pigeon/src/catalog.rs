@@ -117,7 +117,6 @@ const MEMBER: Param = required(
     Kind::Text,
 );
 const KEY: Param = required("key", "The group key a member shared", Kind::Text);
-const WHO: Param = required("member", "The member's name", Kind::Text).listed_by("member", "list");
 const ROOT: Param = optional(
     "root",
     "The group's folder on this machine, by default /<group>, or C:\\<group> on Windows, the same path on every machine",
@@ -289,7 +288,7 @@ pub const ACTIONS: &[Action] = &[
     action(
         "group",
         "leave",
-        "Leave the group: your name stays taken, this machine keeps its files but stops syncing, and the others renew the group key",
+        "Leave the group on this machine: it stops syncing and forgets the group's key, secrets and state, keeping its files; your name stays a member's",
         &[],
     ),
     view(
@@ -297,26 +296,13 @@ pub const ACTIONS: &[Action] = &[
         "list",
         "List the members",
         &[],
-        &[
-            "name",
-            "machines",
-            "online",
-            "joined",
-            "rebound.by",
-            "rebound.time",
-        ],
+        &["name", "machines", "online", "joined"],
     ),
     action(
         "member",
         "claim",
         "Claim a name for this machine after losing one",
         &[MEMBER],
-    ),
-    action(
-        "member",
-        "exclude",
-        "Exclude a member: the name stays taken, their files stay, for the others to change, and the group key is renewed",
-        &[WHO],
     ),
     view(
         "file",

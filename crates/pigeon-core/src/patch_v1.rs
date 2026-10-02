@@ -2,61 +2,27 @@
 //! without the version they continue, and the request a patch applied.
 //! Machines keep verifying them, so the patches signed then stay valid.
 
-use iroh_base::Signature;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::clock::Stamp;
-use crate::identity::{GroupId, MachineCert};
-use crate::patch::{Change, Content, Format, Patch, SignedPatch};
+use crate::identity::GroupId;
+use crate::patch::{Content, Patch};
 use crate::path::GroupPath;
 
 /// A change in the first format.
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub struct ChangeV1 {
-    pub path: GroupPath,
-    pub content: Option<Content>,
-    pub replaces: Option<Stamp>,
+#[derive(Serialize)]
+struct ChangeV1 {
+    path: GroupPath,
+    content: Option<Content>,
+    replaces: Option<Stamp>,
 }
 
 /// A patch in the first format.
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub struct PatchV1 {
-    pub stamp: Stamp,
-    pub changes: Vec<ChangeV1>,
-    pub applies: Option<GroupPath>,
-}
-
-/// A signed patch as the first format stored and sent it.
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub struct SignedPatchV1 {
-    pub patch: PatchV1,
-    pub cert: MachineCert,
-    pub signature: Signature,
-}
-
-impl From<SignedPatchV1> for SignedPatch {
-    fn from(signed: SignedPatchV1) -> Self {
-        let PatchV1 {
-            stamp,
-            changes,
-            applies,
-        } = signed.patch;
-        let changes = changes
-            .into_iter()
-            .map(|change| Change {
-                path: change.path,
-                content: change.content,
-                replaces: change.replaces,
-                continues: None,
-            })
-            .collect();
-        Self {
-            patch: Patch { stamp, changes },
-            cert: signed.cert,
-            signature: signed.signature,
-            signed_as: Format::V1 { applies },
-        }
-    }
+#[derive(Serialize)]
+struct PatchV1 {
+    stamp: Stamp,
+    changes: Vec<ChangeV1>,
+    applies: Option<GroupPath>,
 }
 
 /// The bytes the first format signed for `patch` applying `applies`, or

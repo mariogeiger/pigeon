@@ -1,9 +1,9 @@
 //! What the engine shows: its status, with which member owns each machine
 //! that runs another version of pigeon and which version, the group's
 //! files as this machine holds them, a file's history across its moves,
-//! the members with
-//! their machines, the selection, the times a pin can choose and the
-//! retention, each as plain data for the command line and the API.
+//! the members with their machines, the selection, the times a pin can
+//! choose and the retention, each as plain data for the command line and
+//! the API.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -15,7 +15,7 @@ use pigeon_core::patch::{Content, VersionRef};
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::retention::Retention;
 use pigeon_core::selection::{Cutoff, Rule, compile, matches};
-use pigeon_core::statement::STATEMENTS;
+use pigeon_core::statement::is_statement;
 use pigeon_net::hello::{Heard, Standing};
 use pigeon_store::index::IndexEntry;
 use serde::Serialize;
@@ -127,23 +127,16 @@ impl From<&Version> for VersionView {
     }
 }
 
-/// A member, with the key their name is bound to, none once excluded, who
-/// last rebound it and when, the machines that signed patches for them,
-/// and which of those this one talks to now, itself included.
+/// A member, with the key their name is bound to, the machines that
+/// signed patches for them, and which of those this one talks to now,
+/// itself included.
 #[derive(Clone, Debug, Serialize)]
 pub struct MemberView {
     pub name: MemberName,
-    pub key: Option<iroh_base::PublicKey>,
+    pub key: iroh_base::PublicKey,
     pub joined: String,
-    pub rebound: Option<RebindingView>,
     pub machines: Vec<MachineId>,
     pub online: Vec<MachineId>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct RebindingView {
-    pub by: MemberName,
-    pub time: String,
 }
 
 impl Engine {
@@ -194,7 +187,6 @@ impl Engine {
     #[must_use]
     pub fn group_key(&self) -> String {
         let mut key = self.inner.key.clone();
-        key.secret = self.inner.node.secret().borrow().secret.clone();
         if !key.bootstrap.contains(&self.inner.me()) {
             key.bootstrap.insert(0, self.inner.me());
         }
@@ -238,16 +230,7 @@ impl Engine {
         let ledger = inner.ledger.lock();
         let mut files: Vec<FileView> = ledger
             .live()
-            .filter(|version| {
-                under.is_none_or(|under| {
-                    version.path.key() == under.key()
-                        || version
-                            .path
-                            .key()
-                            .as_str()
-                            .starts_with(&format!("{}/", under.key().as_str()))
-                })
-            })
+            .filter(|version| under.is_none_or(|under| version.path.is_within(under)))
             .filter_map(|version| {
                 let content = version.content?;
                 let entry = entries.get(&version.path.key());
@@ -297,7 +280,7 @@ impl Engine {
             let Some(head) = ledger.head(key) else {
                 continue;
             };
-            if head.path.is_inside(STATEMENTS) || !matches(&matcher, &head.path) {
+            if is_statement(&head.path.key()) || !matches(&matcher, &head.path) {
                 continue;
             }
             for version in ledger.versions(key) {
@@ -339,10 +322,6 @@ impl Engine {
                     name: name.clone(),
                     key: member.key,
                     joined: member.joined.rfc3339(),
-                    rebound: member.rebound.as_ref().map(|rebinding| RebindingView {
-                        by: rebinding.by.clone(),
-                        time: rebinding.stamp.rfc3339(),
-                    }),
                     online: machines
                         .iter()
                         .copied()

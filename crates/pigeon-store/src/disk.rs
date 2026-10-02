@@ -1,7 +1,7 @@
 //! Files in a group's root: where a group path lives on disk, what a file's
-//! metadata says, and how pigeon replaces or removes a file at once, with
-//! the executable bit it should carry; every file pigeon writes may be
-//! written.
+//! metadata says, and how pigeon replaces or removes a file at once,
+//! keeping the permissions it finds and setting only whether the file may
+//! be executed.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -71,41 +71,14 @@ impl Stat {
     }
 }
 
-/// Lets a file be written, and executed when `executable`.
-///
-/// # Errors
-///
-/// Fails if the permissions cannot be changed.
-pub fn set_permissions(path: &Path, executable: bool) -> Result<()> {
-    let mut permissions = fs::metadata(path)
-        .map_err(StoreError::io(path))?
-        .permissions();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let execute = if executable { 0o111 } else { 0 };
-        permissions.set_mode(0o644 | execute);
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = executable;
-        permissions.set_readonly(false);
-    }
-    fs::set_permissions(path, permissions).map_err(StoreError::io(path))
-}
-
-/// Lets the file at `path` be written if it is read-only, as pigeon left
-/// published drop files until 0.6, keeping its executable bit.
-///
-/// # Errors
-///
-/// Fails if the file exists and its permissions cannot be changed.
-pub fn unfreeze(path: &Path) -> Result<()> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() && metadata.permissions().readonly() => {
-            set_permissions(path, Stat::of(&metadata).executable.unwrap_or(false))
-        }
-        _ => Ok(()),
+/// `mode` with execution allowed wherever reading is when `executable`,
+/// and nowhere otherwise.
+#[cfg(unix)]
+fn with_execution(mode: u32, executable: bool) -> u32 {
+    if executable {
+        mode | (mode & 0o444) >> 2
+    } else {
+        mode & !0o111
     }
 }
 
@@ -123,16 +96,34 @@ pub fn temporary_path(target: &Path) -> PathBuf {
     target.with_file_name(format!("{TEMPORARY_PREFIX}{name}"))
 }
 
-/// Moves `temporary` onto `target` at once, after giving it its bits.
+/// Moves `temporary` onto `target` at once. The file takes the
+/// permissions of the file it replaces, or else those it was written with,
+/// which the umask decided, and may be executed as `executable` says.
 ///
 /// # Errors
 ///
 /// Fails if the file cannot be moved or its permissions set.
 pub fn install(temporary: &Path, target: &Path, executable: bool) -> Result<()> {
-    set_permissions(temporary, executable)?;
-    if cfg!(windows) {
-        unfreeze(target)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let written = fs::symlink_metadata(temporary)
+            .map_err(StoreError::io(temporary))?
+            .permissions()
+            .mode()
+            & 0o777;
+        let found = fs::symlink_metadata(target)
+            .ok()
+            .filter(fs::Metadata::is_file)
+            .map_or(written, |metadata| metadata.permissions().mode() & 0o777);
+        let mode = with_execution(found, executable);
+        if mode != written {
+            fs::set_permissions(temporary, fs::Permissions::from_mode(mode))
+                .map_err(StoreError::io(temporary))?;
+        }
     }
+    #[cfg(not(unix))]
+    let _ = executable;
     fs::rename(temporary, target).map_err(StoreError::io(target))
 }
 
@@ -143,9 +134,6 @@ pub fn install(temporary: &Path, target: &Path, executable: bool) -> Result<()> 
 ///
 /// Fails if the file exists and cannot be removed.
 pub fn remove(root: &Path, target: &Path) -> Result<()> {
-    if cfg!(windows) {
-        unfreeze(target)?;
-    }
     match fs::remove_file(target) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -169,25 +157,51 @@ pub fn remove(root: &Path, target: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn install_replaces_a_read_only_file_with_a_writable_one_and_sets_its_bits() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("a.txt");
-        fs::write(&target, "old").unwrap();
-        let mut frozen = fs::metadata(&target).unwrap().permissions();
-        frozen.set_readonly(true);
-        fs::set_permissions(&target, frozen).unwrap();
-        let temporary = temporary_path(&target);
-        assert_eq!(temporary.file_name().unwrap(), ".~pigeon-a.txt");
+    #[cfg(unix)]
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    fn written(target: &Path, mode: u32) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let temporary = temporary_path(target);
         fs::write(&temporary, "new").unwrap();
+        fs::set_permissions(&temporary, fs::Permissions::from_mode(mode)).unwrap();
+        temporary
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_file_keeps_the_mode_the_umask_gave_it_and_executes_where_it_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("run.sh");
+        let temporary = written(&target, 0o640);
+        assert_eq!(temporary.file_name().unwrap(), ".~pigeon-run.sh");
         install(&temporary, &target, true).unwrap();
         assert_eq!(fs::read_to_string(&target).unwrap(), "new");
-        let metadata = fs::metadata(&target).unwrap();
-        assert!(!metadata.permissions().readonly());
-        if cfg!(unix) {
-            assert_eq!(Stat::of(&metadata).executable, Some(true));
-        }
+        assert_eq!(mode(&target), 0o750);
         assert!(!temporary.exists());
+        let plain = dir.path().join("notes.txt");
+        install(&written(&plain, 0o600), &plain, false).unwrap();
+        assert_eq!(mode(&plain), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_replaced_file_keeps_its_mode_but_for_execution() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("a");
+        fs::write(&target, "old").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o751)).unwrap();
+        install(&written(&target, 0o644), &target, false).unwrap();
+        assert_eq!(mode(&target), 0o640);
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o444)).unwrap();
+        install(&written(&target, 0o644), &target, true).unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new");
+        assert_eq!(mode(&target), 0o555);
     }
 
     #[test]

@@ -1,8 +1,7 @@
 //! One group's presence on the network: an iroh endpoint that admits only
-//! machines the member list recognizes or that prove they know the group
-//! secret, keeps a sync session with every machine it reaches, passes the
-//! latest group secret to recognized machines, and serves and fetches blobs
-//! among admitted machines, each from several machines at once, through the
+//! machines that prove they know the group secret, keeps a sync session
+//! with every machine it reaches, and serves and fetches blobs among
+//! admitted machines, each from several machines at once, through the
 //! relays it is told to use when no direct connection works, and tells
 //! which machines speak no protocol of its own and which pigeon they run,
 //! as it tells any machine that asks which pigeon it runs. It announces
@@ -26,9 +25,9 @@ use iroh_blobs::util::connection_pool::{self, ConnectionPool};
 use iroh_blobs::{BlobsProtocol, Hash};
 use iroh_mdns_address_lookup::{DiscoveryEvent, MdnsAddressLookup};
 use n0_future::StreamExt;
-use pigeon_core::clock::{MachineId, Stamp};
+use pigeon_core::clock::MachineId;
 use pigeon_core::draft::{Draft, SignedDrafts};
-use pigeon_core::identity::{GroupId, MachineCert, RenewedSecret};
+use pigeon_core::identity::{GroupId, GroupSecret, MachineCert};
 use pigeon_core::name::MemberName;
 use tokio::sync::{broadcast, mpsc, watch};
 
@@ -42,10 +41,8 @@ pub trait Log: Send + Sync + 'static {
     fn vector(&self) -> Vector;
     /// Every patch held that `vector` does not cover, in stamp order.
     fn missing_from(&self, vector: &Vector) -> Patches;
-    /// Whether the member list binds the certificate's name to its key now.
+    /// Whether the member list binds the certificate's name to its key.
     fn recognizes(&self, cert: &MachineCert) -> bool;
-    /// The stamp of the last exclusion, before which a secret admits no one.
-    fn last_exclusion(&self) -> Option<Stamp>;
 }
 
 /// Patches a peer sent.
@@ -68,8 +65,7 @@ type Counts = Mutex<HashMap<MachineId, usize>>;
 struct Shared {
     endpoint: Endpoint,
     group: GroupId,
-    cert: Option<MachineCert>,
-    secret: watch::Sender<RenewedSecret>,
+    secret: GroupSecret,
     log: Arc<dyn Log>,
     outgoing: broadcast::Sender<Arc<Message>>,
     incoming: mpsc::Sender<Received>,
@@ -104,38 +100,20 @@ impl Shared {
     fn hello(&self, remote: MachineId) -> Hello {
         Hello {
             group: self.group,
-            cert: self.cert.clone(),
-            admission: self
-                .secret
-                .borrow()
-                .secret
-                .admission(&self.endpoint.id(), &remote),
+            admission: self.secret.admission(&self.endpoint.id(), &remote),
             vector: self.log.vector(),
         }
     }
 
-    /// Admits a machine that the member list recognizes, or that proves it
-    /// knows the group secret held, unless an exclusion made that secret
-    /// stale.
+    /// Admits a machine that proves it knows the group secret.
     fn admit(&self, remote: MachineId, hello: &Hello) -> Result<()> {
         ensure!(
             hello.group == self.group,
             "{remote} belongs to another group"
         );
-        let recognized = hello.cert.as_ref().is_some_and(|cert| {
-            cert.machine == remote && cert.is_valid(&self.group) && self.log.recognizes(cert)
-        });
-        let knows = || {
-            let held = self.secret.borrow();
-            let stale = self
-                .log
-                .last_exclusion()
-                .is_some_and(|exclusion| held.predates(exclusion));
-            !stale && hello.admission == held.secret.admission(&remote, &self.endpoint.id())
-        };
         ensure!(
-            recognized || knows(),
-            "{remote} is no member's machine and does not know the group secret"
+            hello.admission == self.secret.admission(&remote, &self.endpoint.id()),
+            "{remote} does not know the group secret"
         );
         lock(&self.admitted).insert(remote);
         Ok(())
@@ -157,26 +135,12 @@ impl Shared {
         }
     }
 
-    /// Adopts `secret` if it supersedes the one held.
-    fn offer(&self, secret: RenewedSecret) -> bool {
-        self.secret.send_if_modified(|held| {
-            let newer = secret.supersedes(held);
-            if newer {
-                *held = secret;
-            }
-            newer
-        })
-    }
-
     /// Runs one sync session until either side closes it: the dialer
     /// proves itself first, the acceptor answers only once convinced, then
-    /// each sends its group secret and what the other lacks, then every
-    /// later patch, and every later secret while the member list still
-    /// recognizes the other machine.
+    /// each sends what the other lacks, then every later patch.
     async fn session(self: Arc<Self>, connection: Connection, dialer: bool) -> Result<()> {
         let remote = connection.remote_id();
         let mut outgoing = self.outgoing.subscribe();
-        let mut secrets = self.secret.subscribe();
         let mut drafts = self.drafts.subscribe();
         let (mut send, mut recv, theirs) = if dialer {
             let (mut send, mut recv) = connection.open_bi().await?;
@@ -194,13 +158,11 @@ impl Shared {
         count(&self.connected, remote, true);
         lock(&self.incompatible).remove(&remote);
         let writer = async {
-            let secret = Message::Secret(secrets.borrow_and_update().clone());
-            wire::write(&mut send, &secret).await?;
             let missing = Message::Patches(self.log.missing_from(&theirs.vector));
             wire::write(&mut send, &missing).await?;
             let announced = drafts.borrow_and_update().clone();
             if let Some(announced) = announced {
-                wire::write(&mut send, &Message::Drafts(announced)).await?;
+                wire::write(&mut send, &Message::Drafts(Box::new(announced))).await?;
             }
             loop {
                 let message = tokio::select! {
@@ -211,20 +173,12 @@ impl Shared {
                         ),
                         Err(broadcast::error::RecvError::Closed) => return Ok(()),
                     },
-                    changed = secrets.changed() => {
-                        changed?;
-                        let secret = secrets.borrow_and_update().clone();
-                        if !theirs.cert.as_ref().is_some_and(|cert| self.log.recognizes(cert)) {
-                            continue;
-                        }
-                        Arc::new(Message::Secret(secret))
-                    }
                     changed = drafts.changed() => {
                         changed?;
                         let Some(announced) = drafts.borrow_and_update().clone() else {
                             continue;
                         };
-                        Arc::new(Message::Drafts(announced))
+                        Arc::new(Message::Drafts(Box::new(announced)))
                     }
                 };
                 wire::write(&mut send, &*message).await?;
@@ -233,9 +187,6 @@ impl Shared {
         let reader = async {
             loop {
                 match wire::read(&mut recv).await? {
-                    Message::Secret(secret) => {
-                        self.offer(secret);
-                    }
                     Message::Patches(patches) if !patches.is_empty() => {
                         let received = Received {
                             from: remote,
@@ -246,7 +197,7 @@ impl Shared {
                         }
                     }
                     Message::Patches(_) => {}
-                    Message::Drafts(signed) => self.hear(remote, signed),
+                    Message::Drafts(signed) => self.hear(remote, *signed),
                 }
             }
         };
@@ -352,17 +303,16 @@ pub struct Node {
 }
 
 impl Node {
-    /// Starts serving sync and blobs on `endpoint` for the machine `cert`
-    /// vouches for, or for a machine with no member name yet that only
-    /// listens, and `announcement` to any machine that asks, and returns
-    /// the node with the stream of patches its peers send.
+    /// Starts serving sync and blobs of `group` on `endpoint` to the
+    /// machines that know `secret`, and `announcement` to any machine that
+    /// asks, and returns the node with the stream of patches its peers
+    /// send.
     #[must_use]
     pub fn spawn(
         endpoint: Endpoint,
         announcement: Announcement,
         group: GroupId,
-        cert: Option<MachineCert>,
-        secret: RenewedSecret,
+        secret: GroupSecret,
         log: Arc<dyn Log>,
         blobs: &Store,
     ) -> (Self, mpsc::Receiver<Received>) {
@@ -370,8 +320,7 @@ impl Node {
         let shared = Arc::new(Shared {
             endpoint: endpoint.clone(),
             group,
-            cert,
-            secret: watch::Sender::new(secret),
+            secret,
             log,
             outgoing: broadcast::channel(256).0,
             incoming,
@@ -437,19 +386,6 @@ impl Node {
         &self.shared.endpoint
     }
 
-    /// The group secret held, which changes when a peer passes a later one.
-    #[must_use]
-    pub fn secret(&self) -> watch::Receiver<RenewedSecret> {
-        self.shared.secret.subscribe()
-    }
-
-    /// Adopts `secret` and passes it to recognized peers if it supersedes
-    /// the one held; returns whether it did.
-    #[must_use]
-    pub fn offer(&self, secret: RenewedSecret) -> bool {
-        self.shared.offer(secret)
-    }
-
     /// Announces this machine's drafts to every connected peer, and to
     /// each peer that connects later, unless they are those announced.
     pub fn announce(&self, drafts: SignedDrafts) {
@@ -491,7 +427,7 @@ impl Node {
     }
 
     /// Dials every machine that local-network discovery reports.
-    pub fn follow(&self, mdns: &MdnsAddressLookup) {
+    pub fn dial_discovered(&self, mdns: &MdnsAddressLookup) {
         let shared = Arc::downgrade(&self.shared);
         let mdns = mdns.clone();
         tokio::spawn(async move {

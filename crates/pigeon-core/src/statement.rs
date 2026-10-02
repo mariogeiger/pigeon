@@ -1,6 +1,9 @@
-//! Statements: the signed files in the hidden drop folder `.pigeon` that
-//! record members, rebindings, the group's relay, and the changes waiting
-//! for the group as suggestions, with their paths and bodies.
+//! Statements: the signed files in the folder `.pigeon` that record
+//! members, the group's relay, and the changes waiting for the group as
+//! suggestions, with their paths and bodies. A path is a statement's, or
+//! lies in one kind's folder, as its key says, whatever its case.
+
+use std::sync::LazyLock;
 
 use iroh_base::PublicKey;
 use serde::{Deserialize, Serialize};
@@ -8,120 +11,73 @@ use serde::{Deserialize, Serialize};
 use crate::clock::Stamp;
 use crate::name::MemberName;
 use crate::patch::{Content, VersionRef};
-use crate::path::GroupPath;
+use crate::path::{GroupPath, PathKey};
 
 /// The folder that holds every statement.
 pub const STATEMENTS: &str = ".pigeon";
+const MEMBERS: &str = "members";
+const RELAYS: &str = "relays";
+const SUGGESTIONS: &str = "suggestions";
+
+/// The path of `names` in the statements folder.
+fn statement_path<'a>(names: impl IntoIterator<Item = &'a str>) -> GroupPath {
+    GroupPath::from_names(std::iter::once(STATEMENTS).chain(names))
+        .expect("statement names are portable")
+}
+
+static STATEMENT_FOLDER: LazyLock<PathKey> = LazyLock::new(|| statement_path([]).key());
+static MEMBER_FOLDER: LazyLock<PathKey> = LazyLock::new(|| statement_path([MEMBERS]).key());
+static RELAY_FOLDER: LazyLock<PathKey> = LazyLock::new(|| statement_path([RELAYS]).key());
+static SUGGESTION_FOLDER: LazyLock<PathKey> = LazyLock::new(|| statement_path([SUGGESTIONS]).key());
+
+/// Whether `key` is the statements folder or lies inside it: a path only
+/// pigeon writes, which no rule decides.
+#[must_use]
+pub fn is_statement(key: &PathKey) -> bool {
+    key.is_within(&STATEMENT_FOLDER)
+}
+
+/// What follows `folder` in `key`, if `key` lies inside it.
+fn inside<'a>(key: &'a PathKey, folder: &PathKey) -> Option<&'a str> {
+    key.below(folder).filter(|rest| !rest.is_empty())
+}
 
 /// The file whose first valid creation claims `name` for its member key.
-///
-/// # Panics
-/// Never: every part of the path is portable by construction.
 #[must_use]
 pub fn member_path(name: &MemberName) -> GroupPath {
-    GroupPath::parse(&format!("{STATEMENTS}/members/{name}")).expect("member names are portable")
+    statement_path([MEMBERS, name.as_str()])
 }
 
 /// The member whose file `path` is, if it is a member file.
 #[must_use]
 pub fn member_of_path(path: &GroupPath) -> Option<MemberName> {
-    let rest = path.as_str().to_lowercase();
-    let name = rest.strip_prefix(&format!("{STATEMENTS}/members/"))?;
-    MemberName::parse(name).ok()
-}
-
-/// The file whose creation, in the patch stamped `stamp`, binds `name` to
-/// `key`, or to none, which excludes the member.
-///
-/// # Panics
-/// Never: every part of the path is portable by construction.
-#[must_use]
-pub fn rebind_path(rebind: &RebindStatement, stamp: &Stamp) -> GroupPath {
-    let key = rebind
-        .key
-        .map_or_else(|| NO_KEY.to_owned(), |key| key.to_string());
-    GroupPath::parse(&format!(
-        "{STATEMENTS}/{REBINDS}/{}/{}-{key}",
-        rebind.name,
-        stamp.label()
-    ))
-    .expect("names, labels and keys are portable")
-}
-
-const REBINDS: &str = "rebinds";
-const NO_KEY: &str = "none";
-
-/// Whether `path` lies where rebinding files do.
-#[must_use]
-pub fn is_rebind_path(path: &GroupPath) -> bool {
-    path.as_str()
-        .to_lowercase()
-        .starts_with(&format!("{STATEMENTS}/{REBINDS}/"))
-}
-
-/// The rebinding a file at `path` states, if `path` is a well-formed
-/// rebinding file.
-#[must_use]
-pub fn rebind_of_path(path: &GroupPath) -> Option<RebindStatement> {
-    let lower = path.as_str().to_lowercase();
-    let rest = lower.strip_prefix(&format!("{STATEMENTS}/{REBINDS}/"))?;
-    let (name, file) = rest.split_once('/')?;
-    let (_, key) = file.rsplit_once('-')?;
-    let key = if key == NO_KEY {
-        None
-    } else {
-        Some(key.parse().ok()?)
-    };
-    Some(RebindStatement {
-        name: MemberName::parse(name).ok()?,
-        key,
-    })
+    MemberName::parse(inside(&path.key(), &MEMBER_FOLDER)?).ok()
 }
 
 /// The file of the relay choice made in the patch stamped `stamp`; the
 /// latest choice holds.
-///
-/// # Panics
-/// Never: every part of the path is portable by construction.
 #[must_use]
 pub fn relay_path(stamp: &Stamp) -> GroupPath {
-    GroupPath::parse(&format!("{STATEMENTS}/{RELAYS}/{}.json", stamp.label()))
-        .expect("labels are portable")
+    statement_path([RELAYS, &format!("{}.json", stamp.label())])
 }
-
-const RELAYS: &str = "relays";
 
 /// Whether `path` lies where relay choices do.
 #[must_use]
 pub fn is_relay_path(path: &GroupPath) -> bool {
-    path.as_str()
-        .to_lowercase()
-        .starts_with(&format!("{STATEMENTS}/{RELAYS}/"))
+    inside(&path.key(), &RELAY_FOLDER).is_some()
 }
 
 /// The file of the suggestion first made in the patch stamped `stamp`;
 /// deleting it decides the suggestion.
-///
-/// # Panics
-/// Never: every part of the path is portable by construction.
 #[must_use]
 pub fn suggestion_path(stamp: &Stamp) -> GroupPath {
-    GroupPath::parse(&format!("{}/{}.json", suggestions_folder(), stamp.label()))
-        .expect("labels are portable")
-}
-
-/// The folder holding suggestions.
-#[must_use]
-pub fn suggestions_folder() -> String {
-    format!("{STATEMENTS}/suggestions")
+    statement_path([SUGGESTIONS, &format!("{}.json", stamp.label())])
 }
 
 /// Whether `path` lies where suggestions do.
 #[must_use]
 pub fn is_suggestion_path(path: &GroupPath) -> bool {
-    path.as_str()
-        .to_lowercase()
-        .starts_with(&format!("{}/", suggestions_folder()))
+    inside(&path.key(), &SUGGESTION_FOLDER).is_some()
 }
 
 /// What a member file says: the key its name is bound to.
@@ -129,13 +85,6 @@ pub fn is_suggestion_path(path: &GroupPath) -> bool {
 pub struct MemberStatement {
     pub name: MemberName,
     pub key: PublicKey,
-}
-
-/// What a rebinding file says: the key a name is now bound to, if any.
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub struct RebindStatement {
-    pub name: MemberName,
-    pub key: Option<PublicKey>,
 }
 
 /// What a relay file says: the URL of the relay the group's machines use
@@ -183,49 +132,36 @@ pub struct Suggestion {
 mod tests {
     use super::*;
 
+    fn path(text: &str) -> GroupPath {
+        GroupPath::parse(text).unwrap()
+    }
+
     #[test]
     fn member_paths_round_trip() {
         let name = MemberName::parse("mario").unwrap();
         assert_eq!(member_of_path(&member_path(&name)), Some(name));
         assert_eq!(
-            member_of_path(&GroupPath::parse(".pigeon/members/Mario").unwrap())
+            member_of_path(&path(".Pigeon/Members/Mario"))
                 .unwrap()
                 .as_str(),
             "mario"
         );
-        assert_eq!(
-            member_of_path(&GroupPath::parse(".pigeon/requests/x").unwrap()),
-            None
-        );
+        assert_eq!(member_of_path(&path(".pigeon/relays/x")), None);
+        assert_eq!(member_of_path(&path(".pigeon/members")), None);
     }
 
     #[test]
-    fn rebind_paths_round_trip() {
-        let stamp = Stamp {
-            time: 7,
-            machine: iroh_base::SecretKey::from_bytes(&[1; 32]).public(),
-        };
-        let name = MemberName::parse("bob").unwrap();
-        for key in [
-            None,
-            Some(iroh_base::SecretKey::from_bytes(&[2; 32]).public()),
-        ] {
-            let rebind = RebindStatement {
-                name: name.clone(),
-                key,
-            };
-            let path = rebind_path(&rebind, &stamp);
-            assert!(is_rebind_path(&path));
-            assert_eq!(rebind_of_path(&path), Some(rebind));
+    fn statements_are_the_folder_and_what_lies_inside_it_whatever_the_case() {
+        for statement in [".pigeon", ".pigeon/members/mario", ".PIGEON/notes.txt"] {
+            assert!(is_statement(&path(statement).key()), "{statement}");
         }
-        let stray = GroupPath::parse(".pigeon/rebinds/bob/notes.txt").unwrap();
-        assert!(is_rebind_path(&stray));
-        assert_eq!(rebind_of_path(&stray), None);
-        assert!(!is_rebind_path(&member_path(&name)));
+        for other in [".pigeonx/a", "a/.pigeon/b", ".pigeonignore"] {
+            assert!(!is_statement(&path(other).key()), "{other}");
+        }
     }
 
     #[test]
-    fn relay_paths_lie_in_their_folder() {
+    fn relay_and_suggestion_paths_lie_in_their_folders() {
         let stamp = Stamp {
             time: 7,
             machine: iroh_base::SecretKey::from_bytes(&[1; 32]).public(),
@@ -234,5 +170,8 @@ mod tests {
         assert!(!is_relay_path(&suggestion_path(&stamp)));
         assert!(is_suggestion_path(&suggestion_path(&stamp)));
         assert!(!is_suggestion_path(&relay_path(&stamp)));
+        assert!(is_suggestion_path(&path(".pigeon/Suggestions/a.json")));
+        assert!(!is_suggestion_path(&path(".pigeon/suggestions")));
+        assert!(is_statement(&relay_path(&stamp).key()));
     }
 }

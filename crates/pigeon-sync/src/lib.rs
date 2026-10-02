@@ -2,16 +2,14 @@
 //! publishes what the rules let the machine publish by itself and suggests
 //! the rest, announces its drafts and hears those of other machines,
 //! materializes what the selection holds, lists the suggestions and
-//! decides them, publishes actions and restorations, excludes members,
-//! follows the group's relay, and keeps placed folders at their
-//! destinations; and the listener that hears a group before its machine
-//! chooses a member name.
+//! decides them, publishes actions and restorations, follows the group's
+//! relay, and keeps placed folders at their destinations; and the listener
+//! that hears a group before its machine chooses a member name.
 
 mod actions;
 mod disk_sync;
 pub mod edit;
 pub mod engine;
-mod exclude;
 mod layout;
 pub mod listen;
 pub mod pending;
@@ -22,7 +20,6 @@ mod relay;
 mod selection_change;
 mod statements;
 pub mod suggestions;
-mod upgrade_v1;
 pub mod views;
 pub mod watch;
 

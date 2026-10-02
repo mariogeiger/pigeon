@@ -1,7 +1,8 @@
 //! Selections: rules that map a gitignore pattern to a cutoff time, the last
 //! matching rule winning, which say which version of each file a machine
-//! holds. The statements folder is always followed. Exact patterns name one
-//! path literally, and a new exact rule drops the exact rules it masks,
+//! holds. Patterns match without case, as paths are told apart. The
+//! statements folder is always followed. Exact patterns name one path
+//! literally, and a new exact rule drops the exact rules it masks,
 //! while a selection replaced whole keeps its rules as given. A rule reads
 //! and prints as one line: `follow /docs/`, `pin <RFC 3339 time> /report/`
 //! and `free *.iso`.
@@ -12,8 +13,9 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use serde::{Deserialize, Serialize};
 
 use crate::clock::{parse_rfc3339, rfc3339};
-use crate::path::GroupPath;
-use crate::statement::STATEMENTS;
+use crate::name::MemberName;
+use crate::path::{GroupPath, PathKey};
+use crate::statement::is_statement;
 
 /// The time $t$ up to which a machine holds a file's last version.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
@@ -53,6 +55,16 @@ fn word(text: &str) -> (&str, &str) {
 }
 
 impl Rule {
+    /// The rule that follows `member`'s own folder `+name` at the root,
+    /// which their machines follow from the start.
+    #[must_use]
+    pub fn follow_own_folder(member: &MemberName) -> Self {
+        Self {
+            pattern: format!("{}/", member.tag()),
+            cutoff: Cutoff::PlusInfinity,
+        }
+    }
+
     /// Reads the rule `line` prints.
     ///
     /// # Errors
@@ -104,7 +116,7 @@ pub enum PatternError {
     Syntax { pattern: String, reason: String },
 }
 
-/// Compiles one pattern in the gitignore syntax.
+/// Compiles one pattern in the gitignore syntax, to match without case.
 ///
 /// # Errors
 /// Returns why the pattern is not valid.
@@ -117,6 +129,7 @@ pub fn compile(pattern: &str) -> Result<Gitignore, PatternError> {
         reason: error.to_string(),
     };
     let mut builder = GitignoreBuilder::new("");
+    builder.case_insensitive(true).map_err(syntax)?;
     builder.add_line(None, pattern).map_err(syntax)?;
     builder.build().map_err(syntax)
 }
@@ -149,11 +162,11 @@ pub fn folder_pattern(folder: &GroupPath) -> String {
     exact_pattern(folder) + "/"
 }
 
-/// What an exact pattern names: one literal path, and whether only as a
-/// folder.
+/// What an exact pattern names: one literal path, by its key, and whether
+/// only as a folder.
 #[derive(PartialEq, Eq, Debug)]
 struct Scope {
-    path: String,
+    key: PathKey,
     folder: bool,
 }
 
@@ -174,17 +187,17 @@ impl Scope {
                 _ => path.push(character),
             }
         }
-        GroupPath::parse(&path).ok()?;
-        Some(Self { path, folder })
+        let key = GroupPath::parse(&path).ok()?.key();
+        Some(Self { key, folder })
     }
 
     /// Whether every path `other` matches, this scope matches too.
     fn masks(&self, other: &Self) -> bool {
-        let inside = other
-            .path
-            .strip_prefix(&self.path)
-            .is_some_and(|rest| rest.starts_with('/'));
-        inside || (other.path == self.path && (other.folder || !self.folder))
+        match other.key.below(&self.key) {
+            Some("") => other.folder || !self.folder,
+            Some(_) => true,
+            None => false,
+        }
     }
 }
 
@@ -270,7 +283,7 @@ impl Selection {
     /// one, none for statements, which are always followed.
     #[must_use]
     pub fn decider(&self, path: &GroupPath) -> Option<usize> {
-        if path.is_inside(STATEMENTS) {
+        if is_statement(&path.key()) {
             return None;
         }
         self.rules
@@ -282,7 +295,7 @@ impl Selection {
     /// none matches, and $+\infty$ for statements.
     #[must_use]
     pub fn cutoff(&self, path: &GroupPath) -> Cutoff {
-        if path.is_inside(STATEMENTS) {
+        if is_statement(&path.key()) {
             return Cutoff::PlusInfinity;
         }
         self.decider(path)
@@ -322,6 +335,7 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(selection.cutoff(&path("src/a.rs")), Cutoff::PlusInfinity);
+        assert_eq!(selection.cutoff(&path("SRC/Old/a.BIN")), Cutoff::At(5));
         assert_eq!(selection.cutoff(&path("src/a.bin")), Cutoff::MinusInfinity);
         assert_eq!(selection.cutoff(&path("src/old/a.bin")), Cutoff::At(5));
         assert_eq!(selection.cutoff(&path("doc/a.rs")), Cutoff::MinusInfinity);
@@ -440,7 +454,7 @@ mod tests {
         assert_eq!(
             Scope::of(&pattern),
             Some(Scope {
-                path: "a/[b] c.txt".into(),
+                key: path("A/[b] c.txt").key(),
                 folder: false
             })
         );
@@ -450,7 +464,7 @@ mod tests {
         assert_eq!(
             Scope::of(&folder),
             Some(Scope {
-                path: "a".into(),
+                key: path("a").key(),
                 folder: true
             })
         );
@@ -487,6 +501,14 @@ mod tests {
             .map(|rule| rule.pattern.as_str())
             .collect();
         assert_eq!(patterns, ["*.pdf", "/a", "/ab.txt", "/b/", "/a/"]);
+        let mut cased = selection.clone();
+        cased.set(rule("/A/B.txt", Cutoff::At(6))).unwrap();
+        cased.set(rule("/A/", Cutoff::MinusInfinity)).unwrap();
+        assert!(
+            cased
+                .rules()
+                .all(|rule| rule.pattern != "/A/B.txt" && rule.pattern != "/a/")
+        );
         let unpruned = Selection::exactly(
             earlier
                 .into_iter()

@@ -4,14 +4,14 @@
 //! the state, `daemon.toml` with the secret token that guards the API and
 //! the address the daemon last listened on, the daemon's log, and the
 //! relay's certificates. Elsewhere, and in `$PIGEON_HOME`, one folder holds
-//! all three. What older pigeons kept elsewhere moves here, once.
+//! all three.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use data_encoding::BASE32_NOPAD;
-use pigeon_store::group_dirs::{GroupDirs, move_into_place, read_if_present, write_private};
+use pigeon_store::group_dirs::{GroupDirs, read_if_present, write_private};
 use serde::{Deserialize, Serialize};
 
 /// The environment variable that names one folder for all of pigeon's.
@@ -31,32 +31,6 @@ struct DaemonFile {
     token: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     address: Option<SocketAddr>,
-}
-
-/// `home`, to which the folder `old` of an older pigeon moves unless
-/// `home` exists; `old` itself while it cannot move, as while the daemon
-/// that runs from it holds its files open.
-fn moved_home(home: PathBuf, old: Option<PathBuf>) -> PathBuf {
-    match old {
-        Some(old) if old != home && old.is_dir() && !home.exists() => {
-            if std::fs::rename(&old, &home).is_ok() {
-                home
-            } else {
-                old
-            }
-        }
-        _ => home,
-    }
-}
-
-/// Removes the file at `path`, if there is one.
-fn remove_if_present(path: &Path) -> Result<()> {
-    match std::fs::remove_file(path) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-            Err(error).with_context(|| format!("removing {}", path.display()))
-        }
-        _ => Ok(()),
-    }
 }
 
 /// The names of the folders in `folder`, sorted, none if it is missing.
@@ -100,39 +74,26 @@ impl Home {
     }
 
     /// `$PIGEON_HOME`, or `pigeon` in the user's local configuration, data
-    /// and state folders, where it moves what older pigeons kept elsewhere.
+    /// and state folders.
     ///
     /// # Errors
     ///
-    /// Fails if the system names no data folder, or what older pigeons kept
-    /// cannot move.
+    /// Fails if the system names no data folder.
     pub fn locate() -> Result<Self> {
         if let Some(path) = std::env::var_os(HOME_VARIABLE) {
             return Ok(Self::new(path));
         }
-        let local = dirs::data_local_dir()
-            .ok_or_else(|| anyhow!("this system has no data folder: set {HOME_VARIABLE}"))?;
-        let roaming = dirs::data_dir().map(|data| data.join("pigeon"));
-        let data = moved_home(local.join("pigeon"), roaming);
+        let data = dirs::data_local_dir()
+            .ok_or_else(|| anyhow!("this system has no data folder: set {HOME_VARIABLE}"))?
+            .join("pigeon");
         let pigeon = |folder: Option<PathBuf>| {
             folder.map_or_else(|| data.clone(), |folder| folder.join("pigeon"))
         };
-        let home = Self {
+        Ok(Self {
             config: pigeon(dirs::config_local_dir()),
             state: pigeon(dirs::state_dir()),
             data: data.clone(),
-        };
-        home.relocate()?;
-        Ok(home)
-    }
-
-    /// Moves to the state folder what pigeon kept in the data folder until
-    /// 0.2.4.
-    fn relocate(&self) -> Result<()> {
-        for name in ["daemon.toml", "daemon.log", "relay"] {
-            move_into_place(&self.data.join(name), &self.state.join(name))?;
-        }
-        Ok(())
+        })
     }
 
     /// The folders of the group `name`.
@@ -142,15 +103,6 @@ impl Home {
             self.config.join("groups").join(name),
             self.data.join("groups").join(name),
         )
-    }
-
-    /// The names of the groups' data folders, sorted.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the groups' data folder exists but cannot be read.
-    pub fn folder_names(&self) -> Result<Vec<String>> {
-        folder_names(&self.data.join("groups"))
     }
 
     /// The names of the groups, whose folders hold a configuration, sorted.
@@ -189,28 +141,14 @@ impl Home {
         Ok(())
     }
 
-    /// What `daemon.toml` holds, made once from the files `token` and
-    /// `address` of an older pigeon; none before the token is made.
+    /// What `daemon.toml` holds, none before the token is made.
     fn daemon_file(&self) -> Result<Option<DaemonFile>> {
         let path = self.daemon_path();
-        if let Some(text) = read_if_present(&path)? {
-            let file =
-                toml::from_str(&text).with_context(|| format!("reading {}", path.display()))?;
-            return Ok(Some(file));
-        }
-        let (token_path, address_path) = (self.data.join("token"), self.data.join("address"));
-        let Some(token) = read_if_present(&token_path)? else {
-            return Ok(None);
-        };
-        let address = read_if_present(&address_path)?.and_then(|text| text.trim().parse().ok());
-        let file = DaemonFile {
-            token: token.trim().to_owned(),
-            address,
-        };
-        self.save_daemon_file(&file)?;
-        remove_if_present(&token_path)?;
-        remove_if_present(&address_path)?;
-        Ok(Some(file))
+        read_if_present(&path)?
+            .map(|text| {
+                toml::from_str(&text).with_context(|| format!("reading {}", path.display()))
+            })
+            .transpose()
     }
 
     /// The secret token the API demands, created on first use.
@@ -288,18 +226,6 @@ mod tests {
         assert!(text.contains("address = \"127.0.0.1:4242\""), "{text}");
     }
 
-    #[test]
-    fn an_older_token_and_address_become_the_daemon_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = apart(dir.path());
-        write_private(&home.data.join("token"), b"abc\n").unwrap();
-        write_private(&home.data.join("address"), b"127.0.0.1:6767").unwrap();
-        assert_eq!(home.address().unwrap().port(), 6767);
-        assert_eq!(home.token().unwrap(), "abc");
-        assert!(home.daemon_path().starts_with(&home.state));
-        assert!(!home.data.join("token").exists() && !home.data.join("address").exists());
-    }
-
     /// Folders apart, as on Linux.
     fn apart(dir: &Path) -> Home {
         Home {
@@ -321,36 +247,6 @@ mod tests {
         assert!(cheapmo.config_path().starts_with(dir.path().join("config")));
         assert!(cheapmo.secrets_path().starts_with(dir.path().join("data")));
         write_private(&cheapmo.config_path(), b"").unwrap();
-        assert_eq!(home.folder_names().unwrap(), ["cheapmo", "heard"]);
         assert_eq!(home.group_names().unwrap(), ["cheapmo"]);
-    }
-
-    #[test]
-    fn what_the_data_folder_held_until_0_2_4_moves_to_the_state_folder() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = apart(dir.path());
-        write_private(&home.data.join("daemon.toml"), b"token = \"abc\"\n").unwrap();
-        write_private(&home.data.join("relay").join("cert"), b"").unwrap();
-        home.relocate().unwrap();
-        assert_eq!(home.token().unwrap(), "abc");
-        assert!(home.relay_path().join("cert").is_file());
-        assert!(!home.data.join("daemon.toml").exists() && !home.data.join("relay").exists());
-        assert!(home.log_path().starts_with(&home.state));
-        home.relocate().unwrap();
-    }
-
-    #[test]
-    fn an_older_folder_moves_once_unless_the_new_one_exists() {
-        let dir = tempfile::tempdir().unwrap();
-        let (old, new) = (dir.path().join("roaming"), dir.path().join("local"));
-        assert_eq!(moved_home(new.clone(), Some(old.clone())), new);
-        std::fs::create_dir(&old).unwrap();
-        std::fs::write(old.join("daemon.toml"), "").unwrap();
-        assert_eq!(moved_home(new.clone(), Some(old.clone())), new);
-        assert!(new.join("daemon.toml").is_file() && !old.exists());
-        std::fs::create_dir(&old).unwrap();
-        assert_eq!(moved_home(new.clone(), Some(old.clone())), new);
-        assert!(old.exists(), "a folder that exists stays");
-        assert_eq!(moved_home(new.clone(), Some(new.clone())), new);
     }
 }

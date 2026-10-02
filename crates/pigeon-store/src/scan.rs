@@ -52,7 +52,7 @@ pub fn scan(root: &Path, under: Option<&GroupPath>, placed: &[GroupPath]) -> Sca
     let mut found = Vec::new();
     walk(root, &start, &mut result, &mut found);
     for folder in placed {
-        if under.is_none_or(|under| folder.is_inside(under.as_str())) {
+        if under.is_none_or(|under| folder.is_within(under) && !under.is_within(folder)) {
             let link = crate::disk::fs_path(root, folder);
             walk(root, &link, &mut result, &mut found);
         }

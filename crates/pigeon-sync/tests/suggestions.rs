@@ -9,16 +9,12 @@
 
 mod common;
 
-use std::path::Path;
-
 use common::{Machine, eventually, group, is_read_only, joined};
 use pigeon_core::patch::VersionRef;
 use pigeon_core::path::GroupPath;
 use pigeon_core::selection::{Cutoff, Rule};
 use pigeon_core::statement::Reason;
-use pigeon_store::state_v1::{AsideItemV1, ReasonV1};
 use pigeon_sync::SuggestionView;
-use redb::TableDefinition;
 
 fn path(text: &str) -> GroupPath {
     GroupPath::parse(text).unwrap()
@@ -344,79 +340,5 @@ async fn an_unportable_file_is_validated_at_another_path() {
             && alice.read("shared/what?.txt").is_none()
     })
     .await;
-    shut_down(machines).await;
-}
-
-/// The set-aside list of pigeon 0.6, and the mark that its disk may hold
-/// read-only files.
-const ASIDE_V1: TableDefinition<u64, &[u8]> = TableDefinition::new("aside");
-const FROZEN_V1: TableDefinition<(), ()> = TableDefinition::new("frozen files");
-
-fn freeze(location: &Path) {
-    let mut permissions = std::fs::metadata(location).unwrap().permissions();
-    permissions.set_readonly(true);
-    std::fs::set_permissions(location, permissions).unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn what_pigeon_0_6_left_becomes_writable_files_and_suggestions_once() {
-    let mut machines = group(&["alice", "bob"]).await;
-    joined(&machines).await;
-    hold(&machines[1], "+alice/").await;
-    machines[0].edit("+alice/plan.txt", "plan");
-    eventually("bob holds the plan", || async {
-        machines[1].read("+alice/plan.txt").is_some()
-    })
-    .await;
-    let content = machines[0].engine.history(&path("+alice/plan.txt"))[0]
-        .content
-        .unwrap();
-    let item = AsideItemV1 {
-        path: "+alice/copy.txt".into(),
-        content: Some(content),
-        replaces: None,
-        reason: ReasonV1::NotWritable,
-        time: 0,
-    };
-    let bob = machines.pop().unwrap();
-    let bob = bob
-        .restart_after(|dirs, root| {
-            let database = redb::Database::create(dirs.state_path()).unwrap();
-            let transaction = database.begin_write().unwrap();
-            transaction
-                .open_table(ASIDE_V1)
-                .unwrap()
-                .insert(1, postcard::to_stdvec(&item).unwrap().as_slice())
-                .unwrap();
-            transaction.open_table(FROZEN_V1).unwrap();
-            transaction.commit().unwrap();
-            freeze(&root.join("+alice/plan.txt"));
-        })
-        .await;
-    let alice = &machines[0];
-    eventually(
-        "the frozen file thaws and the item is suggested",
-        || async {
-            !is_read_only(&bob.file("+alice/plan.txt"))
-                && alice.engine.suggestions().await.len() == 1
-        },
-    )
-    .await;
-    let views = alice.engine.suggestions().await;
-    assert_eq!(views[0].reason, Reason::OutsideRules);
-    assert_eq!(views[0].changes[0].path, "+alice/copy.txt");
-    alice
-        .engine
-        .validate(&shown(alice).await, None)
-        .await
-        .unwrap();
-    eventually("the item lands", || async {
-        alice.read("+alice/copy.txt").as_deref() == Some("plan")
-    })
-    .await;
-    let bob = bob.restart().await;
-    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-    assert!(bob.engine.suggestions().await.is_empty(), "taken up once");
-    machines.push(bob);
     shut_down(machines).await;
 }

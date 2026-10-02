@@ -1,9 +1,9 @@
 //! The web UI's Overview page of a group: how it stands here in one line,
-//! with its errors and incompatible machines if any; its members, to
-//! exclude one or leave; its key; the editor of this machine's
-//! `config.toml`, which `config_editor.js` previews on each keystroke and
-//! saves whole, offering times to a pin line missing one; the folders kept
-//! elsewhere; and the raw ids, folded.
+//! with its errors and incompatible machines if any; its members, and the
+//! button to leave; its key; the editor of this machine's `config.toml`,
+//! which `config_editor.js` previews on each keystroke and saves whole,
+//! offering times to a pin line missing one; the folders kept elsewhere;
+//! and the raw ids, folded.
 
 use maud::{Markup, html};
 use serde_json::{Value, json};
@@ -82,8 +82,8 @@ fn incompatible_section(machines: &[Value]) -> Markup {
     }
 }
 
-/// Each member with their machines, how many are online, and the button
-/// to exclude them, or, for this member, to leave.
+/// Each member with their machines and how many are online, and, for this
+/// member, the button to leave.
 fn members_section(group: &str, me: &str, members: &Value) -> Markup {
     let back = format!("/g/{group}");
     html! {
@@ -99,15 +99,9 @@ fn members_section(group: &str, me: &str, members: &Value) -> Markup {
                         td { (items(&member["online"]).len()) }
                         td { (short_time(member["joined"].as_str().unwrap_or_default())) }
                         td {
-                            @if member["key"].is_null() {
-                                span class="quiet" { "excluded" }
-                            } @else if name == me {
-                                div data-confirm="Leave the group? This machine keeps its files but stops syncing, and your name stays taken." {
+                            @if name == me {
+                                div data-confirm="Leave the group on this machine? It stops syncing and forgets the group's key and state, keeping its files; your name stays a member's." {
                                     (form(action("group", "leave"), &back, fill(group, &[], &[])))
-                                }
-                            } @else {
-                                div data-confirm={ "Exclude " (name) "? Their name stays taken, their files stay, for the others to change, and the group key is renewed." } {
-                                    (form(action("member", "exclude"), &back, fill(group, &[("member", name)], &[])))
                                 }
                             }
                         }

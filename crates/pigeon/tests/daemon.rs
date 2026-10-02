@@ -461,31 +461,38 @@ async fn every_action_of_the_catalog_is_carried_out() {
 }
 
 #[tokio::test]
-async fn the_overview_offers_exclusion_and_leaving_takes_this_machine_out() {
+async fn leaving_forgets_the_group_here_and_keeps_its_files_even_when_it_does_not_start() {
     let lookup = MemoryLookup::new();
-    let peer = Peer::start(&lookup).await;
-    peer.call(
-        "group",
-        "create",
-        json!({"name": "cheapmo", "member": "alice", "root": peer.root("cheapmo")}),
-    )
-    .await
-    .unwrap();
-    eventually("alice joined", async || peer.joined().await).await;
+    let (peer, notes) = alice_with_notes(&lookup).await;
     let page = peer.page("/g/cheapmo").await;
     assert!(page.contains(r#"action="/act/group/leave""#), "{page}");
     assert!(
         page.contains("<td>alice (you)</td><td>1</td><td>1</td>"),
         "{page}"
     );
+    let home = Home::new(peer.dir.path().join("home"));
+    let broken = home.group("broken");
+    std::fs::create_dir_all(broken.config()).unwrap();
+    std::fs::copy(home.group("cheapmo").config_path(), broken.config_path()).unwrap();
+    std::fs::create_dir_all(broken.data()).unwrap();
+    std::fs::write(broken.secrets_path(), "machine = \"00\"\n[cert]\n").unwrap();
+    peer.call("group", "leave", json!({"group": "broken"}))
+        .await
+        .unwrap();
+    assert!(!broken.config().exists() && !broken.data().exists());
     peer.call("group", "leave", json!({})).await.unwrap();
-    let status = peer.call("group", "status", json!({})).await.unwrap();
     assert_eq!(
-        status["join"],
-        json!({"state": "excluded", "reason": "alice left the group"})
+        peer.call("group", "list", json!({})).await.unwrap(),
+        json!([])
     );
-    let page = peer.page("/g/cheapmo").await;
-    assert!(page.contains("alice left the group"));
+    let cheapmo = home.group("cheapmo");
+    assert!(!cheapmo.config().exists() && !cheapmo.data().exists());
+    assert_eq!(std::fs::read_to_string(&notes).unwrap(), "hello\n");
+    let error = peer
+        .call("group", "leave", json!({"group": "cheapmo"}))
+        .await
+        .unwrap_err();
+    assert!(error.contains("no group cheapmo"), "{error}");
 }
 
 /// The next line of an event stream.

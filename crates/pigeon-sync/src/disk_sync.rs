@@ -14,7 +14,7 @@ use pigeon_core::ledger::{Ledger, Version};
 use pigeon_core::patch::{Change, Content, ContentHash};
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::selection::Cutoff;
-use pigeon_core::statement::{Reason, STATEMENTS, SuggestedChange};
+use pigeon_core::statement::{Reason, SuggestedChange, is_statement};
 use pigeon_store::disk::{self, Stat, fs_path};
 use pigeon_store::index::{IndexEntry, Seen, observe};
 use pigeon_store::scan::scan;
@@ -296,7 +296,7 @@ impl Inner {
             synced: synced_stamp,
             target: target_stamp,
             kept,
-            statement: probe.path.is_inside(STATEMENTS),
+            statement: is_statement(&probe.path.key()),
             lost: look.lost.clone(),
         };
         let steps = reconcile(disk, &view);

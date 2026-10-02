@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use pigeon_core::name::MemberName;
 use pigeon_core::places::{Place, Places};
 use pigeon_core::retention::Retention;
-use pigeon_core::selection::{Cutoff, Rule, Selection};
+use pigeon_core::selection::{Rule, Selection};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, StoreError};
@@ -53,13 +53,9 @@ struct Spelled {
     places: Vec<Place>,
 }
 
-/// The selection of a member who chose none: their personal folder.
+/// The selection of a member who chose none: their own folder.
 fn own_folder(member: &MemberName) -> Selection {
-    let rule = Rule {
-        pattern: format!("{}/", member.tag()),
-        cutoff: Cutoff::PlusInfinity,
-    };
-    Selection::exactly([rule]).expect("a personal folder is a pattern")
+    Selection::exactly([Rule::follow_own_folder(member)]).expect("an own folder is a pattern")
 }
 
 impl Config {

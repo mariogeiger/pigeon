@@ -12,11 +12,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use pigeon_core::name::MemberName;
-use pigeon_core::selection::{Cutoff, Rule};
+use pigeon_core::selection::Rule;
 use pigeon_store::config::{Config, ConfigFile};
 use pigeon_store::group_dirs::{GroupDirs, write_private};
 use pigeon_store::group_key::GroupKey;
-use pigeon_store::legacy;
 use pigeon_sync::{Delta, Engine, JoinState, Listener, Names, Options};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, RwLock, RwLockReadGuard, watch};
@@ -34,14 +33,11 @@ const VERDICT: Duration = Duration::from_secs(30);
 /// machines.
 const HEARING: Duration = Duration::from_secs(30);
 
-/// The configuration of `data` once `member` claims it, following their
-/// personal folder.
+/// The configuration of the group `dirs` once `member` claims it,
+/// following their own folder too.
 fn claimed(dirs: &GroupDirs, member: MemberName) -> Result<Config> {
     let mut config = dirs.load_config()?;
-    config.selection.set(Rule {
-        pattern: format!("{}/", member.tag()),
-        cutoff: Cutoff::PlusInfinity,
-    })?;
+    config.selection.set(Rule::follow_own_folder(&member))?;
     config.member = member;
     Ok(config)
 }
@@ -65,20 +61,14 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    /// Starts every group of `home`, upgrading first those an older pigeon
-    /// wrote. A group that fails to upgrade or start is reported and
-    /// skipped, so that it never stops the others.
+    /// Starts every group of `home`. A group that fails to start is
+    /// reported and skipped, so that it never stops the others.
     ///
     /// # Errors
     ///
     /// Fails if the groups folder or the running program cannot be read.
     pub async fn start(home: Home, options: Options) -> Result<Self> {
         let program = Program::running()?;
-        for name in home.folder_names()? {
-            if let Err(error) = legacy::upgrade(&home.group(&name)) {
-                eprintln!("pigeon: group {name} does not upgrade: {error:#}");
-            }
-        }
         let mut groups = BTreeMap::new();
         for name in home.group_names()? {
             match Engine::start(&home.group(&name), options.clone()).await {
@@ -229,7 +219,6 @@ impl Daemon {
         let dirs = self.home.group(&name);
         let mut secrets = dirs.secrets()?;
         secrets.key = Some(key);
-        secrets.renewal = None;
         dirs.save_secrets(&secrets)?;
         ConfigFile::create(&dirs, Config::new(member, root))?;
         let key = match Engine::start(&dirs, self.options.clone()).await {
@@ -266,7 +255,7 @@ impl Daemon {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
                 JoinState::Pending | JoinState::Joined => return Ok(()),
-                JoinState::Taken(reason) | JoinState::Excluded(reason) => bail!(
+                JoinState::Taken(reason) => bail!(
                     "{reason}: claim another name with `pigeon member claim --group {group} --member <name>`"
                 ),
             }
@@ -307,6 +296,30 @@ impl Daemon {
         groups.insert(group.to_owned(), engine);
         drop(groups);
         self.verdict(group).await
+    }
+
+    /// Makes this machine leave `group`, even one that does not start: it
+    /// stops syncing it and forgets its configuration, key, secrets and
+    /// state, keeping its files in the root. The group keeps the member's
+    /// name and every version.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the group is not on this machine or its folders cannot be
+    /// removed.
+    pub async fn leave(&self, group: &str) -> Result<()> {
+        let mut groups = self.groups.write().await;
+        let running = groups.remove(group);
+        if running.is_none() && !self.home.group_names()?.iter().any(|name| name == group) {
+            bail!("no group {group} on this machine: see `pigeon group list`");
+        }
+        if let Some(engine) = running
+            && let Err(error) = engine.shutdown().await
+        {
+            eprintln!("pigeon: group {group} did not stop cleanly: {error:#}");
+        }
+        self.home.group(group).remove()?;
+        Ok(())
     }
 
     /// Restarts every group from its folders, so that the edits of its

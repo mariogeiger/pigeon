@@ -5,6 +5,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::path::GroupPath;
+
 /// The mark that, followed by a member's name anywhere in a path, makes a
 /// file that member's.
 pub const OWNER_MARK: char = '+';
@@ -51,6 +53,15 @@ impl MemberName {
     #[must_use]
     pub fn tag(&self) -> String {
         format!("{OWNER_MARK}{}", self.0)
+    }
+
+    /// The member's own folder, `+<name>` at the root of the group.
+    ///
+    /// # Panics
+    /// Never: a tag is a portable name.
+    #[must_use]
+    pub fn own_folder(&self) -> GroupPath {
+        GroupPath::parse(&self.tag()).expect("a tag is a portable name")
     }
 }
 

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::path::GroupPath;
-use crate::statement::STATEMENTS;
+use crate::statement::is_statement;
 
 /// One folder kept at a destination.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -76,7 +76,7 @@ impl Places {
         folder: GroupPath,
         destination: PathBuf,
     ) -> Result<(), PlaceError> {
-        if folder.as_str() == STATEMENTS || folder.is_inside(STATEMENTS) {
+        if is_statement(&folder.key()) {
             return Err(PlaceError::Statements(folder));
         }
         if !destination.is_absolute() {

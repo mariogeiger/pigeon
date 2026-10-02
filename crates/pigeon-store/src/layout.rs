@@ -8,7 +8,6 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::disk::unfreeze;
 use crate::error::{Result, StoreError};
 
 /// Where the link at `location` leads, if a link is there.
@@ -179,9 +178,6 @@ fn move_file(source: &Path, target: &Path, regular: bool) -> io::Result<()> {
         let _ = fs::remove_file(target);
         return Err(error);
     }
-    if cfg!(windows) {
-        unfreeze(source).map_err(io::Error::other)?;
-    }
     fs::remove_file(source)
 }
 
@@ -206,18 +202,9 @@ mod tests {
     }
 
     fn read_only(path: &Path, executable: bool) {
-        let mut permissions = fs::metadata(path).unwrap().permissions();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            permissions.set_mode(if executable { 0o555 } else { 0o444 });
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = executable;
-            permissions.set_readonly(true);
-        }
-        fs::set_permissions(path, permissions).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mode = if executable { 0o555 } else { 0o444 };
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
     }
 
     #[test]

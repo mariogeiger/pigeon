@@ -1,29 +1,30 @@
 //! The engine of one group on one machine: it opens the group's state,
 //! binds its endpoint, and runs the one loop that receives patches, follows
 //! the root's changes, publishes settled edits or suggests them, follows
-//! the suggestions, joins the member to the group, renews and keeps the group secret, and keeps the blobs it needs
-//! from garbage collection. After each turn it announces this machine's
-//! drafts and signals whether what the engine shows may have changed.
+//! the suggestions, joins the member to the group, and keeps the blobs it
+//! needs from garbage collection. After each turn it announces this
+//! machine's drafts and signals whether what the engine shows may have
+//! changed.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use iroh::Endpoint;
 use iroh::address_lookup::MemoryLookup;
 use iroh_base::SecretKey;
 use iroh_blobs::api::TempTag;
 use iroh_mdns_address_lookup::MdnsAddressLookup;
 use pigeon_core::clock::{Clock, MachineId, Stamp, ntp_time};
-use pigeon_core::identity::{GroupId, MachineCert, Renewal, RenewedSecret};
+use pigeon_core::identity::{GroupId, MachineCert};
 use pigeon_core::ledger::Ledger;
 use pigeon_core::name::MemberName;
 use pigeon_core::patch::{Change, Content, ContentHash, Patch, SignedPatch};
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::places::Places;
-use pigeon_core::statement::{MemberStatement, STATEMENTS, is_relay_path, member_path};
+use pigeon_core::statement::{MemberStatement, is_relay_path, is_statement, member_path};
 use pigeon_net::bind::{bind_internet, bind_local};
 use pigeon_net::hello::Announcement;
 use pigeon_net::wire::{Patches, Vector};
@@ -32,7 +33,7 @@ use pigeon_store::blobs::Blobs;
 use pigeon_store::config::ConfigFile;
 use pigeon_store::disk::Stat;
 use pigeon_store::group_dirs::GroupDirs;
-use pigeon_store::group_key::{GroupKey, random_secret};
+use pigeon_store::group_key::GroupKey;
 use pigeon_store::state::State;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -115,8 +116,6 @@ pub enum JoinState {
     Joined,
     /// Another key holds the name, or a folder claims it.
     Taken(String),
-    /// The member left or was excluded.
-    Excluded(String),
 }
 
 impl JoinState {
@@ -156,10 +155,6 @@ impl Log for SharedLedger {
     fn recognizes(&self, cert: &MachineCert) -> bool {
         self.lock().recognizes(cert)
     }
-
-    fn last_exclusion(&self) -> Option<Stamp> {
-        self.lock().last_exclusion()
-    }
 }
 
 /// An edit waiting to settle.
@@ -193,8 +188,6 @@ pub(crate) struct Work {
     pub announced: Option<Vec<(PathKey, u64, Instant)>>,
     /// The live suggestions read so far, by their statements' keys.
     pub suggestions: BTreeMap<PathKey, Live>,
-    /// Whether what pigeon 0.6 left in the state was taken up.
-    pub upgraded: bool,
 }
 
 /// Work for the loop from outside it.
@@ -203,7 +196,6 @@ pub(crate) enum Wake {
 }
 
 pub(crate) struct Inner {
-    pub dirs: GroupDirs,
     /// The member this machine speaks for.
     pub member: MemberName,
     pub root: std::path::PathBuf,
@@ -325,19 +317,10 @@ impl Inner {
         let ledger = self.ledger.lock();
         let name = &self.member;
         if let Some(member) = ledger.members().get(name) {
-            let by = member.rebound.as_ref().map(|rebinding| &rebinding.by);
-            return match (member.key, by) {
-                (Some(key), _) if key == self.cert.member => JoinState::Joined,
-                (Some(_), _) => {
-                    JoinState::Taken(format!("the name {name} is taken by another key"))
-                }
-                (None, Some(by)) if by == name => {
-                    JoinState::Excluded(format!("{name} left the group"))
-                }
-                (None, by) => JoinState::Excluded(format!(
-                    "{} excluded {name} from the group",
-                    by.map_or("a member", MemberName::as_str)
-                )),
+            return if member.key == self.cert.member {
+                JoinState::Joined
+            } else {
+                JoinState::Taken(format!("the name {name} is taken by another key"))
             };
         }
         let own_file = member_path(name).key();
@@ -420,46 +403,12 @@ impl Inner {
         self.node.publish(fresh);
         self.want_peers();
         work.join = self.join_state();
-        self.renew_secret(work);
         let keys: Vec<PathKey> = keys.into_iter().collect();
         self.refresh_keys(work, &keys).await;
-        if keys.iter().any(|key| key.as_str().starts_with(STATEMENTS)) {
+        if keys.iter().any(is_statement) {
             self.follow_suggestions(work).await;
         }
         work.protect_due = true;
-    }
-
-    /// Draws a new group secret if a member was excluded since the one held
-    /// was made, unless this machine's member no longer belongs.
-    pub(crate) fn renew_secret(&self, work: &Work) {
-        if work.join != JoinState::Joined {
-            return;
-        }
-        let Some(exclusion) = self.ledger.lock().last_exclusion() else {
-            return;
-        };
-        if self.node.secret().borrow().predates(exclusion) {
-            let _ = self.node.offer(RenewedSecret {
-                secret: random_secret(),
-                renewal: Some(Renewal {
-                    after: exclusion,
-                    by: self.me(),
-                }),
-            });
-        }
-    }
-
-    /// Keeps the group secret the node holds in the group's secrets.
-    fn save_secret(&self, secret: RenewedSecret) -> Result<()> {
-        let mut secrets = self.dirs.secrets()?;
-        if secrets
-            .secret()
-            .is_some_and(|held| secret.supersedes(&held))
-        {
-            secrets.renew(secret);
-            self.dirs.save_secrets(&secrets)?;
-        }
-        Ok(())
     }
 
     /// Keeps sessions open with every machine the ledger or the key names.
@@ -474,8 +423,8 @@ impl Inner {
         self.node.want(machines);
     }
 
-    /// One pass of the timer: join when due, take up what pigeon 0.6 left,
-    /// publish or suggest settled edits, rescan and protect when due.
+    /// One pass of the timer: join when due, publish or suggest settled
+    /// edits, rescan and protect when due.
     async fn tick(
         self: &Arc<Self>,
         work: &mut Work,
@@ -487,12 +436,6 @@ impl Inner {
             && let Err(error) = self.join(work).await
         {
             self.report(format!("joining: {error}"));
-        }
-        if work.join == JoinState::Joined && !work.upgraded {
-            if let Err(error) = self.upgrade_v1(work).await {
-                self.report(format!("taking up what pigeon 0.6 left: {error:#}"));
-            }
-            work.upgraded = true;
         }
         self.publish_settled(work, &[]).await;
         if last_rescan.elapsed() >= self.options.rescan {
@@ -526,7 +469,7 @@ impl Engine {
     /// cannot be opened, the root created, or the endpoint bound.
     pub async fn start(dirs: &GroupDirs, options: Options) -> Result<Self> {
         let secrets = dirs.secrets()?;
-        let (Some(key), Some(secret)) = (secrets.key.clone(), secrets.secret()) else {
+        let Some(key) = secrets.key.clone() else {
             bail!(
                 "{} holds no group key: join the group with `pigeon group join`",
                 dirs.secrets_path().display()
@@ -546,9 +489,7 @@ impl Engine {
         let config = ConfigFile::open(dirs)?;
         std::fs::create_dir_all(&config.root)
             .with_context(|| format!("creating {}", config.root.display()))?;
-        let cert = secrets
-            .cert_of(&group, &config.member)
-            .map_err(|reason| anyhow!("{}: {reason}", dirs.secrets_path().display()))?;
+        let cert = MachineCert::derive(&group, config.member.clone(), machine.public());
         let ledger = Arc::new(SharedLedger::new(ledger));
         let blobs = Blobs::open(&dirs.blobs_path(), options.gc).await?;
         let (endpoint, mdns) = bind(&machine, &group, &options.network).await?;
@@ -556,19 +497,17 @@ impl Engine {
             endpoint,
             options.announcement.clone(),
             group,
-            Some(cert.clone()),
-            secret,
+            key.secret.clone(),
             ledger.clone(),
             blobs.store(),
         );
         if let Some(mdns) = &mdns {
-            node.follow(mdns);
+            node.dial_discovered(mdns);
         }
         let (wake, wakes) = mpsc::unbounded_channel();
         let (rescans, rescan_events) = mpsc::unbounded_channel();
         let laid_out = state.placed()?;
         let inner = Arc::new(Inner {
-            dirs: dirs.clone(),
             member: config.member.clone(),
             root: config.root.clone(),
             cert,
@@ -594,7 +533,6 @@ impl Engine {
                 watched: Vec::new(),
                 announced: None,
                 suggestions: BTreeMap::new(),
-                upgraded: false,
             }),
             wake,
             rescans,
@@ -603,11 +541,7 @@ impl Engine {
             changes: watch::Sender::new(0),
             _mdns: mdns,
         });
-        {
-            let mut work = inner.work.lock().await;
-            work.join = inner.join_state();
-            inner.renew_secret(&work);
-        }
+        inner.work.lock().await.join = inner.join_state();
         inner.want_peers();
         let (stop, stopped) = oneshot::channel();
         let task = tokio::spawn(run(inner.clone(), received, rescan_events, wakes, stopped));
@@ -659,12 +593,12 @@ fn merge(rescans: &mut Vec<Rescan>, rescan: Rescan) {
         Rescan::Under(path) => {
             let covered = rescans.iter().any(|known| match known {
                 Rescan::All => true,
-                Rescan::Under(known) => *known == path || path.is_inside(known.as_str()),
+                Rescan::Under(known) => path.is_within(known),
             });
             if !covered {
-                rescans.retain(|known| {
-                    !matches!(known, Rescan::Under(known) if known.is_inside(path.as_str()))
-                });
+                rescans.retain(
+                    |known| !matches!(known, Rescan::Under(known) if known.is_within(&path)),
+                );
                 rescans.push(Rescan::Under(path));
             }
         }
@@ -678,8 +612,6 @@ async fn run(
     mut wakes: mpsc::UnboundedReceiver<Wake>,
     mut stopped: oneshot::Receiver<()>,
 ) {
-    let mut secrets: watch::Receiver<RenewedSecret> = inner.node.secret();
-    secrets.mark_changed();
     let mut ticks = tokio::time::interval(inner.options.tick);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut last_rescan = Instant::now();
@@ -702,12 +634,6 @@ async fn run(
     loop {
         tokio::select! {
             _ = &mut stopped => return,
-            Ok(()) = secrets.changed() => {
-                let secret = secrets.borrow_and_update().clone();
-                if let Err(error) = inner.save_secret(secret) {
-                    inner.report(format!("keeping the group secret: {error}"));
-                }
-            }
             Some(patches) = received.recv() => {
                 let relayed = patches.patches.iter().any(|signed| {
                     signed.patch.changes.iter().any(|change| is_relay_path(&change.path))
@@ -734,7 +660,7 @@ async fn run(
                 let mut work = inner.work.lock().await;
                 let Wake::Keys(keys) = wake;
                 inner.refresh_keys(&mut work, &keys).await;
-                if keys.iter().any(|key| key.as_str().starts_with(STATEMENTS)) {
+                if keys.iter().any(is_statement) {
                     inner.follow_suggestions(&mut work).await;
                     inner.follow_relay().await;
                 }

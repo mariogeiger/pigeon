@@ -12,7 +12,7 @@ use pigeon_core::patch::{Change, Content, VersionRef};
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::restore::restore;
 use pigeon_core::selection::{compile, matches};
-use pigeon_core::statement::STATEMENTS;
+use pigeon_core::statement::is_statement;
 use pigeon_store::disk::{self, fs_path};
 use serde::Serialize;
 
@@ -49,20 +49,20 @@ enum Target {
 
 /// The live files at `path` or inside the folder `path`.
 fn files_at<'a>(ledger: &'a Ledger, path: &GroupPath) -> Vec<&'a Version> {
-    let key = path.key();
+    let folder = path.key();
     ledger
         .live()
-        .filter(|version| version.path.key() == key || version.path.is_inside(path.as_str()))
+        .filter(|version| version.path.key().is_within(&folder))
         .collect()
 }
 
 /// The drafts among `drafts` at `path` or inside the folder `path` that
 /// the ledger holds no live file at.
 fn drafts_at<'a>(ledger: &Ledger, drafts: &'a [GroupPath], path: &GroupPath) -> Vec<&'a GroupPath> {
-    let key = path.key();
+    let folder = path.key();
     drafts
         .iter()
-        .filter(|draft| draft.key() == key || draft.is_inside(path.as_str()))
+        .filter(|draft| draft.key().is_within(&folder))
         .filter(|draft| !ledger.head(&draft.key()).is_some_and(Version::is_live))
         .collect()
 }
@@ -110,11 +110,7 @@ fn targets(ledger: &Ledger, drafts: &[GroupPath], edit: Edit) -> Result<Vec<(Gro
             let mut moves = Vec::new();
             let mut gone = Vec::new();
             for (source, moved) in sources {
-                let target = if source.key() == from.key() {
-                    to.clone()
-                } else {
-                    source.moved(from.as_str(), to.as_str())?
-                };
+                let target = source.moved(&from, &to)?;
                 let taken = ledger.head(&target.key()).is_some_and(Version::is_live)
                     || drafts.iter().any(|draft| draft.key() == target.key());
                 if target.key() != source.key() && taken {
@@ -206,7 +202,7 @@ impl Inner {
         }
         if let Some(change) = changes
             .iter()
-            .find(|change| change.path.is_inside(STATEMENTS))
+            .find(|change| is_statement(&change.path.key()))
         {
             bail!("{} lies in the statements folder", change.path);
         }

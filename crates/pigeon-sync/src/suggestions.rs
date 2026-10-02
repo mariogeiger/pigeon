@@ -17,7 +17,7 @@ use pigeon_core::patch::{Change, Content, VersionRef};
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::selection::Cutoff;
 use pigeon_core::statement::{
-    Reason, STATEMENTS, SuggestedChange, Suggestion, is_suggestion_path, suggestion_path,
+    Reason, SuggestedChange, Suggestion, is_statement, is_suggestion_path, suggestion_path,
 };
 use pigeon_store::disk::{self, fs_path};
 use pigeon_store::index::{IndexEntry, hash_file};
@@ -302,7 +302,7 @@ impl Inner {
     /// Fails unless `to` is free, here and in the ledger, outside the
     /// statements folder.
     fn ensure_free(&self, to: &GroupPath) -> Result<()> {
-        if to.is_inside(STATEMENTS) {
+        if is_statement(&to.key()) {
             bail!("{to} lies in the statements folder");
         }
         let live = self

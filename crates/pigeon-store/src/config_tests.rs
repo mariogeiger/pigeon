@@ -3,6 +3,7 @@
 //! over edits it has not read.
 
 use pigeon_core::path::GroupPath;
+use pigeon_core::selection::Cutoff;
 
 use super::*;
 

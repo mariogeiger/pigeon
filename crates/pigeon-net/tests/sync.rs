@@ -21,13 +21,10 @@ use iroh_blobs::Hash;
 use iroh_blobs::protocol::{ChunkRanges, GetRequest};
 use iroh_blobs::store::mem::MemStore;
 use pigeon_core::clock::Stamp;
-use pigeon_core::identity::{
-    GroupId, GroupSecret, MachineCert, Renewal, RenewedSecret, member_key,
-};
+use pigeon_core::identity::{GroupId, GroupSecret, MachineCert, member_key};
 use pigeon_core::ledger::Ledger;
 use pigeon_core::name::MemberName;
-use pigeon_core::patch::{Change, Content, ContentHash, Patch, SignedPatch};
-use pigeon_core::statement::member_path;
+use pigeon_core::patch::{Change, Patch, SignedPatch};
 use pigeon_net::bind::bind_local;
 use pigeon_net::hello::{Announcement, Announcing, HELLO_ALPN, Heard, Standing};
 use pigeon_net::relay::{relay_url, serve_relay};
@@ -56,32 +53,14 @@ impl Log for Held {
     fn recognizes(&self, cert: &MachineCert) -> bool {
         self.0.lock().unwrap().recognizes(cert)
     }
-
-    fn last_exclusion(&self) -> Option<Stamp> {
-        self.0.lock().unwrap().last_exclusion()
-    }
 }
 
 fn group() -> GroupId {
     GroupSecret([5; 32]).id()
 }
 
-fn first(byte: u8) -> RenewedSecret {
-    RenewedSecret {
-        secret: GroupSecret([byte; 32]),
-        renewal: None,
-    }
-}
-
-fn renewed(byte: u8, time: u64) -> RenewedSecret {
-    let by = SecretKey::from_bytes(&[byte; 32]).public();
-    RenewedSecret {
-        secret: GroupSecret([byte; 32]),
-        renewal: Some(Renewal {
-            after: Stamp { time, machine: by },
-            by,
-        }),
-    }
+fn secret(byte: u8) -> GroupSecret {
+    GroupSecret([byte; 32])
 }
 
 struct Machine {
@@ -94,14 +73,14 @@ struct Machine {
 }
 
 impl Machine {
-    async fn start(secret: RenewedSecret, lookup: &MemoryLookup) -> Self {
+    async fn start(secret: GroupSecret, lookup: &MemoryLookup) -> Self {
         let key = SecretKey::generate();
         let endpoint = bind_local(key.clone(), lookup).await.unwrap();
         Self::on(endpoint, key, secret)
     }
 
     /// Starts a machine that `lookup` knows only through `relay`.
-    async fn relayed(secret: RenewedSecret, lookup: &MemoryLookup, relay: &RelayUrl) -> Self {
+    async fn relayed(secret: GroupSecret, lookup: &MemoryLookup, relay: &RelayUrl) -> Self {
         let key = SecretKey::generate();
         let endpoint = Endpoint::builder(presets::Minimal)
             .secret_key(key.clone())
@@ -127,7 +106,7 @@ impl Machine {
         machine
     }
 
-    fn on(endpoint: Endpoint, key: SecretKey, secret: RenewedSecret) -> Self {
+    fn on(endpoint: Endpoint, key: SecretKey, secret: GroupSecret) -> Self {
         let log = Arc::new(Held(Mutex::new(Ledger::new(group()))));
         let blobs = MemStore::new();
         let name = MemberName::parse("mario").unwrap();
@@ -137,7 +116,6 @@ impl Machine {
             endpoint,
             Announcement::speaking_ours("0.1.0", "test"),
             group(),
-            Some(cert.clone()),
             secret,
             log.clone(),
             &blobs,
@@ -165,20 +143,6 @@ impl Machine {
 
     fn patch(&self, time: u64) -> SignedPatch {
         self.signed(time, Vec::new())
-    }
-
-    fn join(&self, time: u64) -> SignedPatch {
-        let change = Change {
-            path: member_path(&self.cert.name),
-            content: Some(Content {
-                hash: ContentHash([0; 32]),
-                size: 0,
-                executable: false,
-            }),
-            replaces: None,
-            continues: None,
-        };
-        self.signed(time, vec![change])
     }
 
     fn hold(&self, patch: &SignedPatch) {
@@ -231,8 +195,8 @@ impl Machine {
 #[tokio::test]
 async fn admitted_machines_exchange_missing_then_live_patches() {
     let lookup = MemoryLookup::new();
-    let mut a = Machine::start(first(5), &lookup).await;
-    let mut b = Machine::start(first(5), &lookup).await;
+    let mut a = Machine::start(secret(5), &lookup).await;
+    let mut b = Machine::start(secret(5), &lookup).await;
     let (a1, a2, b1) = (a.patch(1), a.patch(2), b.patch(3));
     a.hold(&a1);
     a.hold(&a2);
@@ -253,8 +217,8 @@ async fn admitted_machines_exchange_missing_then_live_patches() {
 #[tokio::test]
 async fn a_machine_without_the_secret_learns_nothing() {
     let lookup = MemoryLookup::new();
-    let mut a = Machine::start(first(5), &lookup).await;
-    let mut intruder = Machine::start(first(6), &lookup).await;
+    let mut a = Machine::start(secret(5), &lookup).await;
+    let mut intruder = Machine::start(secret(6), &lookup).await;
     let a1 = a.patch(1);
     a.hold(&a1);
     intruder.node.dial(a.node.id());
@@ -290,8 +254,8 @@ async fn a_machine_without_the_secret_learns_nothing() {
 #[tokio::test]
 async fn admitted_machines_fetch_blobs() {
     let lookup = MemoryLookup::new();
-    let mut a = Machine::start(first(5), &lookup).await;
-    let b = Machine::start(first(5), &lookup).await;
+    let mut a = Machine::start(secret(5), &lookup).await;
+    let b = Machine::start(secret(5), &lookup).await;
     let data = vec![42u8; 3 << 20];
     let tag = a.blobs.add_bytes(data.clone()).temp_tag().await.unwrap();
     let b1 = b.patch(1);
@@ -318,48 +282,6 @@ async fn admitted_machines_fetch_blobs() {
     b.node.shutdown().await.unwrap();
 }
 
-#[tokio::test]
-async fn a_recognized_machine_with_an_old_secret_gets_every_later_one() {
-    let lookup = MemoryLookup::new();
-    let mut a = Machine::start(renewed(6, 10), &lookup).await;
-    let b = Machine::start(first(5), &lookup).await;
-    let joined = a.join(1);
-    a.hold(&joined);
-    b.hold(&joined);
-    let b1 = b.patch(2);
-    b.hold(&b1);
-    let mut secrets = b.node.secret();
-    b.node.dial(a.node.id());
-    assert_eq!(a.next_times().await, [2]);
-    timeout(
-        Duration::from_secs(10),
-        secrets.wait_for(|held| *held == renewed(6, 10)),
-    )
-    .await
-    .expect("the newer secret arrives")
-    .unwrap();
-    assert!(!a.node.offer(first(7)));
-    assert!(a.node.offer(renewed(8, 20)));
-    timeout(
-        Duration::from_secs(10),
-        secrets.wait_for(|held| *held == renewed(8, 20)),
-    )
-    .await
-    .expect("a later secret arrives during the session")
-    .unwrap();
-    assert!(b.node.offer(renewed(9, 20)));
-    let mut theirs = a.node.secret();
-    timeout(
-        Duration::from_secs(10),
-        theirs.wait_for(|held| *held == renewed(9, 20)),
-    )
-    .await
-    .expect("the greatest renewal wins on both sides")
-    .unwrap();
-    a.node.shutdown().await.unwrap();
-    b.node.shutdown().await.unwrap();
-}
-
 fn varied(size: usize) -> Vec<u8> {
     (0..size)
         .map(|i| u8::try_from(i * 7 % 251).unwrap())
@@ -369,10 +291,10 @@ fn varied(size: usize) -> Vec<u8> {
 #[tokio::test]
 async fn a_blob_held_in_halves_by_two_machines_arrives_whole() {
     let lookup = MemoryLookup::new();
-    let a = Machine::start(first(5), &lookup).await;
-    let b = Machine::start(first(5), &lookup).await;
-    let c = Machine::start(first(5), &lookup).await;
-    let d = Machine::start(first(5), &lookup).await;
+    let a = Machine::start(secret(5), &lookup).await;
+    let b = Machine::start(secret(5), &lookup).await;
+    let c = Machine::start(secret(5), &lookup).await;
+    let d = Machine::start(secret(5), &lookup).await;
     let data = varied(4 << 20);
     let tag = a.blobs.add_bytes(data.clone()).temp_tag().await.unwrap();
     b.meet(&a).await;
@@ -404,9 +326,9 @@ async fn a_blob_held_in_halves_by_two_machines_arrives_whole() {
 #[tokio::test]
 async fn a_machine_serves_what_it_holds_while_still_downloading() {
     let lookup = MemoryLookup::new();
-    let a = Machine::start(first(5), &lookup).await;
-    let b = Machine::start(first(5), &lookup).await;
-    let c = Machine::start(first(5), &lookup).await;
+    let a = Machine::start(secret(5), &lookup).await;
+    let b = Machine::start(secret(5), &lookup).await;
+    let c = Machine::start(secret(5), &lookup).await;
     let data = varied(4 << 20);
     let tag = a.blobs.add_bytes(data.clone()).temp_tag().await.unwrap();
     b.meet(&a).await;
@@ -449,8 +371,8 @@ async fn machines_known_only_by_the_groups_relay_reach_each_other() {
         .unwrap();
     let url = relay_url(&server, "127.0.0.1").unwrap();
     let lookup = MemoryLookup::new();
-    let a = Machine::relayed(first(5), &lookup, &url).await;
-    let b = Machine::relayed(first(5), &lookup, &url).await;
+    let a = Machine::relayed(secret(5), &lookup, &url).await;
+    let b = Machine::relayed(secret(5), &lookup, &url).await;
     let data = varied(1 << 20);
     let tag = a.blobs.add_bytes(data.clone()).temp_tag().await.unwrap();
     b.meet(&a).await;
@@ -493,8 +415,8 @@ impl ProtocolHandler for Silent {
 #[tokio::test]
 async fn a_machine_speaking_another_version_of_the_protocol_is_reported() {
     let lookup = MemoryLookup::new();
-    let a = Machine::start(first(5), &lookup).await;
-    let b = Machine::start(first(5), &lookup).await;
+    let a = Machine::start(secret(5), &lookup).await;
+    let b = Machine::start(secret(5), &lookup).await;
     let older = bind_local(SecretKey::generate(), &lookup).await.unwrap();
     let older_router = Router::builder(older.clone())
         .accept(b"pigeon/sync/1", Silent)
@@ -552,7 +474,7 @@ async fn a_machine_speaking_another_version_of_the_protocol_is_reported() {
 #[tokio::test]
 async fn a_machine_reported_incompatible_is_no_longer_once_it_updates_and_dials_in() {
     let lookup = MemoryLookup::new();
-    let a = Machine::start(first(5), &lookup).await;
+    let a = Machine::start(secret(5), &lookup).await;
     let key = SecretKey::generate();
     let older = bind_local(key.clone(), &lookup).await.unwrap();
     let older_router = Router::builder(older.clone())
@@ -570,7 +492,7 @@ async fn a_machine_reported_incompatible_is_no_longer_once_it_updates_and_dials_
     let updated = Machine::on(
         bind_local(key.clone(), &lookup).await.unwrap(),
         key,
-        first(5),
+        secret(5),
     );
     updated.node.dial(a.node.id());
     timeout(Duration::from_secs(10), async {

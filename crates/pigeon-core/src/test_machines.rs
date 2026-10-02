@@ -1,7 +1,7 @@
 //! Machines of a test group that sign patches for the model's tests, and
 //! the changes and contents they write.
 
-use iroh_base::{PublicKey, SecretKey};
+use iroh_base::SecretKey;
 
 use crate::clock::Stamp;
 use crate::identity::{GroupId, GroupSecret, MachineCert, member_key};
@@ -9,7 +9,7 @@ use crate::ledger::{Ledger, Rejection};
 use crate::name::MemberName;
 use crate::patch::{Change, Content, ContentHash, Patch, SignedPatch, VersionRef};
 use crate::path::{GroupPath, PathKey};
-use crate::statement::{RebindStatement, member_path, rebind_path};
+use crate::statement::member_path;
 
 pub struct Machine {
     pub group: GroupId,
@@ -88,15 +88,6 @@ impl Machine {
 
     pub fn join(&self, time: u64) -> SignedPatch {
         let path = member_path(&self.cert.name);
-        self.patch(time, vec![change(path.as_str(), Some(0), None)])
-    }
-
-    pub fn rebind(&self, time: u64, name: &str, key: Option<PublicKey>) -> SignedPatch {
-        let rebind = RebindStatement {
-            name: MemberName::parse(name).unwrap(),
-            key,
-        };
-        let path = rebind_path(&rebind, &self.stamp(time));
         self.patch(time, vec![change(path.as_str(), Some(0), None)])
     }
 }

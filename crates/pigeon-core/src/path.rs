@@ -114,33 +114,20 @@ impl GroupPath {
         PathKey(self.0.to_lowercase())
     }
 
-    /// Whether this path lies inside the folder `prefix`, compared exactly.
+    /// Whether this path is the folder `folder` or lies inside it, as
+    /// their keys say.
     #[must_use]
-    pub fn is_inside(&self, prefix: &str) -> bool {
-        prefix.is_empty()
-            || self
-                .0
-                .strip_prefix(prefix)
-                .is_some_and(|rest| rest.starts_with('/'))
+    pub fn is_within(&self, folder: &GroupPath) -> bool {
+        self.key().is_within(&folder.key())
     }
 
-    /// Replaces the folder `from` at the start of this path with `to`.
+    /// This path, which is the folder `from` or lies inside it, moved with
+    /// `from` to `to`.
     ///
     /// # Errors
     /// Returns why the moved path is not portable.
-    pub fn moved(&self, from: &str, to: &str) -> Result<Self, PathError> {
-        let rest = if from.is_empty() {
-            self.0.as_str()
-        } else {
-            self.0
-                .strip_prefix(from)
-                .map_or(self.0.as_str(), |r| r.trim_start_matches('/'))
-        };
-        if to.is_empty() {
-            Self::parse(rest)
-        } else {
-            Self::parse(&format!("{to}/{rest}"))
-        }
+    pub fn moved(&self, from: &GroupPath, to: &GroupPath) -> Result<Self, PathError> {
+        Self::from_names(to.names().chain(self.names().skip(from.names().count())))
     }
 }
 
@@ -150,12 +137,20 @@ impl PathKey {
         &self.0
     }
 
+    /// What follows the folder `folder` in this path: empty for the folder
+    /// itself, none when the path lies outside it.
+    #[must_use]
+    pub fn below(&self, folder: &PathKey) -> Option<&str> {
+        match self.0.strip_prefix(&folder.0)? {
+            "" => Some(""),
+            rest => rest.strip_prefix('/'),
+        }
+    }
+
     /// Whether this path is the folder `folder` or lies inside it.
     #[must_use]
     pub fn is_within(&self, folder: &PathKey) -> bool {
-        self.0
-            .strip_prefix(&folder.0)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        self.below(folder).is_some()
     }
 }
 
@@ -224,16 +219,23 @@ mod tests {
     }
 
     #[test]
-    fn folders_are_prefixes_of_whole_names() {
-        let path = GroupPath::parse("src/+mario/a.txt").unwrap();
-        assert!(path.is_inside("src"));
-        assert!(path.is_inside("src/+mario"));
-        assert!(path.is_inside(""));
-        assert!(!path.is_inside("sr"));
+    fn folders_hold_whole_names_whatever_their_case() {
+        let parse = |text| GroupPath::parse(text).unwrap();
+        let path = parse("src/+mario/a.txt");
+        for folder in ["src", "SRC/+Mario", "src/+mario/a.txt"] {
+            assert!(path.is_within(&parse(folder)), "{folder}");
+        }
+        assert!(!path.is_within(&parse("sr")));
+        assert!(!path.is_within(&parse("src/+mario/a")));
+        assert_eq!(path.key().below(&parse("Src").key()), Some("+mario/a.txt"));
+        assert_eq!(path.key().below(&path.key()), Some(""));
         assert_eq!(
-            path.moved("src", "lib").unwrap().as_str(),
-            "lib/+mario/a.txt"
+            path.moved(&parse("SRC"), &parse("lib/x")).unwrap().as_str(),
+            "lib/x/+mario/a.txt"
         );
-        assert_eq!(path.moved("src", "").unwrap().as_str(), "+mario/a.txt");
+        assert_eq!(
+            path.moved(&path, &parse("b.txt")).unwrap().as_str(),
+            "b.txt"
+        );
     }
 }

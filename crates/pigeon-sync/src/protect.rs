@@ -15,7 +15,7 @@ use iroh_blobs::Hash;
 use pigeon_core::patch::Content;
 use pigeon_core::patch::ContentHash;
 use pigeon_core::retention::{Dated, within_quota};
-use pigeon_core::statement::{STATEMENTS, Suggestion, is_suggestion_path};
+use pigeon_core::statement::{Suggestion, is_statement, is_suggestion_path};
 use pigeon_store::blobs::blob_hash;
 
 use crate::disk_sync::change_at;
@@ -79,7 +79,7 @@ impl Inner {
                         }
                     }
                 }
-                if head.path.is_inside(STATEMENTS) {
+                if is_statement(&head.path.key()) {
                     keep(head.content);
                 }
             }

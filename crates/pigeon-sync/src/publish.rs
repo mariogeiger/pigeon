@@ -13,7 +13,7 @@ use pigeon_core::ledger::Version;
 use pigeon_core::patch::{Change, Content, ContentHash, VersionRef};
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::selection::Cutoff;
-use pigeon_core::statement::{Reason, STATEMENTS, SuggestedChange};
+use pigeon_core::statement::{Reason, SuggestedChange, is_statement};
 use pigeon_store::disk::Stat;
 use pigeon_store::index::{IndexEntry, Seen, hash_file};
 
@@ -91,7 +91,7 @@ impl Inner {
     /// folder, in no member's personal path, where no file lives.
     pub(crate) fn is_new_drop(&self, path: &GroupPath) -> bool {
         let ledger = self.ledger.lock();
-        !path.is_inside(STATEMENTS)
+        !is_statement(&path.key())
             && ledger.owner(path).is_none()
             && !ledger.head(&path.key()).is_some_and(Version::is_live)
     }
@@ -263,7 +263,7 @@ impl Inner {
                         && !ledger.head(&settled.key).is_some_and(Version::is_live)
                 }
             };
-            own && !path.is_inside(STATEMENTS)
+            own && !is_statement(&path.key())
                 && !matches!(work.config.selection.cutoff(path), Cutoff::At(_))
         });
         (!automatic).then_some(Reason::OutsideRules)

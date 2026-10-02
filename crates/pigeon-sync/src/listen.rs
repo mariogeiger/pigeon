@@ -11,7 +11,7 @@ use anyhow::Result;
 use iroh_blobs::store::mem::MemStore;
 use iroh_mdns_address_lookup::MdnsAddressLookup;
 use pigeon_core::clock::{Clock, MachineId};
-use pigeon_core::identity::{RenewedSecret, member_key};
+use pigeon_core::identity::member_key;
 use pigeon_core::ledger::Ledger;
 use pigeon_core::name::MemberName;
 use pigeon_net::{Node, Received};
@@ -46,7 +46,7 @@ impl Names {
         let members = ledger
             .members()
             .iter()
-            .filter(|(name, member)| member.key == Some(member_key(group, name).public()))
+            .filter(|(name, member)| member.key == member_key(group, name).public())
             .map(|(name, _)| name.clone())
             .collect();
         let taken: BTreeSet<MemberName> = ledger
@@ -126,21 +126,16 @@ impl Listener {
         let ledger = Arc::new(SharedLedger::new(state.ledger(group)?));
         let (endpoint, mdns) = bind(&machine, &group, &options.network).await?;
         let blobs = MemStore::new();
-        let secret = RenewedSecret {
-            secret: key.secret.clone(),
-            renewal: None,
-        };
         let (node, received) = Node::spawn(
             endpoint,
             options.announcement.clone(),
             group,
-            None,
-            secret,
+            key.secret.clone(),
             ledger.clone(),
             &blobs,
         );
         if let Some(mdns) = &mdns {
-            node.follow(mdns);
+            node.dial_discovered(mdns);
         }
         let inner = Arc::new(Listening {
             key,

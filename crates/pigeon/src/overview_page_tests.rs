@@ -96,7 +96,7 @@ fn the_panel_lists_the_largest_files_then_counts_the_rest() {
 }
 
 #[test]
-fn the_page_holds_the_file_and_offers_to_exclude_others_or_leave() {
+fn the_page_holds_the_file_and_offers_to_leave() {
     let status = json!({
         "member": "alice", "root": "/cheapmo", "join": { "state": "joined" },
         "peers": ["m2", "m3"], "incompatible": [], "errors": ["disk full"],
@@ -105,7 +105,6 @@ fn the_page_holds_the_file_and_offers_to_exclude_others_or_leave() {
     let members = json!([
         { "name": "alice", "key": "k1", "joined": "2026-10-01T12:00:00Z", "machines": ["m1", "m2"], "online": ["m1", "m2"] },
         { "name": "bob", "key": "k2", "joined": "2026-10-01T13:00:00Z", "machines": ["m3"], "online": [] },
-        { "name": "carol", "key": null, "joined": "2026-10-01T14:00:00Z", "machines": [], "online": [] },
     ]);
     let config =
         json!({ "path": "/c/config.toml", "version": "v9", "text": "member = \"alice\"\n" });
@@ -130,12 +129,13 @@ fn the_page_holds_the_file_and_offers_to_exclude_others_or_leave() {
     assert!(page.contains(r#"data-version="v9""#), "{page}");
     assert!(page.contains("member = &quot;alice&quot;"), "{page}");
     assert!(page.contains(r#"value="cheapmo-key""#), "{page}");
-    assert!(
-        page.contains(r#"<input type="hidden" name="member" value="bob">"#),
+    assert!(page.contains("<td>bob</td>"), "{page}");
+    assert!(!page.contains("exclude"), "{page}");
+    assert_eq!(
+        page.matches(r#"action="/act/group/leave""#).count(),
+        1,
         "{page}"
     );
-    assert!(!page.contains(r#"name="member" value="carol""#), "{page}");
-    assert!(page.contains(r#"action="/act/group/leave""#), "{page}");
     assert!(page.contains("Files (2)"), "{page}");
     assert!(
         page.contains(r#"class="current" href="/g/cheapmo""#),

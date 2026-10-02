@@ -1,5 +1,5 @@
-//! Restoring files to a past time: the changes that give each file a
-//! pattern matches the state its history had then, bringing back what was
+//! Restoring files to a past time: the changes that give every file a
+//! pattern matches what its history held then, bringing back what was
 //! deleted since and deleting what was created since, while a file that
 //! moved since keeps its new path. Statements are never restored.
 
@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashSet};
 use crate::ledger::{Ledger, Version};
 use crate::patch::{Change, VersionRef};
 use crate::path::GroupPath;
-use crate::statement::STATEMENTS;
+use crate::statement::is_statement;
 
 /// The changes that bring every file matching `matches` back to its state
 /// at `time`, in path order, each replacing the head it changes.
@@ -20,9 +20,7 @@ pub fn restore(ledger: &Ledger, matches: impl Fn(&GroupPath) -> bool, time: u64)
             .filter(|version| version.is_live())
             .map(Version::reference)
     };
-    let restorable = |path: &GroupPath| {
-        matches(path) && !path.key().as_str().starts_with(&format!("{STATEMENTS}/"))
-    };
+    let restorable = |path: &GroupPath| matches(path) && !is_statement(&path.key());
     let mut heads: Vec<&Version> = ledger
         .keys()
         .filter_map(|key| ledger.head(key))
@@ -87,7 +85,8 @@ mod tests {
     use crate::test_machines::*;
 
     fn restored(ledger: &mut Ledger, by: &Machine, time: u64, at: u64, under: &str) {
-        let changes = restore(ledger, |path| path.is_inside(under), at);
+        let under = GroupPath::parse(under).unwrap();
+        let changes = restore(ledger, |path| path.is_within(&under), at);
         let patch = by.patch(time, changes);
         ledger.insert(patch.clone()).unwrap();
         assert!(ledger.outcome(&patch.stamp()).unwrap().is_ok());
@@ -96,7 +95,7 @@ mod tests {
     fn files(ledger: &Ledger) -> Vec<(String, u8)> {
         let mut files: Vec<(String, u8)> = ledger
             .live()
-            .filter(|version| !version.path.as_str().starts_with(".pigeon/"))
+            .filter(|version| !is_statement(&version.path.key()))
             .map(|version| {
                 let content = version.content.unwrap().hash.0[0];
                 (version.path.as_str().to_owned(), content)

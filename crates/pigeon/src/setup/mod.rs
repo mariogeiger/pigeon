@@ -19,7 +19,7 @@ use std::io::IsTerminal;
 use anyhow::{Context, Result, anyhow, bail};
 use dialoguer::console::Term;
 use pigeon_core::path::GroupPath;
-use pigeon_core::statement::STATEMENTS;
+use pigeon_core::statement::is_statement;
 use pigeon_store::config::Config;
 use serde_json::{Map, Value, json};
 
@@ -237,7 +237,7 @@ fn follow(home: &Home, list: &mut Checklist, membership: &Membership) -> Result<
         .flatten()
         .filter(|file| {
             GroupPath::parse(file["path"].as_str().unwrap_or_default())
-                .is_ok_and(|path| !path.is_inside(STATEMENTS))
+                .is_ok_and(|path| !is_statement(&path.key()))
         })
         .map(|file| {
             let path = file["path"].as_str().unwrap_or_default().to_owned();
