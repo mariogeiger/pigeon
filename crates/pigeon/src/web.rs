@@ -26,6 +26,7 @@ use serde_json::{Map, Value, json};
 use crate::api::{App, Refusal, call};
 use crate::catalog::{Kind, find};
 use crate::config_preview;
+use crate::confirm_page;
 use crate::file_page;
 use crate::files_page;
 use crate::form::BACK;
@@ -447,7 +448,7 @@ async fn act(
     if !local_page(&back) {
         "/".clone_into(&mut back);
     }
-    match call(&app, &noun, &verb, values).await {
+    match call(&app, &noun, &verb, values.clone()).await {
         Ok(result) if shown_by_its_page(&result) => Redirect::to(&back).into_response(),
         Ok(result) => {
             let body = html! {
@@ -456,6 +457,13 @@ async fn act(
             };
             let title = format!("{noun} {verb}");
             Html(layout(&title, None, &body).into_string()).into_response()
+        }
+        Err(Refusal {
+            confirm: Some(question),
+            ..
+        }) => {
+            let page = confirm_page::confirmation(&noun, &verb, &values, &question, &back);
+            Html(page.into_string()).into_response()
         }
         Err(refusal) => Failure::new(refusal.status, refusal.message, &back).into_response(),
     }

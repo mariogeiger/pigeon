@@ -21,7 +21,7 @@ use tokio::net::TcpListener;
 use crate::args::Args;
 use crate::catalog::find;
 use crate::client::{CONFIRM, TOKEN_HEADER};
-use crate::config_preview::Freed;
+use crate::confirm::Confirm;
 use crate::daemon::Daemon;
 use crate::perform::perform;
 use crate::web;
@@ -150,7 +150,9 @@ impl Refusal {
         Self {
             status,
             message: format!("{error:#}"),
-            confirm: error.downcast_ref::<Freed>().map(Freed::question),
+            confirm: error
+                .downcast_ref::<Confirm>()
+                .map(|confirm| confirm.question.clone()),
         }
     }
 }

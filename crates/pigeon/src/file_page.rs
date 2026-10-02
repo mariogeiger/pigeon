@@ -24,14 +24,14 @@ pub struct Shown<'a> {
 }
 
 /// The form that restores the file at `pattern` to the version `item` of
-/// its history, asking first.
+/// its history.
 fn restore_form(group: &str, back: &str, pattern: &str, item: &Value) -> Markup {
     let time = item["time"].as_str().unwrap_or_default();
-    html! {
-        div data-confirm={ "Restore the version of " (time) "? It publishes it again as a new version, for the whole group." } {
-            (form(action("file", "restore"), back, fill(group, &[("pattern", pattern), ("time", time)], &[])))
-        }
-    }
+    form(
+        action("file", "restore"),
+        back,
+        fill(group, &[("pattern", pattern), ("time", time)], &[]),
+    )
 }
 
 /// One file: how this machine holds it, the changes suggested to it, its

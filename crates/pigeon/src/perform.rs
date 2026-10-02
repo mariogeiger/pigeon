@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 use crate::args::Args;
 use crate::catalog::GROUP;
 use crate::config_preview;
+use crate::confirm;
 use crate::daemon::{Daemon, Stop};
 
 /// The result of an action as JSON, once it is carried out.
@@ -113,6 +114,17 @@ pub(crate) fn leave_group<'a>(daemon: &'a Daemon, args: &'a Args) -> Reply<'a> {
             Some(group) => group.to_owned(),
             None => daemon.groups().await.name(None)?.to_owned(),
         };
+        let alone = daemon.holds_only_copy(&group).await?;
+        args.confirm(|| {
+            let lost = if alone {
+                " No other machine is known to hold the group's history: leaving loses it for good."
+            } else {
+                ""
+            };
+            format!(
+                "Leave {group} on this machine? It stops syncing and forgets the group's key and state, keeping its files; your name stays a member's.{lost}"
+            )
+        })?;
         daemon.leave(&group).await?;
         Ok(Value::Null)
     })
@@ -255,6 +267,9 @@ pub(crate) fn write_file<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
 pub(crate) fn delete_file<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
     Box::pin(async move {
         let path = args.path("path")?;
+        args.confirm(|| {
+            format!("Delete {path}? It deletes it for the whole group, and the history keeps it.")
+        })?;
         apply_edit(engine, Edit::Delete { path }).await
     })
 }
@@ -269,7 +284,14 @@ pub(crate) fn rename_file<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
 pub(crate) fn restore<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
     Box::pin(async move {
         let time = args.time("time", || engine.now())?;
-        to_json(engine.restore(args.required("pattern")?, time).await?)
+        let pattern = args.required("pattern")?;
+        args.confirm(|| {
+            let when = args.required("time").unwrap_or_default();
+            format!(
+                "Restore {pattern} as it was at {when}? It publishes it again as a new version, for the whole group."
+            )
+        })?;
+        to_json(engine.restore(pattern, time).await?)
     })
 }
 
@@ -325,16 +347,28 @@ pub(crate) fn list_suggestions<'a>(engine: &'a Engine, _: &'a Args) -> Reply<'a>
 pub(crate) fn validate<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
     Box::pin(async move {
         let to = args.optional_path("to")?;
-        engine
-            .validate(&args.versions("suggestions")?, to.as_ref())
-            .await?;
+        let suggestions = args.versions("suggestions")?;
+        args.confirm(|| {
+            format!(
+                "Validate {}? It publishes at once, for the whole group.",
+                confirm::these(suggestions.len())
+            )
+        })?;
+        engine.validate(&suggestions, to.as_ref()).await?;
         Ok(Value::Null)
     })
 }
 
 pub(crate) fn discard<'a>(engine: &'a Engine, args: &'a Args) -> Reply<'a> {
     Box::pin(async move {
-        engine.discard(&args.versions("suggestions")?).await?;
+        let suggestions = args.versions("suggestions")?;
+        args.confirm(|| {
+            format!(
+                "Discard {}? The files stay as they are, and the history keeps what was suggested.",
+                confirm::these(suggestions.len())
+            )
+        })?;
+        engine.discard(&suggestions).await?;
         Ok(Value::Null)
     })
 }

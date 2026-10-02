@@ -342,7 +342,7 @@ impl Machine {
         self.run(
             "suggestion",
             "validate",
-            json!({"suggestions": ids.join(" "), "to": to}),
+            json!({"suggestions": ids.join(" "), "to": to, "yes": true}),
         )
         .await;
     }
@@ -353,7 +353,7 @@ impl Machine {
         self.run(
             "suggestion",
             "discard",
-            json!({"suggestions": ids.join(" ")}),
+            json!({"suggestions": ids.join(" "), "yes": true}),
         )
         .await;
     }

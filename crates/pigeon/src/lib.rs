@@ -10,6 +10,8 @@ pub mod cli;
 pub mod client;
 pub mod complete;
 pub mod config_preview;
+mod confirm;
+mod confirm_page;
 pub mod daemon;
 mod file_page;
 mod file_status;

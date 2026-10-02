@@ -137,9 +137,9 @@ const VERSION_TIME: Param = required(
     Kind::Time,
 )
 .listed_by("selection", "times");
-const YES: Param = optional(
+pub const YES: Param = optional(
     "yes",
-    "Apply it even where it frees space on this machine, without asking",
+    "Go ahead without asking: where the action frees space on this machine, publishes for the whole group, or cannot be undone",
     Kind::Flag,
 );
 const FOLDER: Param = required(
@@ -304,7 +304,7 @@ pub const ACTIONS: &[Action] = &[
         "group",
         "leave",
         "Leave the group on this machine: it stops syncing and forgets the group's key, secrets and state, keeping its files; your name stays a member's",
-        &[],
+        &[YES],
         Handler::Daemon(perform::leave_group),
     ),
     view(
@@ -383,7 +383,10 @@ pub const ACTIONS: &[Action] = &[
         "file",
         "delete",
         "Delete a file or a folder; their history keeps them",
-        &[required("path", "The file or folder to delete", Kind::Path)],
+        &[
+            required("path", "The file or folder to delete", Kind::Path),
+            YES,
+        ],
         Handler::Engine(perform::delete_file),
     ),
     action(
@@ -420,7 +423,7 @@ pub const ACTIONS: &[Action] = &[
         "file",
         "restore",
         "Bring files back as they were at a past time, as new versions that undo nothing of the history",
-        &[PATTERN, VERSION_TIME],
+        &[PATTERN, VERSION_TIME, YES],
         Handler::Engine(perform::restore),
     ),
     action(
@@ -539,6 +542,7 @@ pub const ACTIONS: &[Action] = &[
                 "Publish the one file of a single suggestion at this free path instead, such as for a name some machine cannot hold",
                 Kind::Path,
             ),
+            YES,
         ],
         Handler::Engine(perform::validate),
     ),
@@ -546,7 +550,7 @@ pub const ACTIONS: &[Action] = &[
         "suggestion",
         "discard",
         "Discard suggestions: the group keeps its versions, and the history keeps theirs",
-        &[SUGGESTIONS],
+        &[SUGGESTIONS, YES],
         Handler::Engine(perform::discard),
     ),
     on_machine(Action {
@@ -614,6 +618,12 @@ mod tests {
                 );
             }
             assert!(action.changes || action.params.iter().all(|param| param.kind != Kind::Bytes));
+            let asks = action.param(YES.name).is_some();
+            assert!(
+                !asks || action.params.iter().all(|param| param.kind != Kind::Bytes),
+                "{} asks, and its confirmation page cannot repeat an upload",
+                action.command()
+            );
             assert!(NOUNS.iter().any(|(noun, _)| *noun == action.noun));
             let params = std::iter::once(&GROUP).chain(action.params);
             for (noun, verb) in params.filter_map(|param| param.listed_by) {

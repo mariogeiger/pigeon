@@ -4,9 +4,8 @@
 // data-keep, and tells the page through a groupchange event, and through
 // a mainswap event once it swapped; follow boxes submit the page's form
 // that follows their pattern, or ask first whether to pin an unfollowed
-// copy here as it is now or to free it; forms marked data-confirm ask
-// before they publish, and those inside data-in-place swap the page they
-// return to in place; countdowns tick; once the daemon restarts onto
+// copy here as it is now or to free it; forms inside data-in-place swap
+// the page they return to in place; countdowns tick; once the daemon restarts onto
 // another program, a banner offers to reload the page.
 "use strict";
 (() => {
@@ -114,11 +113,6 @@
 
   document.addEventListener("submit", (event) => {
     const form = event.target;
-    const asking = form.closest("[data-confirm]");
-    if (asking !== null && !confirm(asking.dataset.confirm)) {
-      event.preventDefault();
-      return;
-    }
     if (form.closest("[data-in-place]") === null) return;
     event.preventDefault();
     unchecked = null;

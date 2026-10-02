@@ -15,6 +15,7 @@ use pigeon_sync::{Amount, Delta, Engine, Preview};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::confirm::Confirm;
 use crate::render::size;
 
 /// The version of the text of a configuration.
@@ -136,7 +137,7 @@ pub fn amount(amount: Amount) -> String {
 }
 
 /// What applying configurations frees on this machine, group by group: a
-/// refusal until the call is made again with `yes`.
+/// question until the call is made again with `yes`.
 #[derive(Debug)]
 pub struct Freed(Vec<(String, Amount)>);
 
@@ -164,16 +165,13 @@ impl Freed {
         self.0.is_empty()
     }
 
-    /// Fails with this as the refusal unless nothing is freed or `yes`.
+    /// Asks [`Freed::question`] unless nothing is freed or `yes`.
     ///
     /// # Errors
     ///
-    /// Fails if something is freed and not `yes`.
+    /// Fails with the question if something is freed and not `yes`.
     pub fn refuse_unless(self, yes: bool) -> Result<()> {
-        if yes || self.is_empty() {
-            return Ok(());
-        }
-        Err(self.into())
+        Confirm::unless(yes || self.is_empty(), || self.question())
     }
 
     /// The question to ask before applying the edits.
@@ -193,18 +191,6 @@ impl Freed {
             .join(", ")
     }
 }
-
-impl std::fmt::Display for Freed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "the edits free space on this machine: {}; pass --yes to apply them",
-            self.groups()
-        )
-    }
-}
-
-impl std::error::Error for Freed {}
 
 /// What `preview` downloads, frees and pins, each as text.
 #[must_use]
@@ -289,10 +275,6 @@ mod tests {
         assert_eq!(amount(one), "1 file, 2.0 KB");
         assert_eq!(count(3, "file"), "3 files");
         let freed = Freed::new([("a".to_owned(), one), ("b".to_owned(), none)]);
-        assert_eq!(
-            freed.to_string(),
-            "the edits free space on this machine: a frees 1 file, 2.0 KB; pass --yes to apply them"
-        );
         assert!(
             freed
                 .question()
@@ -306,7 +288,7 @@ mod tests {
         let refusal = Freed::new([("a".to_owned(), one)])
             .refuse_unless(false)
             .unwrap_err();
-        assert!(refusal.downcast_ref::<Freed>().is_some());
+        assert!(refusal.downcast_ref::<Confirm>().is_some());
         assert!(
             Freed::new([("a".to_owned(), one)])
                 .refuse_unless(true)

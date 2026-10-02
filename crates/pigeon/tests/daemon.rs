@@ -102,10 +102,20 @@ async fn two_daemons_share_files_and_decide_suggestions() {
     assert!(page.contains("Files (1)"), "{page}");
     assert!(page.contains("📬 bob"), "{page}");
     let suggestions = a.call("suggestion", "list", json!({})).await.unwrap();
+    assert_eq!(
+        a.question(
+            "suggestion",
+            "validate",
+            json!({"suggestions": suggestions[0]["id"]})
+        )
+        .await
+        .as_deref(),
+        Some("Validate this suggestion? It publishes at once, for the whole group.")
+    );
     a.call(
         "suggestion",
         "validate",
-        json!({"suggestions": suggestions[0]["id"]}),
+        json!({"suggestions": suggestions[0]["id"], "yes": true}),
     )
     .await
     .unwrap();
@@ -229,11 +239,13 @@ async fn a_group_that_does_not_start_says_why_and_leaving_forgets_any_keeping_it
         "{}",
         page.body
     );
-    peer.call("group", "leave", json!({"group": "broken"}))
+    peer.call("group", "leave", json!({"group": "broken", "yes": true}))
         .await
         .unwrap();
     assert!(!broken.config().exists() && !broken.data().exists());
-    peer.call("group", "leave", json!({})).await.unwrap();
+    peer.call("group", "leave", json!({"yes": true}))
+        .await
+        .unwrap();
     assert_eq!(
         peer.call("group", "list", json!({})).await.unwrap(),
         json!([])

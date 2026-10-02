@@ -37,7 +37,7 @@ table.tree tr.draft { color: #888; }
 table.tree tr.target { background: #ffd; }
 table.tree .status { white-space: nowrap; margin-right: .5em; cursor: help; }
 ul.legend { list-style: none; padding: 0; font-size: 13px; color: #555; }
-table.tree form.action, dialog .change div[data-confirm], table.members div[data-confirm] { display: inline; }
+table.tree form.action, dialog .change form.action, table.members form.action { display: inline; }
 dialog .choices { display: flex; flex-direction: column; align-items: start; gap: .25rem; margin-bottom: .5rem; }
 dialog .choices form { margin: 0; }
 dialog form label { margin: .5rem 0; }
@@ -107,29 +107,21 @@ pub fn fill<'a>(
 pub const PUBLISHES: &str = "It publishes at once, for the whole group.";
 
 /// The forms that decide the suggestions `ids` of `group` and then return
-/// to `back`, each asking first, and, when `placeable_at` names the path
-/// of the single file they suggest, the one that validates them at
-/// another path, starting from it.
+/// to `back`, and, when `placeable_at` names the path of the single file
+/// they suggest, the one that validates them at another path, starting
+/// from it.
 #[must_use]
 pub fn deciding(group: &str, back: &str, ids: &[&str], placeable_at: Option<&str>) -> Markup {
     let joined = ids.join(" ");
-    let which = match ids.len() {
-        1 => "this suggestion".to_owned(),
-        count => format!("these {count} suggestions"),
-    };
     let chosen = [("suggestions", joined.as_str()), ("to", "")];
     let validate = action("suggestion", "validate");
     html! {
-        div data-confirm={ "Validate " (which) "? " (PUBLISHES) } {
-            (form(validate, back, fill(group, &chosen, &[])))
-        }
-        div data-confirm={ "Discard " (which) "? The files stay as they are, and the history keeps what was suggested." } {
-            (form(action("suggestion", "discard"), back, fill(group, &chosen[..1], &[])))
-        }
+        (form(validate, back, fill(group, &chosen, &[])))
+        (form(action("suggestion", "discard"), back, fill(group, &chosen[..1], &[])))
         @if let Some(path) = placeable_at {
             details class="action" {
                 summary { "Validate at another path…" }
-                (asking(validate, back, fill(group, &chosen[..1], &[("to", path)]), PUBLISHES))
+                (asking(validate, back, fill(group, &[chosen[0], ("yes", "true")], &[("to", path)]), PUBLISHES))
             }
         }
     }
@@ -353,10 +345,6 @@ mod tests {
     #[test]
     fn suggestions_are_decided_together_and_one_file_also_at_another_path() {
         let both = deciding("cheapmo", "/back", &["s1", "s2"], None).into_string();
-        assert!(
-            both.contains("Validate these 2 suggestions? It publishes"),
-            "{both}"
-        );
         assert_eq!(
             both.matches(r#"name="suggestions" value="s1 s2""#).count(),
             2,
@@ -364,7 +352,6 @@ mod tests {
         );
         assert!(!both.contains("<details"), "{both}");
         let one = deciding("cheapmo", "/back", &["s1"], Some("a.txt")).into_string();
-        assert!(one.contains("Discard this suggestion?"), "{one}");
         assert!(
             one.contains(r#"<input type="text" name="to" value="a.txt""#),
             "{one}"

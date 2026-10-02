@@ -110,9 +110,7 @@ fn members_section(group: &str, me: &str, members: &Value) -> Markup {
                         td { (short_time(member["joined"].as_str().unwrap_or_default())) }
                         td {
                             @if name == me {
-                                div data-confirm="Leave the group on this machine? It stops syncing and forgets the group's key and state, keeping its files; your name stays a member's." {
-                                    (form(action("group", "leave"), &back, fill(group, &[], &[])))
-                                }
+                                (form(action("group", "leave"), &back, fill(group, &[], &[])))
                             }
                         }
                     }

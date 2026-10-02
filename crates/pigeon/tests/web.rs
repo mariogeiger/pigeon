@@ -223,7 +223,7 @@ async fn a_configuration_is_set_whole_once_what_it_frees_is_confirmed_as_the_edi
 }
 
 #[tokio::test]
-async fn the_web_restores_a_version_and_decides_the_suggestions_it_shows() {
+async fn the_web_restores_a_version_after_asking() {
     let lookup = MemoryLookup::new();
     let (peer, notes) = alice_with_notes(&lookup).await;
     peer.call(
@@ -256,6 +256,17 @@ async fn the_web_restores_a_version_and_decides_the_suggestions_it_shows() {
         ("pattern", "/+alice/notes.txt"),
         ("time", first.as_str()),
     ];
+    let asked = peer.post_form("file/restore", &restore).await;
+    assert_eq!(asked.status, 200, "{}", asked.body);
+    assert!(
+        asked
+            .body
+            .contains("Restore /+alice/notes.txt as it was at"),
+        "{}",
+        asked.body
+    );
+    assert_ne!(read(&notes), "hello\n", "asking restores nothing");
+    let restore = [&restore[..], &[("yes", "true")]].concat();
     let answer = peer.post_form("file/restore", &restore).await;
     assert_eq!(answer.status, 303, "{}", answer.body);
     assert_eq!(answer.location.as_deref(), Some(back));
@@ -263,7 +274,13 @@ async fn the_web_restores_a_version_and_decides_the_suggestions_it_shows() {
         read(&notes) == "hello\n"
     })
     .await;
+}
 
+#[tokio::test]
+async fn the_web_decides_the_suggestions_it_shows() {
+    let lookup = MemoryLookup::new();
+    let (peer, _) = alice_with_notes(&lookup).await;
+    let read = |path: &PathBuf| std::fs::read_to_string(path).unwrap_or_default();
     peer.call("selection", "follow", json!({"pattern": "/docs/"}))
         .await
         .unwrap();
@@ -295,6 +312,7 @@ async fn the_web_restores_a_version_and_decides_the_suggestions_it_shows() {
         ("back", "/g/family"),
         ("group", GROUP),
         ("suggestions", ids[0].as_str()),
+        ("yes", "true"),
     ];
     let answer = peer.post_form("suggestion/discard", &stale).await;
     assert_ne!(
@@ -306,6 +324,7 @@ async fn the_web_restores_a_version_and_decides_the_suggestions_it_shows() {
         ("back", "/g/family"),
         ("group", GROUP),
         ("suggestions", ids[1].as_str()),
+        ("yes", "true"),
     ];
     let answer = peer.post_form("suggestion/discard", &shown).await;
     assert_eq!(answer.status, 303, "{}", answer.body);

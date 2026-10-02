@@ -407,17 +407,42 @@ impl Daemon {
     /// removed.
     pub async fn leave(&self, group: &str) -> Result<()> {
         let mut groups = self.groups.write().await;
-        if !groups.running.contains_key(group)
-            && !self.home.group_names()?.iter().any(|name| name == group)
-        {
-            return Err(absent(group));
-        }
+        self.require_present(&groups, group)?;
         let running = groups.remove(group);
         if let Some(engine) = running {
             shut_down(group, engine).await;
         }
         self.home.group(group).remove()?;
         Ok(())
+    }
+
+    /// Fails unless `group` is on this machine, running or not.
+    fn require_present(&self, groups: &Groups, group: &str) -> Result<()> {
+        if groups.running.contains_key(group)
+            || self.home.group_names()?.iter().any(|name| name == group)
+        {
+            return Ok(());
+        }
+        Err(absent(group))
+    }
+
+    /// Whether no other machine is known to hold the history of `group`,
+    /// which leaving it would then lose for good.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the group is not on this machine.
+    pub async fn holds_only_copy(&self, group: &str) -> Result<bool> {
+        let groups = self.groups.read().await;
+        self.require_present(&groups, group)?;
+        let Some(engine) = groups.running.get(group) else {
+            return Ok(false);
+        };
+        let me = engine.machine();
+        Ok(engine
+            .members()
+            .iter()
+            .all(|member| member.machines.iter().all(|machine| *machine == me)))
     }
 
     /// Restarts every group from its folders, so that the edits of its

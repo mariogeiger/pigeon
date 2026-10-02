@@ -7,6 +7,15 @@ command asks for a missing argument when a terminal is attached, and
 prints JSON with `--json`. On a machine with several groups, `-g <group>`
 picks one.
 
+What cannot be undone or reaches the whole group asks first: deleting a
+file, restoring a past version, validating or discarding suggestions,
+leaving a group, and applying edits that free space on this machine. The
+terminal and the web interface, which shows a page with *Go ahead* and
+*Cancel*, ask the same question. `--yes` goes ahead without asking, as a
+script must; a call to the API without `"yes": true` is refused with the
+question in its `confirm` field. Leaving a group says so when this machine
+is the only one known to hold its history, which leaving loses for good.
+
 ## 1. Install pigeon on each machine
 
 On Linux and macOS,

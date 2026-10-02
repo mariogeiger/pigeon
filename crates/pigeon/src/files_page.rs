@@ -316,7 +316,7 @@ fn dialogs(group: &str, back: &str) -> Markup {
         (dialog("rename", &html! { "Rename " (subject) }, &ask("file", "rename", &[("from", "")], &[("to", "")])))
         (dialog("replace", &html! { "Replace " (subject) }, &ask("file", "write", &path, &[])))
         (dialog("add", &html! { "Add a file to " (subject) }, &ask("file", "write", &[], &path)))
-        (dialog("delete", &html! { "Delete " (subject) "?" }, &ask("file", "delete", &path, &[])))
+        (dialog("delete", &html! { "Delete " (subject) "?" }, &ask("file", "delete", &[("path", ""), ("yes", "true")], &[])))
         dialog id="unfollow" {
             p { "Stop following: pin the copy here as it is now, or free the space?" }
             div data-in-place { (run("selection", "pin", &pin)) " " (run("selection", "free", &pattern)) }
@@ -613,7 +613,6 @@ mod tests {
         assert!(page.contains(r#"<span data-due="192">3:12</span>"#));
         assert!(row_of(&page, "+alice/new").contains("⏳ 1"));
         assert!(page.contains("3 edits wait to be published."));
-        assert!(!page.contains("data-confirm="), "{page}");
         assert!(row_of(&page, "+alice").contains(r#"data-offers="rename add delete pin publish""#));
         assert!(
             row_of(&page, "+alice/c.txt")
@@ -709,10 +708,6 @@ mod tests {
         );
         assert!(
             changed.contains(r#"<input type="text" name="to" value="docs/list.txt""#),
-            "{changed}"
-        );
-        assert!(
-            changed.contains("Validate these 2 suggestions?"),
             "{changed}"
         );
         let moved = row_of(&page, "docs/Plan.txt");

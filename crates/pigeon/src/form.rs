@@ -5,7 +5,7 @@
 
 use maud::{Markup, html};
 
-use crate::catalog::{Action, GROUP, Kind, Param, Scope};
+use crate::catalog::{Action, GROUP, Kind, Param, Scope, YES};
 
 /// The field that tells the form handler which page to return to.
 pub const BACK: &str = "back";
@@ -64,7 +64,7 @@ fn asked(action: &Action, back: &str, fill: Fill<'_>, note: Option<&str>) -> (Ma
     let visible: Vec<&Param> = action
         .params
         .iter()
-        .filter(|param| lookup(fill.fixed, param.name).is_none())
+        .filter(|param| param.name != YES.name && lookup(fill.fixed, param.name).is_none())
         .collect();
     let target = format!("/act/{}/{}", action.noun, action.verb);
     let group = fill.group.filter(|_| action.scope == Scope::Group);
