@@ -1,6 +1,7 @@
 # Every push and pull request runs the workspace's tests on Linux, macOS
 # and Windows, the systems pigeon runs on, and on Linux the commit hooks
-# themselves over every file, so that the checks are defined once.
+# themselves over every file, all with the Rust rust-toolchain.toml names,
+# so that the checks are defined once.
 
 name: test
 
@@ -17,9 +18,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+      - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - if: runner.os == 'Linux'
         run: pipx run pre-commit run --all-files --show-diff-on-failure

@@ -11,11 +11,11 @@ repos:
         name: cargo fmt
         entry: cargo fmt --all -- --check
         language: system
-        files: \.rs$
+        files: (\.rs|rust-toolchain\.toml)$
         pass_filenames: false
       - id: cargo-clippy
         name: cargo clippy
         entry: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -D clippy::pedantic
         language: system
-        files: (\.rs|Cargo\.toml|Cargo\.lock)$
+        files: (\.rs|Cargo\.toml|Cargo\.lock|rust-toolchain\.toml)$
         pass_filenames: false

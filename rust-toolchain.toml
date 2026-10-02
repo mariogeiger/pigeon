@@ -1,0 +1,8 @@
+# The Rust that builds and checks pigeon here, the same for the commit hooks
+# and for CI, so that a new release of Rust, with its new lints, changes
+# nothing until it is chosen in this file.
+
+[toolchain]
+channel = "1.98.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
