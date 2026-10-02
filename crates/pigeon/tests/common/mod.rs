@@ -1,10 +1,13 @@
 //! A group of machines on this host for scenario tests: each machine is a
 //! daemon with its own pigeon folder and API server, driven through the
-//! command line's client, reachable by the others only while it is online
-//! and switched on, and edited on disk the ways people and their programs
-//! edit files; and the family most scenarios play.
+//! command line's client and, in `web`, a browser, reachable by the others
+//! only while it is online and switched on, and edited on disk the ways
+//! people and their programs edit files; and the family most scenarios
+//! play.
 
 #![allow(dead_code)]
+
+pub mod web;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -15,7 +18,7 @@ use std::time::{Duration, SystemTime};
 use data_encoding::BASE64;
 use iroh::address_lookup::MemoryLookup;
 use pigeon::api::{App, serve};
-use pigeon::client::call_at;
+use pigeon::client::{Unconfirmed, call_at};
 use pigeon::daemon::{Daemon, Stop};
 use pigeon::home::Home;
 use pigeon_sync::{Network, Options};
@@ -112,8 +115,7 @@ impl Machine {
         if let Some(running) = self.running.take() {
             running.stop().await;
         }
-        let home = Home::new(self.dir.path().join("home"));
-        self.running = Some(Running::start(home, lookup).await);
+        self.running = Some(Running::start(self.home(), lookup).await);
     }
 
     /// Loses the network: the daemon goes on, alone.
@@ -139,8 +141,8 @@ impl Machine {
         self.go_online().await;
     }
 
-    /// Runs `pigeon <noun> <verb>` with `args` in the group.
-    pub async fn call(&self, noun: &str, verb: &str, args: Value) -> Result<Value, String> {
+    /// What `pigeon <noun> <verb>` with `args` answers, or its error.
+    async fn answer(&self, noun: &str, verb: &str, args: Value) -> anyhow::Result<Value> {
         let Value::Object(args) = args else {
             panic!("arguments are an object")
         };
@@ -150,7 +152,25 @@ impl Machine {
         tokio::task::spawn_blocking(move || call_at(address, &token, &noun, &verb, &args))
             .await
             .unwrap()
+    }
+
+    /// Runs `pigeon <noun> <verb>` with `args` in the group.
+    pub async fn call(&self, noun: &str, verb: &str, args: Value) -> Result<Value, String> {
+        self.answer(noun, verb, args)
+            .await
             .map_err(|error| error.to_string())
+    }
+
+    /// The question pigeon asks before `noun verb` is made again with
+    /// `yes`, if it refuses the call with `args` so.
+    pub async fn question(&self, noun: &str, verb: &str, args: Value) -> Option<String> {
+        let error = self.answer(noun, verb, args).await.err()?;
+        Some(error.downcast::<Unconfirmed>().ok()?.question)
+    }
+
+    /// The daemon of this machine, while it is switched on.
+    pub fn daemon(&self) -> &Daemon {
+        &self.running().app.daemon
     }
 
     /// Like `call`, failing the scenario if pigeon refuses.
@@ -184,9 +204,37 @@ impl Machine {
         eventually(
             &format!("{} joins as {member}", self.name),
             &[],
-            async || self.run("group", "status", json!({})).await["join"]["state"] == "joined",
+            async || self.joined().await,
         )
         .await;
+    }
+
+    /// Whether this machine joined the group.
+    pub async fn joined(&self) -> bool {
+        self.run("group", "status", json!({})).await["join"]["state"] == "joined"
+    }
+
+    /// The selection lines of the group's `config.toml`.
+    pub async fn selection(&self) -> Vec<String> {
+        let shown = self.run("config", "show", json!({})).await;
+        let config: toml::Table = shown["text"].as_str().unwrap().parse().unwrap();
+        config["selection"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|line| line.as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    /// This machine's pigeon home, where its groups keep their
+    /// configurations, secrets and states.
+    pub fn home(&self) -> Home {
+        Home::new(self.dir.path().join("home"))
+    }
+
+    /// The path `name` on this machine, outside the group's root.
+    pub fn outside(&self, name: &str) -> PathBuf {
+        self.dir.path().join(name)
     }
 
     /// The group's root on this machine.
@@ -381,6 +429,24 @@ pub async fn family(internet: &MemoryLookup) -> (Machine, Machine, Machine) {
     let laptop = Machine::start("papy's laptop", internet).await;
     laptop.join(&key, "papy").await;
     (alice, desktop, laptop)
+}
+
+/// A machine whose member alice created the group and wrote a note of 6
+/// bytes, which is on disk, and the note's path there.
+pub async fn alice_with_notes(internet: &MemoryLookup) -> (Machine, PathBuf) {
+    let alice = Machine::start("alice's machine", internet).await;
+    alice.create("alice").await;
+    eventually("alice joined", &[], async || alice.joined().await).await;
+    alice
+        .run(
+            "file",
+            "write",
+            json!({"path": "+alice/notes.txt", "content": base64("hello\n")}),
+        )
+        .await;
+    let notes = alice.path("+alice/notes.txt");
+    eventually("the notes are on disk", &[&alice], async || notes.exists()).await;
+    (alice, notes)
 }
 
 /// `text` as pigeon describes a file's content, to compare with versions.
