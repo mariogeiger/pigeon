@@ -45,9 +45,9 @@ async fn an_edit_made_offline_loses_to_a_later_one_and_its_disk_keeps_it_until_d
 
     laptop.go_offline().await;
     laptop.write("+papy/budget.txt", "from the train\n");
-    settle().await;
+    published(&laptop, "+papy/budget.txt", 2).await;
     desktop.write("+papy/budget.txt", "from home, later\n");
-    settle().await;
+    published(&desktop, "+papy/budget.txt", 2).await;
     laptop.go_online().await;
 
     let all = [&alice, &desktop, &laptop];
