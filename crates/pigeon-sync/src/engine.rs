@@ -402,7 +402,8 @@ impl Inner {
     }
 
     /// Takes patches from a peer: stores and folds the new ones, passes
-    /// them on, and brings the paths they touch into agreement.
+    /// them on, suggests the changes of this machine they made lose, and
+    /// brings the paths they touch into agreement.
     async fn receive(self: &Arc<Self>, work: &mut Work, received: Received) {
         let taken = take(
             &self.ledger,
@@ -420,6 +421,7 @@ impl Inner {
         self.node.publish(taken.fresh);
         self.want_peers();
         work.join = self.join_state();
+        self.suggest_losses(work).await;
         let keys: Vec<PathKey> = taken.keys.into_iter().collect();
         self.refresh_keys(work, &keys).await;
         if keys.iter().any(is_statement) {

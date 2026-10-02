@@ -4,7 +4,6 @@
 //! machine there: the whole disk-to-ledger policy as a pure function.
 
 use pigeon_core::clock::Stamp;
-use pigeon_core::statement::Reason;
 
 /// How the disk compares with what pigeon last saw at the path.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -41,10 +40,6 @@ pub struct View {
     pub kept: KeptSuggestion,
     /// Whether only pigeon writes the path, a statement's.
     pub statement: bool,
-    /// Why the synced version, if this machine published it, did not
-    /// last: a rejection or a concurrent change, the reason its content is
-    /// then suggested for.
-    pub fell: Option<Reason>,
 }
 
 /// One step toward agreement between disk and ledger.
@@ -52,8 +47,6 @@ pub struct View {
 pub enum Step {
     /// Publish the disk's change, or suggest it, once it stops changing.
     Settle,
-    /// Suggest the synced version's content, which the disk keeps.
-    SuggestSynced(Reason),
     /// Make the disk show the target.
     Materialize,
 }
@@ -63,9 +56,7 @@ pub enum Step {
 /// The disk keeps what a waiting suggestion of this machine holds, and
 /// shows the target again once the group decided it. A change of the disk
 /// waits to settle, and publishing decides whether the rules publish it or
-/// it becomes a suggestion; a change of a statement is undone. A version
-/// this machine published that fell becomes a suggestion, which the disk
-/// keeps.
+/// it becomes a suggestion; a change of a statement is undone.
 #[must_use]
 pub fn reconcile(disk: Disk, view: &View) -> Option<Step> {
     let moved = view.target != view.synced;
@@ -75,11 +66,7 @@ pub fn reconcile(disk: Disk, view: &View) -> Option<Step> {
         KeptSuggestion::No => match disk {
             Disk::Changed | Disk::Removed if view.statement => Some(Step::Materialize),
             Disk::Changed | Disk::Removed => Some(Step::Settle),
-            Disk::Unchanged if !moved => None,
-            Disk::Unchanged => Some(match &view.fell {
-                Some(reason) => Step::SuggestSynced(reason.clone()),
-                None => Step::Materialize,
-            }),
+            Disk::Unchanged => moved.then_some(Step::Materialize),
         },
     }
 }
@@ -102,7 +89,6 @@ mod tests {
             target: target.map(stamp),
             kept: KeptSuggestion::No,
             statement: false,
-            fell: None,
         }
     }
 
@@ -163,25 +149,5 @@ mod tests {
                 assert_eq!(reconcile(disk, &decided), Some(Step::Materialize));
             }
         }
-    }
-
-    #[test]
-    fn a_fallen_version_of_this_machine_becomes_a_suggestion_the_disk_keeps() {
-        let rejected = View {
-            fell: Some(Reason::Rejected("claimed".into())),
-            ..view(Some(1), Some(2))
-        };
-        assert_eq!(
-            reconcile(Disk::Unchanged, &rejected),
-            Some(Step::SuggestSynced(Reason::Rejected("claimed".into())))
-        );
-        let superseded = View {
-            fell: Some(Reason::Superseded),
-            ..view(Some(1), None)
-        };
-        assert_eq!(
-            reconcile(Disk::Unchanged, &superseded),
-            Some(Step::SuggestSynced(Reason::Superseded))
-        );
     }
 }

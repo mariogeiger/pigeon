@@ -230,8 +230,7 @@ impl Inner {
 
     /// Suggests `changes` for `reason` and records that the disk keeps
     /// their contents until someone decides: a live suggestion that holds
-    /// them already is enough, and one of this machine's that changes one
-    /// of their paths takes them in its next version.
+    /// them already is enough, or else a new suggestion holds them.
     pub(crate) async fn suggest(
         &self,
         work: &mut Work,
@@ -243,48 +242,9 @@ impl Inner {
             .values()
             .find(|live| holds(&live.suggestion, &changes))
             .map(|live| live.version.path.clone());
-        let statement = if let Some(statement) = held {
-            statement
-        } else {
-            let me = self.me();
-            let mine = work.suggestions.values().find(|live| {
-                live.version.stamp.machine == me && touches(&live.suggestion, &changes)
-            });
-            let stamp = self.clock.stamp();
-            let (path, mut merged) = match mine {
-                Some(live) => (
-                    live.version.path.clone(),
-                    live.suggestion
-                        .changes
-                        .iter()
-                        .filter(|held| {
-                            !changes
-                                .iter()
-                                .any(|change| held.path.key() == change.path.key())
-                        })
-                        .cloned()
-                        .collect(),
-                ),
-                None => (suggestion_path(&stamp), Vec::new()),
-            };
-            merged.extend(changes.iter().cloned());
-            let suggestion = Suggestion {
-                changes: merged,
-                reason,
-            };
-            let body = serde_json::to_vec_pretty(&suggestion)?;
-            self.publish_statement(work, stamp, path.clone(), body)
-                .await?;
-            if let Some(version) = self.ledger.lock().head(&path.key()).cloned() {
-                work.suggestions.insert(
-                    path.key(),
-                    Live {
-                        version,
-                        suggestion,
-                    },
-                );
-            }
-            path
+        let statement = match held {
+            Some(statement) => statement,
+            None => self.publish_suggestion(work, &changes, reason).await?,
         };
         for change in &changes {
             let kept = Kept {
@@ -295,6 +255,85 @@ impl Inner {
         }
         work.protect_due = true;
         Ok(())
+    }
+
+    /// Publishes a new suggestion of `changes` for `reason`, at a path of
+    /// its own, and returns that path. A live suggestion of this machine
+    /// that changes one of the same paths gives it its other changes and
+    /// the disk's records of them, and is decided in the same patch, so
+    /// that the ledger refuses the one of the two patches that comes after
+    /// a decision of that suggestion by someone else: a suggestion once
+    /// decided never comes back.
+    async fn publish_suggestion(
+        &self,
+        work: &mut Work,
+        changes: &[SuggestedChange],
+        reason: Reason,
+    ) -> Result<GroupPath> {
+        let me = self.me();
+        let replaced = work
+            .suggestions
+            .values()
+            .find(|live| live.version.stamp.machine == me && touches(&live.suggestion, changes))
+            .cloned();
+        let mut merged: Vec<SuggestedChange> = replaced
+            .iter()
+            .flat_map(|live| live.suggestion.changes.iter())
+            .filter(|held| {
+                !changes
+                    .iter()
+                    .any(|change| held.path.key() == change.path.key())
+            })
+            .cloned()
+            .collect();
+        merged.extend(changes.iter().cloned());
+        let suggestion = Suggestion {
+            changes: merged,
+            reason,
+        };
+        let body = serde_json::to_vec_pretty(&suggestion)?;
+        let stamp = self.clock.stamp();
+        let path = suggestion_path(&stamp);
+        let content = self.add_content(work, body).await?;
+        let mut statements = vec![Change {
+            path: path.clone(),
+            content: Some(content),
+            replaces: None,
+            continues: None,
+        }];
+        if let Some(live) = &replaced {
+            statements.push(Change {
+                path: live.version.path.clone(),
+                content: None,
+                replaces: Some(live.version.stamp),
+                continues: None,
+            });
+        }
+        let woken: Vec<PathKey> = statements.iter().map(|change| change.path.key()).collect();
+        self.publish_at(stamp, statements).await?;
+        let _ = self.wake.send(woken);
+        if let Some(live) = replaced {
+            work.suggestions.remove(&live.version.path.key());
+            for (kept_path, kept) in self.state.kept()? {
+                if kept.statement == live.version.path {
+                    let moved = Kept {
+                        statement: path.clone(),
+                        ..kept
+                    };
+                    self.state.keep(&kept_path, &moved)?;
+                }
+            }
+        }
+        if let Some(version) = self.ledger.lock().head(&path.key()).cloned() {
+            work.suggestions.insert(
+                path.key(),
+                Live {
+                    version,
+                    suggestion,
+                },
+            );
+        }
+        Ok(path)
     }
 
     /// What the version `shown` of a suggestion says.

@@ -1,7 +1,8 @@
 //! Tests of the state database: patches, recorded together or one by one,
 //! survive reopening and fold back into the same ledger, the index, kept
 //! suggestions, and placed folders round-trip, every write counted, and a
-//! fresh start forgets everything recorded of the disk.
+//! fresh start forgets everything recorded of the disk but the losses
+//! noted, which concern the ledger.
 
 use pigeon_core::patch::Content;
 use pigeon_core::path::GroupPath;
@@ -198,4 +199,26 @@ fn a_fresh_start_forgets_the_disk_and_its_root() {
     assert!(state.index_is_empty().unwrap());
     assert_eq!(state.applied_root().unwrap(), None);
     assert_eq!(state.applied_selection().unwrap(), None);
+}
+
+#[test]
+fn noted_losses_survive_reopening_and_a_fresh_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.redb");
+    let stamp = machine("mario", 1).join(5).stamp();
+    let lost = GroupPath::parse("+mario/a").unwrap().key();
+    let kept = GroupPath::parse("+mario/b").unwrap().key();
+    {
+        let state = State::open(&path).unwrap();
+        assert!(!state.notes_losses().unwrap());
+        assert!(!state.loss_noted(&stamp, &lost).unwrap());
+        state.note_losses([]).unwrap();
+        assert!(state.notes_losses().unwrap());
+        state.note_losses([(&stamp, &lost)]).unwrap();
+        state.forget_disk().unwrap();
+    }
+    let state = State::open(&path).unwrap();
+    assert!(state.notes_losses().unwrap());
+    assert!(state.loss_noted(&stamp, &lost).unwrap());
+    assert!(!state.loss_noted(&stamp, &kept).unwrap());
 }

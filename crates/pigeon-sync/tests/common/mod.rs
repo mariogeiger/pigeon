@@ -92,6 +92,13 @@ impl Machine {
         }
     }
 
+    /// Stops the engine and starts it again on the network `lookup` makes,
+    /// where it finds only the machines on it.
+    pub async fn restart_on(mut self, lookup: &MemoryLookup) -> Self {
+        self.options.network = Network::Local(lookup.clone());
+        self.restart().await
+    }
+
     /// Stops the engine, lets `meddle` change the disk given the old root,
     /// and starts it again with `root` as its root, as a person editing its
     /// configuration does; why it does not start, if it does not.

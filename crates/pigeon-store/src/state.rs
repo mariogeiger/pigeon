@@ -32,6 +32,9 @@ const INDEX_V1: TableDefinition<&str, &[u8]> = TableDefinition::new("index");
 const KEPT: TableDefinition<&str, &[u8]> = TableDefinition::new("kept suggestions");
 const PLACED: TableDefinition<&str, &str> = TableDefinition::new("placed");
 const APPLIED: TableDefinition<&str, &[u8]> = TableDefinition::new("applied");
+/// The changes of this machine whose loss was noted, by stamp and path
+/// key; created when the first losses are noted.
+const LOSSES: TableDefinition<&[u8], ()> = TableDefinition::new("noted losses");
 const SELECTION: &str = "selection";
 const ROOT: &str = "root";
 
@@ -77,6 +80,13 @@ fn stamp_key(stamp: &Stamp) -> [u8; 40] {
     key[..8].copy_from_slice(&stamp.time.to_be_bytes());
     key[8..].copy_from_slice(stamp.machine.as_bytes());
     key
+}
+
+/// The key of the loss of the change `stamp` made at `key`.
+fn loss_key(stamp: &Stamp, key: &PathKey) -> Vec<u8> {
+    let mut bytes = stamp_key(stamp).to_vec();
+    bytes.extend_from_slice(key.as_str().as_bytes());
+    bytes
 }
 
 /// The state database.
@@ -431,6 +441,56 @@ impl State {
             }
             transaction.delete_table(PLACED)?;
             transaction.open_table(PLACED)?;
+            Ok(())
+        })
+    }
+
+    /// Whether this machine ever noted the losses of its changes, which a
+    /// state database of an older pigeon never did.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the database cannot be read.
+    pub fn notes_losses(&self) -> Result<bool> {
+        let transaction = self.database.begin_read()?;
+        match transaction.open_table(LOSSES) {
+            Ok(_) => Ok(true),
+            Err(redb::TableError::TableDoesNotExist(_)) => Ok(false),
+            Err(error) => Err(redb::Error::from(error).into()),
+        }
+    }
+
+    /// Whether the loss of the change the patch `stamp` made at `key` was
+    /// noted.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the database cannot be read.
+    pub fn loss_noted(&self, stamp: &Stamp, key: &PathKey) -> Result<bool> {
+        let transaction = self.database.begin_read()?;
+        let table = match transaction.open_table(LOSSES) {
+            Ok(table) => table,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(false),
+            Err(error) => return Err(redb::Error::from(error).into()),
+        };
+        Ok(table.get(loss_key(stamp, key).as_slice())?.is_some())
+    }
+
+    /// Notes, in one transaction, the loss of the change each patch made at
+    /// its key.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the database cannot be written.
+    pub fn note_losses<'a>(
+        &self,
+        losses: impl IntoIterator<Item = (&'a Stamp, &'a PathKey)>,
+    ) -> Result<()> {
+        self.write(|transaction| {
+            let mut table = transaction.open_table(LOSSES)?;
+            for (stamp, key) in losses {
+                table.insert(loss_key(stamp, key).as_slice(), ())?;
+            }
             Ok(())
         })
     }

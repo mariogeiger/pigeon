@@ -14,7 +14,7 @@ use pigeon_core::ledger::{Ledger, Version};
 use pigeon_core::patch::{Change, Content, ContentHash};
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::selection::Cutoff;
-use pigeon_core::statement::{Reason, is_statement};
+use pigeon_core::statement::is_statement;
 use pigeon_store::disk::{self, Stat, fs_path};
 use pigeon_store::index::{IndexEntry, Seen, now_nanos, observe};
 use pigeon_store::probe::{Probe, Prober};
@@ -135,7 +135,6 @@ fn compare_disk(
 struct Look {
     target: Option<Version>,
     synced: Option<Change>,
-    fell: Option<Reason>,
 }
 
 impl Inner {
@@ -149,27 +148,10 @@ impl Inner {
         let ledger = self.ledger.lock();
         let cutoff = work.config.selection.cutoff(path);
         let target = target(&ledger, key, cutoff, entry.is_some());
-        let synced_stamp = entry.and_then(|entry| entry.synced);
-        let synced = synced_stamp.and_then(|stamp| change_at(&ledger, &stamp, key));
-        let target_stamp = target.as_ref().map(|version| version.stamp);
-        let fell = synced_stamp
-            .filter(|stamp| stamp.machine == self.me() && Some(*stamp) != target_stamp)
-            .and_then(|stamp| match ledger.outcome(&stamp) {
-                Some(Err(rejection)) => Some(Reason::Rejected(rejection.to_string())),
-                _ if ledger
-                    .unseen_versions(key)
-                    .iter()
-                    .any(|version| version.stamp == stamp) =>
-                {
-                    Some(Reason::Superseded)
-                }
-                _ => None,
-            });
-        Look {
-            target,
-            synced,
-            fell,
-        }
+        let synced = entry
+            .and_then(|entry| entry.synced)
+            .and_then(|stamp| change_at(&ledger, &stamp, key));
+        Look { target, synced }
     }
 
     /// A look at the disk through the placed folders in place.
@@ -184,10 +166,14 @@ impl Inner {
 
     /// Compares every path the scan, the index, and, for the whole root,
     /// the ledger know with the ledger, removing the temporary files a
-    /// stopped run left in the folders scanned.
+    /// stopped run left in the folders scanned; for the whole root, first
+    /// suggests the changes of this machine that did not last.
     pub(crate) async fn refresh(self: &Arc<Self>, work: &mut Work, rescan: &Rescan) {
         if !work.join.syncs() {
             return;
+        }
+        if matches!(rescan, Rescan::All) {
+            self.suggest_losses(work).await;
         }
         self.lay_out(work);
         if work.root_problem.is_some() {
@@ -332,7 +318,6 @@ impl Inner {
             target: target_stamp,
             kept,
             statement: is_statement(&probe.path.key()),
-            fell: look.fell.clone(),
         };
         let Some(step) = reconcile(disk, &view) else {
             work.pending.remove(key);
@@ -404,22 +389,23 @@ impl Inner {
     /// Whether the disk at `path`, holding `disk_content`, shows what
     /// `record` says a suggestion of this machine keeps there, and whether
     /// the group decided it; a record the disk no longer shows is
-    /// forgotten, as the disk moved on.
+    /// forgotten, as the disk moved on, and so is one of a suggestion the
+    /// ledger refused, which leaves the disk's content an edit again.
     fn kept(
         &self,
         path: &GroupPath,
         record: &Kept,
         disk_content: Option<Content>,
     ) -> Result<KeptSuggestion> {
-        if disk_content != record.content {
-            self.state.unkeep(path.as_str())?;
-            return Ok(KeptSuggestion::No);
-        }
-        let waiting = self
+        let statement = self
             .ledger
             .lock()
             .head(&record.statement.key())
-            .is_some_and(Version::is_live);
+            .map(Version::is_live);
+        let Some(waiting) = statement.filter(|_| disk_content == record.content) else {
+            self.state.unkeep(path.as_str())?;
+            return Ok(KeptSuggestion::No);
+        };
         Ok(if waiting {
             KeptSuggestion::Waiting
         } else {
@@ -450,11 +436,6 @@ impl Inner {
                     since,
                 };
                 work.pending.insert(key.clone(), pending);
-            }
-            Step::SuggestSynced(reason) => {
-                if let Some(change) = &look.synced {
-                    self.suggest(work, vec![change.into()], reason).await?;
-                }
             }
             Step::Materialize => {
                 self.materialize(work, prober, key, probe, look.target.as_ref())
