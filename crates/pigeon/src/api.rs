@@ -20,7 +20,8 @@ use tokio::net::TcpListener;
 
 use crate::args::Args;
 use crate::catalog::find;
-use crate::client::TOKEN_HEADER;
+use crate::client::{CONFIRM, TOKEN_HEADER};
+use crate::config_preview::Freed;
 use crate::daemon::Daemon;
 use crate::perform::perform;
 use crate::web;
@@ -136,29 +137,56 @@ fn api_error(status: StatusCode, error: &str) -> Response {
     (status, axum::Json(json!({ "error": error }))).into_response()
 }
 
+/// Why a call is not done: its status and message, and, when making it
+/// again with `yes` would do it, the question to ask first.
+pub struct Refusal {
+    pub status: StatusCode,
+    pub message: String,
+    pub confirm: Option<String>,
+}
+
+impl Refusal {
+    fn new(status: StatusCode, error: &anyhow::Error) -> Self {
+        Self {
+            status,
+            message: format!("{error:#}"),
+            confirm: error.downcast_ref::<Freed>().map(Freed::question),
+        }
+    }
+}
+
+impl IntoResponse for Refusal {
+    fn into_response(self) -> Response {
+        let mut body = json!({ "error": self.message });
+        if let Some(question) = self.confirm {
+            body[CONFIRM] = json!(question);
+        }
+        (self.status, axum::Json(body)).into_response()
+    }
+}
+
 /// Checks and carries out one call: shared by the API and the web UI's
 /// forms.
 ///
 /// # Errors
 ///
-/// Returns the status and message of a call that cannot be done.
+/// Returns why a call that cannot be done is not.
 pub async fn call(
     app: &App,
     noun: &str,
     verb: &str,
     values: Map<String, Value>,
-) -> Result<Value, (StatusCode, String)> {
-    let action = find(noun, verb).ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            format!("pigeon has no action {noun} {verb}: see `pigeon --help`"),
-        )
+) -> Result<Value, Refusal> {
+    let action = find(noun, verb).ok_or_else(|| Refusal {
+        status: StatusCode::NOT_FOUND,
+        message: format!("pigeon has no action {noun} {verb}: see `pigeon --help`"),
+        confirm: None,
     })?;
-    let args = Args::new(action, values)
-        .map_err(|error| (StatusCode::BAD_REQUEST, format!("{error:#}")))?;
+    let args =
+        Args::new(action, values).map_err(|error| Refusal::new(StatusCode::BAD_REQUEST, &error))?;
     perform(&app.daemon, &args)
         .await
-        .map_err(|error| (StatusCode::BAD_REQUEST, format!("{error:#}")))
+        .map_err(|error| Refusal::new(StatusCode::BAD_REQUEST, &error))
 }
 
 async fn api(
@@ -176,7 +204,7 @@ async fn api(
     };
     match call(&app, &noun, &verb, values).await {
         Ok(result) => axum::Json(result).into_response(),
-        Err((status, error)) => api_error(status, &error),
+        Err(refusal) => refusal.into_response(),
     }
 }
 

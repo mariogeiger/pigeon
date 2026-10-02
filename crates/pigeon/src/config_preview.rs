@@ -2,9 +2,10 @@
 //! machine, the text read by the parser `pigeon daemon reload` uses: what
 //! its selection would download, free and pin, each rule with what it
 //! matches and decides, where the text spells it and, for a pin, the times
-//! it can choose, which a pin line that does not read is offered too; and
-//! the version of a text, which tells whether the file changed since one
-//! read it.
+//! it can choose, which a pin line that does not read is offered too;
+//! what applying texts frees, which pigeon refuses until told to go ahead;
+//! and the version of a text, which tells whether the file changed since
+//! one read it.
 
 use anyhow::{Result, anyhow};
 use pigeon_core::clock::{parse_rfc3339, rfc3339};
@@ -134,6 +135,77 @@ pub fn amount(amount: Amount) -> String {
     format!("{}, {}", count(amount.files, "file"), size(amount.bytes))
 }
 
+/// What applying configurations frees on this machine, group by group: a
+/// refusal until the call is made again with `yes`.
+#[derive(Debug)]
+pub struct Freed(Vec<(String, Amount)>);
+
+impl Freed {
+    /// What `groups` free, each with its amount; a group freeing nothing
+    /// is left out.
+    pub fn new(groups: impl IntoIterator<Item = (String, Amount)>) -> Self {
+        Self(
+            groups
+                .into_iter()
+                .filter(|(_, amount)| amount.files > 0)
+                .collect(),
+        )
+    }
+
+    /// What `group` frees by its edits, which `preview` tells.
+    #[must_use]
+    pub fn by(group: &str, preview: &Preview) -> Self {
+        Self::new([(group.to_owned(), total(preview, Delta::Free))])
+    }
+
+    /// Whether nothing is freed.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Fails with this as the refusal unless nothing is freed or `yes`.
+    ///
+    /// # Errors
+    ///
+    /// Fails if something is freed and not `yes`.
+    pub fn refuse_unless(self, yes: bool) -> Result<()> {
+        if yes || self.is_empty() {
+            return Ok(());
+        }
+        Err(self.into())
+    }
+
+    /// The question to ask before applying the edits.
+    #[must_use]
+    pub fn question(&self) -> String {
+        format!(
+            "The edits free space on this machine: {}. Modified copies not yet published stay. Apply them?",
+            self.groups()
+        )
+    }
+
+    fn groups(&self) -> String {
+        self.0
+            .iter()
+            .map(|(group, freed)| format!("{group} frees {}", amount(*freed)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+impl std::fmt::Display for Freed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the edits free space on this machine: {}; pass --yes to apply them",
+            self.groups()
+        )
+    }
+}
+
+impl std::error::Error for Freed {}
+
 /// What `preview` downloads, frees and pins, each as text.
 #[must_use]
 pub fn summary(preview: &Preview) -> Value {
@@ -207,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn amounts_read_as_files_and_bytes() {
+    fn amounts_and_what_edits_free_read_as_files_and_bytes() {
         let none = Amount::default();
         assert_eq!(amount(none), "");
         let one = Amount {
@@ -216,6 +288,30 @@ mod tests {
         };
         assert_eq!(amount(one), "1 file, 2.0 KB");
         assert_eq!(count(3, "file"), "3 files");
+        let freed = Freed::new([("a".to_owned(), one), ("b".to_owned(), none)]);
+        assert_eq!(
+            freed.to_string(),
+            "the edits free space on this machine: a frees 1 file, 2.0 KB; pass --yes to apply them"
+        );
+        assert!(
+            freed
+                .question()
+                .starts_with("The edits free space on this machine: a frees 1 file, 2.0 KB.")
+        );
+        assert!(
+            Freed::new([("b".to_owned(), none)])
+                .refuse_unless(false)
+                .is_ok()
+        );
+        let refusal = Freed::new([("a".to_owned(), one)])
+            .refuse_unless(false)
+            .unwrap_err();
+        assert!(refusal.downcast_ref::<Freed>().is_some());
+        assert!(
+            Freed::new([("a".to_owned(), one)])
+                .refuse_unless(true)
+                .is_ok()
+        );
         assert_eq!(version("a"), version("a"));
         assert_ne!(version("a"), version("b"));
     }

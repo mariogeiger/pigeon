@@ -1,7 +1,8 @@
 //! Actions among engines of one group on this host: they publish at once
-//! whoever owns the files, a renamed folder and a file moved on disk keep
-//! their history, and restoring a pattern makes its files hold what they
-//! held at a time with new versions.
+//! whoever owns the files, and reach an owner away when they were made; a
+//! renamed folder and a file moved on disk keep their history, and
+//! restoring a pattern makes its files hold what they held at a time with
+//! new versions.
 
 mod common;
 
@@ -80,6 +81,34 @@ async fn actions_publish_at_once_whoever_owns_the_files() {
     assert_eq!(missing.to_string(), "no file at +alice/docs");
     assert!(alice.engine.suggestions().await.is_empty());
     for machine in machines {
+        machine.engine.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_action_reaches_the_owner_away_when_it_was_made() {
+    let mut machines = group(&["alice", "bob"]).await;
+    joined(&machines).await;
+    let bob = machines.pop().unwrap();
+    let alice = machines.pop().unwrap();
+    let alice = alice
+        .restart_after(|_, _| {
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    bob.engine
+                        .edit(vec![write("+alice/away.txt", "while away")])
+                        .await
+                        .unwrap();
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                });
+            });
+        })
+        .await;
+    eventually("bob's action lands on alice's disk", || async {
+        alice.read("+alice/away.txt").as_deref() == Some("while away")
+    })
+    .await;
+    for machine in [alice, bob] {
         machine.engine.shutdown().await.unwrap();
     }
 }

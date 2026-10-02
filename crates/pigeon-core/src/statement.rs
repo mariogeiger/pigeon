@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::clock::Stamp;
 use crate::name::MemberName;
-use crate::patch::{Content, VersionRef};
+use crate::patch::{Change, Content, VersionRef};
 use crate::path::{GroupPath, PathKey};
 
 /// The folder that holds every statement.
@@ -118,6 +118,17 @@ pub struct SuggestedChange {
     pub content: Option<Content>,
     pub replaces: Option<Stamp>,
     pub continues: Option<VersionRef>,
+}
+
+impl From<&Change> for SuggestedChange {
+    fn from(change: &Change) -> Self {
+        Self {
+            path: change.path.as_str().to_owned(),
+            content: change.content,
+            replaces: change.replaces,
+            continues: change.continues.clone(),
+        }
+    }
 }
 
 /// What a suggestion file says: changes that anyone may validate, which

@@ -15,7 +15,7 @@ use data_encoding::BASE64;
 use iroh::address_lookup::MemoryLookup;
 use pigeon::api::{App, serve};
 use pigeon::catalog::{ACTIONS, Kind};
-use pigeon::client::call_at;
+use pigeon::client::{Unconfirmed, call_at};
 use pigeon::daemon::{Daemon, Stop};
 use pigeon::home::Home;
 use pigeon_sync::{Network, Options};
@@ -127,7 +127,7 @@ impl Peer {
         ("cookie", format!("pigeon_token={}", self.token))
     }
 
-    async fn call(&self, noun: &str, verb: &str, args: Value) -> Result<Value, String> {
+    async fn answer(&self, noun: &str, verb: &str, args: Value) -> anyhow::Result<Value> {
         let Value::Object(args) = args else {
             unreachable!()
         };
@@ -136,7 +136,19 @@ impl Peer {
         tokio::task::spawn_blocking(move || call_at(address, &token, &noun, &verb, &args))
             .await
             .unwrap()
+    }
+
+    async fn call(&self, noun: &str, verb: &str, args: Value) -> Result<Value, String> {
+        self.answer(noun, verb, args)
+            .await
             .map_err(|error| error.to_string())
+    }
+
+    /// The question pigeon asks before `noun verb` is made again with
+    /// `yes`, if it refuses the call with `args` so.
+    async fn question(&self, noun: &str, verb: &str, args: Value) -> Option<String> {
+        let error = self.answer(noun, verb, args).await.err()?;
+        Some(error.downcast::<Unconfirmed>().ok()?.question)
     }
 
     async fn page(&self, path: &str) -> String {
@@ -785,6 +797,15 @@ async fn the_config_editor_previews_a_text_and_saves_it_whole() {
         error.contains("frees 1 file, 6 B") && error.contains("--yes"),
         "{error}"
     );
+    let question = peer
+        .question("config", "set", set(&freeing, &shown["version"], false))
+        .await
+        .unwrap();
+    assert!(
+        question.contains("cheapmo frees 1 file, 6 B") && question.ends_with("Apply them?"),
+        "{question}"
+    );
+    assert_eq!(parts["confirm"], json!(question), "the web asks the same");
     let error = peer
         .call(
             "config",
@@ -801,6 +822,42 @@ async fn the_config_editor_previews_a_text_and_saves_it_whole() {
     assert_eq!(selection(&peer).await, ["free +alice/"]);
     eventually("the notes are freed", async || !notes.exists()).await;
     assert!(peer.joined().await);
+}
+
+#[tokio::test]
+async fn a_group_that_does_not_start_from_a_configuration_runs_on_as_it_was() {
+    let lookup = MemoryLookup::new();
+    let (peer, notes) = alice_with_notes(&lookup).await;
+    let shown = peer.call("config", "show", json!({})).await.unwrap();
+    let text = shown["text"].as_str().unwrap();
+    let set = |text: &str| json!({"text": text, "version": shown["version"], "yes": true});
+    let blocker = peer.dir.path().join("blocker");
+    std::fs::write(&blocker, "").unwrap();
+    let unrooted: String = text
+        .lines()
+        .map(|line| {
+            if line.starts_with("root = ") {
+                format!("root = {:?}\n", blocker.join("root"))
+            } else {
+                format!("{line}\n")
+            }
+        })
+        .collect();
+    assert_ne!(unrooted, text);
+    let error = peer
+        .call("config", "set", set(&unrooted))
+        .await
+        .unwrap_err();
+    assert!(error.contains("runs on with the one it had"), "{error}");
+    let config = Home::new(peer.dir.path().join("home"))
+        .group("cheapmo")
+        .config_path();
+    assert_eq!(std::fs::read_to_string(config).unwrap(), text);
+    assert!(
+        peer.joined().await,
+        "a group that does not start runs on as it was"
+    );
+    assert!(notes.exists());
 }
 
 #[tokio::test]
@@ -832,6 +889,8 @@ async fn reloading_applies_the_configurations_edited_by_hand_unless_one_is_inval
         error.contains("cheapmo frees 1 file, 6 B") && error.contains("--yes"),
         "{error}"
     );
+    let question = peer.question("daemon", "reload", json!({})).await.unwrap();
+    assert!(question.contains("cheapmo frees 1 file, 6 B"), "{question}");
     assert_eq!(member().await, "alice");
     assert!(notes.exists());
     assert_eq!(

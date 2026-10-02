@@ -1,10 +1,10 @@
 //! The groups running on this machine: one engine per group, started from
 //! each group's folders, restarted from them when the user reloads their
-//! configurations or applies one, and created when the user creates or joins a group,
-//! which then waits for the group's verdict on the member's name; the
-//! groups heard before joining, to show the names one may join under; and
-//! why the daemon stops, which a restart onto a newly installed program is
-//! one reason for.
+//! configurations or applies one, and created when the user creates or
+//! joins a group, which then waits for the group's verdict on the member's
+//! name; which group a call names; the groups heard before joining, to
+//! show the names one may join under; and why the daemon stops, which a
+//! restart onto a newly installed program is one reason for.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -20,7 +20,8 @@ use pigeon_sync::{Delta, Engine, JoinState, Listener, Names, Options};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, RwLock, RwLockReadGuard, watch};
 
-use crate::config_preview;
+use crate::catalog::GROUP;
+use crate::config_preview::{self, Freed};
 use crate::home::Home;
 use crate::program::Program;
 use crate::shared_root::{create_root, shared_root};
@@ -33,13 +34,58 @@ const VERDICT: Duration = Duration::from_secs(30);
 /// machines.
 const HEARING: Duration = Duration::from_secs(30);
 
-/// The configuration of the group `dirs` once `member` claims it,
-/// following their own folder too.
-fn claimed(dirs: &GroupDirs, member: MemberName) -> Result<Config> {
+/// The text of the configuration of the group `dirs` once `member` claims
+/// it, following their own folder too.
+fn claimed(dirs: &GroupDirs, member: MemberName) -> Result<String> {
     let mut config = dirs.load_config()?;
     config.selection.set(Rule::follow_own_folder(&member))?;
     config.member = member;
-    Ok(config)
+    config
+        .render()
+        .map_err(|reason| anyhow!("{}: {reason}", dirs.config_path().display()))
+}
+
+/// The error for the group `name`, which this machine is not in.
+fn absent(name: &str) -> anyhow::Error {
+    anyhow!("no group {name} on this machine: see `pigeon group list`")
+}
+
+/// The group a call names, or the only one.
+///
+/// # Errors
+///
+/// Fails, naming the command to run, if the group is unknown or the call
+/// names none on a machine with several.
+pub fn choose<'a>(
+    groups: &'a BTreeMap<String, Engine>,
+    name: Option<&str>,
+) -> Result<(&'a str, &'a Engine)> {
+    if let Some(name) = name {
+        return groups
+            .get_key_value(name)
+            .map(|(name, engine)| (name.as_str(), engine))
+            .ok_or_else(|| absent(name));
+    }
+    let mut all = groups.iter();
+    match (all.next(), all.next()) {
+        (Some((name, engine)), None) => Ok((name.as_str(), engine)),
+        (None, _) => {
+            bail!("this machine is in no group: run `pigeon group create` or `pigeon group join`")
+        }
+        (Some(_), Some(_)) => bail!(
+            "this machine is in several groups: pass --{} with one of {}",
+            GROUP.name,
+            groups.keys().cloned().collect::<Vec<_>>().join(", ")
+        ),
+    }
+}
+
+/// Stops `engine` of the group `name`, telling rather than failing when it
+/// does not stop cleanly, since what follows never depends on it.
+async fn shut_down(name: &str, engine: Engine) {
+    if let Err(error) = engine.shutdown().await {
+        eprintln!("pigeon: group {name} did not stop cleanly: {error:#}");
+    }
 }
 
 /// Why the daemon stops.
@@ -245,10 +291,7 @@ impl Daemon {
         loop {
             let status = {
                 let groups = self.groups.read().await;
-                let engine = groups.get(group).ok_or_else(|| {
-                    anyhow!("no group {group} on this machine: see `pigeon group list`")
-                })?;
-                engine.status().await
+                choose(&groups, Some(group))?.1.status().await
             };
             match status.join {
                 JoinState::Pending if tokio::time::Instant::now() < deadline => {
@@ -273,27 +316,12 @@ impl Daemon {
     pub async fn claim(&self, group: &str, member: &str) -> Result<()> {
         let member = MemberName::parse(member).context("the member name")?;
         let mut groups = self.groups.write().await;
-        let engine = groups
-            .remove(group)
-            .ok_or_else(|| anyhow!("no group {group} on this machine: see `pigeon group list`"))?;
-        let status = engine.status().await;
-        let dirs = self.home.group(group);
-        let claimed = if status.join == JoinState::Joined {
-            Err(anyhow!("{} has already joined {group}", status.member))
-        } else {
-            claimed(&dirs, member)
-        };
-        let config = match claimed {
-            Ok(config) => config,
-            Err(error) => {
-                groups.insert(group.to_owned(), engine);
-                return Err(error);
-            }
-        };
-        engine.shutdown().await?;
-        ConfigFile::create(&dirs, config)?;
-        let engine = Engine::start(&dirs, self.options.clone()).await?;
-        groups.insert(group.to_owned(), engine);
+        let status = choose(&groups, Some(group))?.1.status().await;
+        if status.join == JoinState::Joined {
+            bail!("{} has already joined {group}", status.member);
+        }
+        let text = claimed(&self.home.group(group), member)?;
+        self.restart_from(&mut groups, group, &text).await?;
         drop(groups);
         self.verdict(group).await
     }
@@ -311,12 +339,10 @@ impl Daemon {
         let mut groups = self.groups.write().await;
         let running = groups.remove(group);
         if running.is_none() && !self.home.group_names()?.iter().any(|name| name == group) {
-            bail!("no group {group} on this machine: see `pigeon group list`");
+            return Err(absent(group));
         }
-        if let Some(engine) = running
-            && let Err(error) = engine.shutdown().await
-        {
-            eprintln!("pigeon: group {group} did not stop cleanly: {error:#}");
+        if let Some(engine) = running {
+            shut_down(group, engine).await;
         }
         self.home.group(group).remove()?;
         Ok(())
@@ -350,24 +376,14 @@ impl Daemon {
             let (_, preview) = config_preview::plan(engine, &text)
                 .await
                 .with_context(|| path.display().to_string())?;
-            let free = config_preview::total(&preview, Delta::Free);
-            if free.files > 0 {
-                freed.push(format!("{name} frees {}", config_preview::amount(free)));
-            }
+            freed.push((name.clone(), config_preview::total(&preview, Delta::Free)));
             let mut change = config_preview::summary(&preview);
             change["group"] = json!(name);
             changes.push(change);
         }
-        if !yes && !freed.is_empty() {
-            bail!(
-                "the edits free space on this machine: {}; pass --yes to apply them",
-                freed.join(", ")
-            );
-        }
+        Freed::new(freed).refuse_unless(yes)?;
         for (name, engine) in std::mem::take(&mut *groups) {
-            if let Err(error) = engine.shutdown().await {
-                eprintln!("pigeon: group {name} did not stop cleanly: {error:#}");
-            }
+            shut_down(&name, engine).await;
         }
         let mut failed = Vec::new();
         for name in names {
@@ -401,11 +417,8 @@ impl Daemon {
         yes: bool,
     ) -> Result<()> {
         let mut groups = self.groups.write().await;
-        let engine = groups
-            .get(group)
-            .ok_or_else(|| anyhow!("no group {group} on this machine: see `pigeon group list`"))?;
-        let dirs = self.home.group(group);
-        let path = dirs.config_path();
+        let (_, engine) = choose(&groups, Some(group))?;
+        let path = self.home.group(group).config_path();
         let current = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
         if version.is_some_and(|version| version != config_preview::version(&current)) {
@@ -415,20 +428,48 @@ impl Daemon {
             );
         }
         let (_, preview) = config_preview::plan(engine, text).await?;
-        let free = config_preview::total(&preview, Delta::Free);
-        if !yes && free.files > 0 {
-            bail!(
-                "this frees {} on this machine: pass --yes to apply it",
-                config_preview::amount(free)
-            );
-        }
-        write_private(&path, text.as_bytes())?;
-        if let Some(engine) = groups.remove(group) {
-            engine.shutdown().await?;
-        }
+        Freed::by(group, &preview).refuse_unless(yes)?;
+        self.restart_from(&mut groups, group, text).await
+    }
+
+    /// Restarts the running group `group` from `text`, written as its
+    /// `config.toml`. A group that does not start from it gets back the
+    /// configuration it ran with and starts from that, so that it keeps
+    /// running.
+    ///
+    /// # Errors
+    ///
+    /// Fails, telling why, if the group does not start from `text`, or
+    /// does not even start again from the configuration it ran with.
+    async fn restart_from(
+        &self,
+        groups: &mut BTreeMap<String, Engine>,
+        group: &str,
+        text: &str,
+    ) -> Result<()> {
+        let dirs = self.home.group(group);
+        let path = dirs.config_path();
+        let previous = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let engine = groups.remove(group).ok_or_else(|| absent(group))?;
+        shut_down(group, engine).await;
+        let started = match write_private(&path, text.as_bytes()) {
+            Ok(()) => Engine::start(&dirs, self.options.clone()).await,
+            Err(error) => Err(error.into()),
+        };
+        let error = match started {
+            Ok(engine) => {
+                groups.insert(group.to_owned(), engine);
+                return Ok(());
+            }
+            Err(error) => error,
+        };
+        write_private(&path, previous.as_bytes())?;
         let engine = Engine::start(&dirs, self.options.clone()).await?;
         groups.insert(group.to_owned(), engine);
-        Ok(())
+        Err(error.context(format!(
+            "{group} does not start from this configuration, so it runs on with the one it had"
+        )))
     }
 
     /// Stops every group.
@@ -439,9 +480,7 @@ impl Daemon {
             }
         }
         for (name, engine) in self.groups.into_inner() {
-            if let Err(error) = engine.shutdown().await {
-                eprintln!("pigeon: group {name} did not stop cleanly: {error:#}");
-            }
+            shut_down(&name, engine).await;
         }
     }
 }

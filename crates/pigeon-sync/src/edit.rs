@@ -17,7 +17,7 @@ use pigeon_store::disk::{self, fs_path};
 use serde::Serialize;
 
 use crate::disk_sync::file_stat;
-use crate::engine::{Engine, Inner, JoinState, Work};
+use crate::engine::{Engine, Inner, Work};
 
 /// One change a person asks for. A folder is the prefix of its files'
 /// paths, so deleting or renaming a folder deletes or renames every file
@@ -197,9 +197,7 @@ impl Inner {
         if changes.is_empty() {
             return Ok(());
         }
-        if work.join != JoinState::Joined {
-            bail!("{} has not joined the group yet", self.member);
-        }
+        self.ensure_joined(work)?;
         if let Some(change) = changes
             .iter()
             .find(|change| is_statement(&change.path.key()))

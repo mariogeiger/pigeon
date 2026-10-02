@@ -344,6 +344,14 @@ impl Inner {
         JoinState::Pending
     }
 
+    /// Fails unless the member has joined, as only members publish.
+    pub(crate) fn ensure_joined(&self, work: &Work) -> Result<()> {
+        if work.join != JoinState::Joined {
+            bail!("{} has not joined the group yet", self.member);
+        }
+        Ok(())
+    }
+
     /// Publishes the member file unless the member already belongs.
     async fn join(&self, work: &mut Work) -> Result<()> {
         work.join = self.join_state();
@@ -354,19 +362,14 @@ impl Inner {
             name: self.member.clone(),
             key: self.cert.member,
         };
-        let content = self
-            .add_content(work, serde_json::to_vec_pretty(&statement)?)
-            .await?;
-        let path = member_path(&self.member);
-        let change = Change {
-            path: path.clone(),
-            content: Some(content),
-            replaces: None,
-            continues: None,
-        };
-        self.publish_at(self.clock.stamp(), vec![change])?;
+        self.publish_statement(
+            work,
+            self.clock.stamp(),
+            member_path(&self.member),
+            serde_json::to_vec_pretty(&statement)?,
+        )
+        .await?;
         work.join = self.join_state();
-        let _ = self.wake.send(Wake::Keys(vec![path.key()]));
         Ok(())
     }
 

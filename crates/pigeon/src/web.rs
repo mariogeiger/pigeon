@@ -23,7 +23,7 @@ use pigeon_core::path::GroupPath;
 use pigeon_sync::Engine;
 use serde_json::{Map, Value, json};
 
-use crate::api::{App, call};
+use crate::api::{App, Refusal, call};
 use crate::catalog::{Kind, find};
 use crate::config_preview;
 use crate::files_page;
@@ -69,7 +69,7 @@ async fn view(app: &App, noun: &str, verb: &str, args: Value) -> Result<Value, F
     };
     call(app, noun, verb, args)
         .await
-        .map_err(|(status, message)| Failure::new(status, message, "/"))
+        .map_err(|refusal| Failure::new(refusal.status, refusal.message, "/"))
 }
 
 /// Gives `use_engine` the engine of `group`.
@@ -277,7 +277,9 @@ async fn config_preview(
     };
     match call(&app, "config", "preview", args).await {
         Ok(preview) => Json(overview_page::preview_parts(&group, &preview)).into_response(),
-        Err((status, message)) => {
+        Err(Refusal {
+            status, message, ..
+        }) => {
             let pins = with_engine(&app, &group, async |engine| {
                 Value::Array(config_preview::unfinished_pins(engine, &text))
             })
@@ -454,7 +456,7 @@ async fn act(
             let title = format!("{noun} {verb}");
             Html(layout(&title, None, &body).into_string()).into_response()
         }
-        Err((status, message)) => Failure::new(status, message, &back).into_response(),
+        Err(refusal) => Failure::new(refusal.status, refusal.message, &back).into_response(),
     }
 }
 

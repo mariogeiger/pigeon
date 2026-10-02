@@ -10,7 +10,7 @@ use pigeon_core::retention::Retention;
 use pigeon_store::config::Config;
 
 use crate::disk_sync::Probe;
-use crate::engine::{Engine, Inner, JoinState, Work};
+use crate::engine::{Engine, Inner, Work};
 
 impl Inner {
     /// Compares `paths` with the ledger and publishes their edits at once.
@@ -40,9 +40,7 @@ impl Engine {
     pub async fn publish(&self, under: Option<&GroupPath>) -> Result<()> {
         let inner = &self.inner;
         let mut work = inner.work.lock().await;
-        if work.join != JoinState::Joined {
-            bail!("{} has not joined the group yet", inner.member);
-        }
+        inner.ensure_joined(&work)?;
         let keys: Vec<PathKey> = work
             .pending
             .keys()

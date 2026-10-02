@@ -1,11 +1,12 @@
 //! Which blobs garbage collection must keep: the current versions of the
-//! member's files, what the disk holds, the statements, the blobs being
-//! fetched and the contents that live suggestions carry; then, within the
-//! quota, the past versions retention keeps of the member's files, or of
-//! every file with `everything`, with what the past suggestions among them
-//! carried. A member's files are those of their personal path, the files of
-//! no personal path whose current version they made, and the suggestions
-//! they made.
+//! member's files and those the member made, which another member's
+//! machines may not have fetched yet, what the disk holds, the statements,
+//! the blobs being fetched and the contents that live suggestions carry;
+//! then, within the quota, the past versions retention keeps of the
+//! member's files, or of every file with `everything`, with what the past
+//! suggestions among them carried. A member's files are those of their
+//! personal path, the files of no personal path whose current version they
+//! made, and the suggestions they made.
 
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -55,7 +56,7 @@ impl Inner {
                     }
                     None => head.author == self.member,
                 };
-                if own {
+                if own || head.author == self.member {
                     keep(head.content);
                 }
                 if own || retention.everything {

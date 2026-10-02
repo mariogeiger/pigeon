@@ -25,7 +25,7 @@ use pigeon_store::state::Kept;
 use serde::Serialize;
 
 use crate::disk_sync::file_stat;
-use crate::engine::{Engine, Inner, JoinState, Work};
+use crate::engine::{Engine, Inner, Work};
 
 /// A live suggestion: its statement's version and what it says.
 #[derive(Clone, Debug)]
@@ -351,9 +351,7 @@ impl Inner {
         validate: bool,
         to: Option<&GroupPath>,
     ) -> Result<()> {
-        if work.join != JoinState::Joined {
-            bail!("{} has not joined the group yet", self.member);
-        }
+        self.ensure_joined(work)?;
         if shown.is_empty() {
             bail!("no suggestion to decide");
         }

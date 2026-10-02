@@ -2,7 +2,6 @@
 //! arguments become a call on the daemon or on one group's engine, and its
 //! result becomes JSON.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -14,40 +13,10 @@ use serde_json::{Value, json};
 use crate::args::Args;
 use crate::catalog::{GROUP, Scope};
 use crate::config_preview;
-use crate::daemon::{Daemon, Stop};
+use crate::daemon::{Daemon, Stop, choose};
 
 fn to_json(value: impl Serialize) -> Result<Value> {
     Ok(serde_json::to_value(value)?)
-}
-
-/// The group a call names, or the only one.
-///
-/// # Errors
-///
-/// Fails, naming the command to run, if the group is unknown or the call
-/// names none on a machine with several.
-pub fn choose<'a>(
-    groups: &'a BTreeMap<String, Engine>,
-    name: Option<&str>,
-) -> Result<(&'a str, &'a Engine)> {
-    if let Some(name) = name {
-        return groups
-            .get_key_value(name)
-            .map(|(name, engine)| (name.as_str(), engine))
-            .ok_or_else(|| anyhow!("no group {name} on this machine: see `pigeon group list`"));
-    }
-    let mut all = groups.iter();
-    match (all.next(), all.next()) {
-        (Some((name, engine)), None) => Ok((name.as_str(), engine)),
-        (None, _) => {
-            bail!("this machine is in no group: run `pigeon group create` or `pigeon group join`")
-        }
-        (Some(_), Some(_)) => bail!(
-            "this machine is in several groups: pass --{} with one of {}",
-            GROUP.name,
-            groups.keys().cloned().collect::<Vec<_>>().join(", ")
-        ),
-    }
 }
 
 /// Carries out the call `args` and returns its result.

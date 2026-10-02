@@ -295,12 +295,7 @@ impl Inner {
     async fn suggest_settled(&self, work: &mut Work, unit: Vec<Settled>, reason: Reason) {
         let changes = unit
             .iter()
-            .map(|settled| SuggestedChange {
-                path: settled.change.path.as_str().to_owned(),
-                content: settled.change.content,
-                replaces: settled.change.replaces,
-                continues: settled.change.continues.clone(),
-            })
+            .map(|settled| SuggestedChange::from(&settled.change))
             .collect();
         if let Err(error) = self.suggest(work, changes, reason).await {
             self.report(format!("suggesting: {error:#}"));

@@ -10,6 +10,10 @@ use pigeon_net::relay::{Certified, relay_url, serve_relay};
 
 use crate::home::Home;
 
+/// The HTTP port a relay serves unless told otherwise, the one Let's
+/// Encrypt checks.
+pub const PORT: u16 = 80;
+
 /// Serves a relay that other machines reach at `hostname`, on HTTP port
 /// `port`, and HTTPS too when Let's Encrypt can warn `contact`.
 ///

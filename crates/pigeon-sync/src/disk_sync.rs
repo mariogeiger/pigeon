@@ -409,13 +409,7 @@ impl Inner {
             }
             Step::SuggestSynced(reason) => {
                 if let Some(change) = &look.synced {
-                    let suggested = SuggestedChange {
-                        path: change.path.as_str().to_owned(),
-                        content: change.content,
-                        replaces: change.replaces,
-                        continues: change.continues.clone(),
-                    };
-                    self.suggest(work, vec![suggested], reason).await?;
+                    self.suggest(work, vec![change.into()], reason).await?;
                 }
             }
             Step::Materialize => {

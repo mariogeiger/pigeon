@@ -53,7 +53,7 @@ fn each_rule_tells_what_it_decides_and_a_pin_offers_its_times() {
         parts["confirm"]
             .as_str()
             .unwrap()
-            .starts_with("Saving removes 134 files (890.0 MB)")
+            .starts_with("The edits free space on this machine: g frees 134 files, 890.0 MB.")
     );
     assert_eq!(parts["version"], "v1");
 }

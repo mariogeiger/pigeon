@@ -15,7 +15,7 @@ use serde_json::{Map, Value};
 
 use crate::catalog::{ACTIONS, Action, GROUP, Kind, NOUNS, Param, Scope, find};
 use crate::home::Home;
-use crate::{api, client, complete, config_preview, relay, render, serve, service, setup, update};
+use crate::{api, client, complete, relay, render, serve, service, setup, update};
 
 fn param_arg(param: &'static Param) -> Arg {
     let mut arg = Arg::new(param.name).long(param.name).help(param.about);
@@ -104,9 +104,8 @@ pub fn command() -> Command {
             .arg(
                 Arg::new("port")
                     .long("port")
-                    .help("The HTTP port, which Let's Encrypt needs at 80")
-                    .value_parser(clap::value_parser!(u16))
-                    .default_value("80"),
+                    .help(format!("The HTTP port, {} by default, which Let's Encrypt needs", relay::PORT))
+                    .value_parser(clap::value_parser!(u16)),
             ),
     )
     .subcommand(
@@ -204,57 +203,34 @@ pub fn arguments(action: &Action, matches: &ArgMatches, ask: bool) -> Result<Map
     Ok(args)
 }
 
-/// What the edits of `group`'s config.toml free on this machine, as text,
-/// if anything; nothing when the file does not read, which reloading then
-/// names.
-fn freed(home: &Home, group: &str) -> Option<String> {
-    let mut args = Map::new();
-    args.insert(GROUP.name.to_owned(), Value::String(group.to_owned()));
-    let preview = client::call(home, "config", "preview", &args).ok()?;
-    let total = &preview["deltas"]
-        .as_array()?
-        .iter()
-        .find(|delta| delta["delta"] == "free")?["total"];
-    let files = total["files"].as_u64().filter(|files| *files > 0)?;
-    let bytes = total["bytes"].as_u64().unwrap_or_default();
-    Some(format!(
-        "{group} frees {}",
-        config_preview::amount(pigeon_sync::Amount { files, bytes })
-    ))
-}
-
-/// Asks the person at the terminal, when the edits that reloading applies
-/// free space on this machine, whether to apply them, telling what each
-/// group frees; adds `yes` to `args` if so.
+/// Calls `noun verb` with `args` on the daemon of `home`; when the daemon
+/// refuses unless the call is made again with `yes`, asks the person at
+/// the terminal, if there is one, and makes it again if they agree.
 ///
 /// # Errors
 ///
-/// Fails if the groups cannot be listed, the question cannot be asked, or
-/// the person declines.
-fn confirm_reload(home: &Home, args: &mut Map<String, Value>) -> Result<()> {
-    let groups = client::call(home, "group", "list", &Map::new())?;
-    let freed: Vec<String> = groups
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|group| freed(home, group["name"].as_str()?))
-        .collect();
-    if freed.is_empty() {
-        return Ok(());
-    }
-    eprintln!(
-        "The edits free space on this machine: {}.",
-        freed.join(", ")
-    );
+/// As [`client::call`], and fails if the question cannot be asked or the
+/// person declines.
+fn call_confirming(
+    home: &Home,
+    noun: &str,
+    verb: &str,
+    mut args: Map<String, Value>,
+) -> Result<Value> {
+    let error = match client::call(home, noun, verb, &args) {
+        Err(error) if interactive() => error,
+        result => return result,
+    };
+    let unconfirmed = error.downcast::<client::Unconfirmed>()?;
     let apply = dialoguer::Confirm::new()
-        .with_prompt("Apply them?")
+        .with_prompt(unconfirmed.question)
         .default(false)
         .interact()?;
     if !apply {
         bail!("nothing changed");
     }
     args.insert("yes".to_owned(), Value::Bool(true));
-    Ok(())
+    client::call(home, noun, verb, &args)
 }
 
 /// Runs the command line `matches` describes.
@@ -290,7 +266,10 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
             let contact = noun_matches
                 .get_one::<String>("contact")
                 .map(String::as_str);
-            let port = noun_matches.get_one::<u16>("port").copied().unwrap_or(80);
+            let port = noun_matches
+                .get_one::<u16>("port")
+                .copied()
+                .unwrap_or(relay::PORT);
             tokio::runtime::Runtime::new()?.block_on(relay::run(&home, hostname, contact, port))
         }
         "setup" => setup::run(&home),
@@ -315,11 +294,8 @@ pub fn run(matches: &ArgMatches) -> Result<()> {
                 .subcommand()
                 .ok_or_else(|| anyhow!("run `pigeon {noun} --help`"))?;
             let action = find(noun, verb).ok_or_else(|| anyhow!("run `pigeon {noun} --help`"))?;
-            let mut args = arguments(action, verb_matches, interactive())?;
-            if (noun, verb) == ("daemon", "reload") && !args.contains_key("yes") && interactive() {
-                confirm_reload(&home, &mut args)?;
-            }
-            let result = client::call(&home, noun, verb, &args)?;
+            let args = arguments(action, verb_matches, interactive())?;
+            let result = call_confirming(&home, noun, verb, args)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {

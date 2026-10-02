@@ -6,9 +6,10 @@
 //! and the raw ids, folded.
 
 use maud::{Markup, html};
+use pigeon_sync::Amount;
 use serde_json::{Value, json};
 
-use crate::config_preview::count;
+use crate::config_preview::{Freed, count};
 use crate::form::form;
 use crate::group_pages::{encode, file_link, fill};
 use crate::pages::{self, Bar, action, fields, layout, short_time};
@@ -377,16 +378,16 @@ fn panel(group: &str, preview: &Value) -> Markup {
 }
 
 /// The total of the delta named `name` in `preview`.
-fn delta_total(preview: &Value, name: &str) -> (u64, u64) {
+fn delta_total(preview: &Value, name: &str) -> Amount {
     items(&preview["deltas"])
         .iter()
         .find(|delta| delta["delta"] == name)
-        .map_or((0, 0), |delta| {
+        .map_or_else(Amount::default, |delta| {
             let total = &delta["total"];
-            (
-                total["files"].as_u64().unwrap_or_default(),
-                total["bytes"].as_u64().unwrap_or_default(),
-            )
+            Amount {
+                files: total["files"].as_u64().unwrap_or_default(),
+                bytes: total["bytes"].as_u64().unwrap_or_default(),
+            }
         })
 }
 
@@ -395,32 +396,26 @@ fn delta_total(preview: &Value, name: &str) -> (u64, u64) {
 /// saving frees space.
 #[must_use]
 pub fn preview_parts(group: &str, preview: &Value) -> Value {
-    let (_, downloaded) = delta_total(preview, "download");
-    let (freed_files, freed) = delta_total(preview, "free");
+    let downloaded = delta_total(preview, "download");
+    let free = delta_total(preview, "free");
     let mut parts = Vec::new();
-    if downloaded > 0 {
-        parts.push(format!("+{}", size(downloaded)));
+    if downloaded.bytes > 0 {
+        parts.push(format!("+{}", size(downloaded.bytes)));
     }
-    if freed > 0 {
-        parts.push(format!("-{}", size(freed)));
+    if free.bytes > 0 {
+        parts.push(format!("-{}", size(free.bytes)));
     }
     let save = if parts.is_empty() {
         "Save".to_owned()
     } else {
         format!("Save: {}", parts.join(", "))
     };
-    let confirm = (freed_files > 0).then(|| {
-        format!(
-            "Saving removes {} ({}) from this machine. Modified copies not yet published stay. Save?",
-            count(freed_files, "file"),
-            size(freed)
-        )
-    });
+    let freed = Freed::new([(group.to_owned(), free)]);
     json!({
         "version": preview["version"],
         "panel": panel(group, preview).into_string(),
         "save": save,
-        "confirm": confirm,
+        "confirm": (!freed.is_empty()).then(|| freed.question()),
     })
 }
 
