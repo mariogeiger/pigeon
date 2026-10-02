@@ -10,12 +10,13 @@ use std::time::Duration;
 use common::{eventually, group, group_with, joined, path, shut_down};
 use pigeon_net::wire::MAX_MESSAGE;
 
-/// `count` paths of nearly two thousand bytes each, under `folder`, so
-/// that seven hundred carry more than a patch.
-fn long_paths(folder: &str, count: usize) -> Vec<String> {
-    let deep = ["a", "b", "c", "d", "e", "f", "g", "h"]
-        .map(|letter| letter.repeat(240))
-        .join("/");
+/// Paths under `folder` of under eight hundred bytes, each name within the
+/// 255 bytes and each path, once under a temporary folder, within the 1024
+/// bytes the strictest system allows: so many that their bytes alone make
+/// one and a half patches.
+fn long_paths(folder: &str) -> Vec<String> {
+    let deep = ["a", "b", "c"].map(|letter| letter.repeat(250)).join("/");
+    let count = 3 * (MAX_MESSAGE / 64) / 2 / (folder.len() + deep.len());
     (0..count)
         .map(|n| format!("{folder}/{deep}/{n}.txt"))
         .collect()
@@ -28,7 +29,7 @@ async fn edits_beyond_what_one_patch_carries_go_out_in_several_patches() {
     let bob = machines.pop().unwrap();
     let alice = &machines[0];
     bob.follow("+alice/").await;
-    let files = long_paths("+alice", 700);
+    let files = long_paths("+alice");
     for file in &files {
         alice.edit(file, "x");
     }
@@ -66,7 +67,7 @@ async fn an_announcement_names_only_as_many_drafts_as_it_carries() {
     .await;
     joined(&machines).await;
     let (alice, bob) = (&machines[0], &machines[1]);
-    let files = long_paths("inbox", 700);
+    let files = long_paths("inbox");
     for file in &files {
         alice.edit(file, "x");
     }
@@ -75,7 +76,7 @@ async fn an_announcement_names_only_as_many_drafts_as_it_carries() {
     })
     .await;
     eventually("bob learns of alice's drafts", || async {
-        bob.engine.pending(None).await.len() > 400
+        bob.engine.pending(None).await.len() > files.len() / 2
     })
     .await;
     let announced = bob.engine.pending(None).await;
