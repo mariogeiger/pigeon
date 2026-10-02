@@ -153,19 +153,11 @@ async fn decided_apart(validated_first: bool) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[cfg_attr(
-    windows,
-    ignore = "iroh-blobs 0.103 on Windows: after a restart on the same blob folder, `load` turns a failed db.get or open into Poisoned, and observe panics (bao_file.rs:410)"
-)]
 async fn a_validation_made_apart_before_a_discard_holds_once_the_partition_heals() {
     Box::pin(decided_apart(true)).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[cfg_attr(
-    windows,
-    ignore = "iroh-blobs 0.103 on Windows: after a restart on the same blob folder, `load` turns a failed db.get or open into Poisoned, and observe panics (bao_file.rs:410)"
-)]
 async fn a_discard_made_apart_before_a_validation_holds_once_the_partition_heals() {
     Box::pin(decided_apart(false)).await;
 }
