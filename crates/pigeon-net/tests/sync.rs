@@ -1,6 +1,6 @@
 //! Tests of the network on this host: machines that know the group secret
 //! exchange what the other lacks, a gap included, and every later patch,
-//! and again what a session lost, a machine without it learns nothing and
+//! and again what a session lost or fell behind on, a machine without it learns nothing and
 //! why is kept until a session opens, and blobs move only between admitted
 //! machines, a fetch failing once what it holds stops growing,
 //! each from several machines at once, which serve what they hold while
@@ -237,6 +237,26 @@ async fn a_patch_a_session_lost_comes_with_the_next_digests() {
     a.meet(&b).await;
     a.hold(&a.patch(1));
     assert_eq!(b.next_times().await, [1]);
+    a.node.shutdown().await.unwrap();
+    b.node.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn patches_published_faster_than_a_session_sends_all_arrive() {
+    let lookup = MemoryLookup::new();
+    let a = Machine::start(secret(5), &lookup).await;
+    let mut b = Machine::start(secret(5), &lookup).await;
+    a.meet(&b).await;
+    for time in 1..=1000 {
+        let patch = a.patch(time);
+        a.hold(&patch);
+        a.node.publish(vec![patch]);
+    }
+    let mut times = std::collections::BTreeSet::new();
+    while times.len() < 1000 {
+        times.extend(b.next_times().await);
+    }
+    assert_eq!(times.last(), Some(&1000));
     a.node.shutdown().await.unwrap();
     b.node.shutdown().await.unwrap();
 }
