@@ -312,7 +312,7 @@ impl Ledger {
     pub fn owner(&self, path: &GroupPath) -> Option<MemberName> {
         match classify(path, |name| self.state.members.contains_key(name)).0 {
             Ownership::Personal(owner) => Some(owner),
-            Ownership::Drop => None,
+            Ownership::Unowned => None,
         }
     }
 

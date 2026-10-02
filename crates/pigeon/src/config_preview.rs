@@ -1,6 +1,6 @@
 //! What applying a text as a group's `config.toml` would change on this
 //! machine, the text read by the parser `pigeon daemon reload` uses: what
-//! its selection would download, free and freeze, each rule with what it
+//! its selection would download, free and pin, each rule with what it
 //! matches and decides, where the text spells it and, for a pin, the times
 //! it can choose, which a pin line that does not read is offered too; and
 //! the version of a text, which tells whether the file changed since one
@@ -134,14 +134,15 @@ pub fn amount(amount: Amount) -> String {
     format!("{}, {}", count(amount.files, "file"), size(amount.bytes))
 }
 
-/// What `preview` downloads, frees and freezes, each as text.
+/// What `preview` downloads, frees and pins, each as text.
 #[must_use]
 pub fn summary(preview: &Preview) -> Value {
-    json!({
-        "download": amount(total(preview, Delta::Download)),
-        "free": amount(total(preview, Delta::Free)),
-        "freeze": amount(total(preview, Delta::Freeze)),
-    })
+    preview
+        .deltas
+        .iter()
+        .map(|files| (files.delta.to_string(), Value::from(amount(files.total))))
+        .collect::<serde_json::Map<_, _>>()
+        .into()
 }
 
 /// What applying `text` would change, as JSON: the totals now and after,

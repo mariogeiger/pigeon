@@ -145,7 +145,7 @@ async fn a_folders_suggestions_are_validated_together_deletions_included() {
     hold(bob, "shared/").await;
     alice.edit("shared/a.txt", "a");
     alice.edit("shared/b.txt", "b");
-    eventually("bob holds the published drops", || async {
+    eventually("bob holds the published files", || async {
         bob.read("shared/a.txt").is_some() && bob.read("shared/b.txt").is_some()
     })
     .await;

@@ -356,12 +356,9 @@ fn panel(group: &str, preview: &Value) -> Markup {
             p { "Saving changes no file on this machine." }
         }
         @for delta in changing {
-            @let (label, sign) = match delta["delta"].as_str() {
-                Some("download") => ("download", "+"),
-                Some("free") => ("free", "-"),
-                _ => ("frozen", ""),
-            };
-            h4 { (label) ": " (amount(&delta["total"], sign)) }
+            @let name = delta["delta"].as_str().unwrap_or_default();
+            @let sign = match name { "download" => "+", "free" => "-", _ => "" };
+            h4 { (name) ": " (amount(&delta["total"], sign)) }
             ul {
                 @let largest = items(&delta["largest"]);
                 @for file in largest {

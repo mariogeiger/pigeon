@@ -1,5 +1,5 @@
 //! The engine's places: moving folders to and from their destinations as
-//! the machine's wishes change, freezing every folder whose destination is
+//! the machine's wishes change, pausing every folder whose destination is
 //! missing or not yet linked, so that nothing under it is published or
 //! written, and watching the destinations.
 
@@ -16,7 +16,7 @@ use serde::Serialize;
 use crate::engine::{Engine, Inner, Work};
 use crate::watch::{Rescan, Watched, watch};
 
-/// A folder this machine keeps at a destination, and why it is frozen.
+/// A folder this machine keeps at a destination, and why it is paused.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct PlaceView {
     pub folder: GroupPath,
@@ -55,7 +55,7 @@ impl Inner {
 
     /// Moves back the folders no longer wanted elsewhere, then moves the
     /// wanted ones to their destinations, as far as each destination
-    /// allows; the folders left out of place freeze, and the watcher
+    /// allows; the folders left out of place pause, and the watcher
     /// follows the destinations reached.
     pub(crate) fn lay_out(&self, work: &mut Work) {
         let root = &self.root;
@@ -166,7 +166,7 @@ impl Work {
     fn problem(&self, folder: &GroupPath) -> Option<&str> {
         self.out_of_place
             .iter()
-            .find(|(frozen, _)| frozen.key() == folder.key())
+            .find(|(paused, _)| paused.key() == folder.key())
             .map(|(_, problem)| problem.as_str())
     }
 }
@@ -180,7 +180,7 @@ impl Engine {
     ///
     /// Fails if the folder or the destination nests with the root or
     /// another place, or the move did not finish; the folder then stays
-    /// frozen until it does, which pigeon retries at every rescan.
+    /// paused until it does, which pigeon retries at every rescan.
     pub async fn place(&self, folder: GroupPath, destination: &Path) -> Result<()> {
         let inner = &self.inner;
         let destination = resolve(destination)?;
@@ -198,7 +198,7 @@ impl Engine {
     /// # Errors
     ///
     /// Fails if the folder has no destination, or the move back did not
-    /// finish; the folder then stays frozen until it does.
+    /// finish; the folder then stays paused until it does.
     pub async fn unplace(&self, folder: &GroupPath) -> Result<()> {
         let inner = &self.inner;
         let mut work = inner.work.lock().await;

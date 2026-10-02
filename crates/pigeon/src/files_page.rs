@@ -282,7 +282,7 @@ fn dialogs(group: &str, back: &str) -> Markup {
         }
         dialog id="unfollow" {
             form method="dialog" {
-                p { "Stop following: keep the current copy here, frozen, or free the space?" }
+                p { "Stop following: pin the copy here as it is now, or free the space?" }
                 button value="keep" { "Keep the copy" }
                 " " button value="free" { "Free the space" }
                 " " button value="" { "Cancel" }
@@ -451,7 +451,7 @@ mod tests {
                 .contains(r#"data-pattern="/docs/a.txt" data-state="checked" checked"#)
         );
         assert!(page.contains(r#"data-pattern="/docs/\[x\].txt" data-state="unchecked">"#));
-        assert!(row_of(&page, "docs/[x].txt").contains("🧊"));
+        assert!(row_of(&page, "docs/[x].txt").contains("📌"));
         assert!(!row_of(&page, "docs/a.txt").contains(r#"class="status""#));
         assert!(page.contains(r#"<ul class="legend">"#));
         assert!(!row_of(&page, "docs").contains("hidden"));

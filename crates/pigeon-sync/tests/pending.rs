@@ -17,7 +17,7 @@ fn path(text: &str) -> GroupPath {
 async fn waiting_edits_are_listed_and_published_at_once_under_a_path() {
     let machines = group_with(&["alice"], |options| {
         options.settle_personal = Duration::from_secs(60);
-        options.settle_drop = Duration::from_secs(600);
+        options.settle_draft = Duration::from_secs(600);
     })
     .await;
     joined(&machines).await;

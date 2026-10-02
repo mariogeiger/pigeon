@@ -42,7 +42,7 @@ fn options(lookup: &MemoryLookup) -> Options {
     Options {
         network: Network::Local(lookup.clone()),
         settle_personal: Duration::from_millis(100),
-        settle_drop: Duration::from_millis(400),
+        settle_draft: Duration::from_millis(400),
         rescan: Duration::from_secs(60),
         tick: Duration::from_millis(50),
         join_delay: Duration::from_millis(300),
@@ -604,7 +604,7 @@ async fn group_pages_follow_files_and_hear_each_change() {
     drop(next_event(lines).await);
     let page = peer.page("/g/cheapmo/files?under=%2Balice").await;
     assert!(
-        page.contains(r#"title="a copy kept here, frozen: it no longer syncs">🧊"#),
+        page.contains(r#"title="a copy kept here, pinned at a time: it no longer syncs">📌"#),
         "{page}"
     );
     let page = peer.page("/g/cheapmo/files").await;
@@ -836,7 +836,7 @@ async fn reloading_applies_the_configurations_edited_by_hand_unless_one_is_inval
     assert!(notes.exists());
     assert_eq!(
         peer.call("daemon", "reload", json!({"yes": true})).await,
-        Ok(json!([{"group": "cheapmo", "download": "", "free": "1 file, 6 B", "freeze": ""}]))
+        Ok(json!([{"group": "cheapmo", "download": "", "free": "1 file, 6 B", "pin": ""}]))
     );
     assert_eq!(member().await, "carol");
     assert_eq!(selection(&peer).await, ["free +alice/", "free *.iso"]);

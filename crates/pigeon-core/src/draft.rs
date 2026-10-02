@@ -1,4 +1,4 @@
-//! Drafts: the new files in drop folders that a machine has not published
+//! Drafts: the new files at paths no member owns that a machine has not published
 //! yet, announced to the other machines with their size and the seconds
 //! left before they are published, so that two members adding the same
 //! path learn of each other in time. An announcement names every draft of
@@ -11,7 +11,7 @@ use crate::clock::MachineId;
 use crate::identity::{GroupId, MachineCert};
 use crate::path::GroupPath;
 
-/// A new file waiting in a drop folder.
+/// A new file waiting at a path no member owns.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub struct Draft {
     pub path: GroupPath,

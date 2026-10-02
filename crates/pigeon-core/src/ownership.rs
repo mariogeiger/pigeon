@@ -1,6 +1,6 @@
 //! Who owns a file: reading its path from right to left, file name
 //! included, the first tag `+<name>` naming a member makes the file that
-//! member's, and a path naming none is a drop file; every tag read before
+//! member's, and a path naming none belongs to no one; every tag read before
 //! it claims its name.
 
 use crate::name::{MemberName, OWNER_MARK};
@@ -14,7 +14,7 @@ pub enum Ownership {
     Personal(MemberName),
     /// The path names no member: a new file publishes itself once it has
     /// settled, and any other change becomes a suggestion.
-    Drop,
+    Unowned,
 }
 
 impl Ownership {
@@ -22,7 +22,7 @@ impl Ownership {
     pub fn owner(&self) -> Option<&MemberName> {
         match self {
             Self::Personal(owner) => Some(owner),
-            Self::Drop => None,
+            Self::Unowned => None,
         }
     }
 }
@@ -42,7 +42,7 @@ pub fn tags(name: &str) -> impl Iterator<Item = MemberName> + '_ {
 }
 
 /// Classifies `path`: reading from right to left, the first tag naming a
-/// member makes the file that member's; with none, it is a drop file. Also
+/// member makes the file that member's; with none, it belongs to no one. Also
 /// returns the names of the tags read before it, which a newcomer taking
 /// them would turn into the file's owner.
 pub fn classify(
@@ -56,7 +56,7 @@ pub fn classify(
         }
         claimed.push(name);
     }
-    (Ownership::Drop, claimed)
+    (Ownership::Unowned, claimed)
 }
 
 #[cfg(test)]
@@ -94,13 +94,13 @@ mod tests {
         );
         assert_eq!(
             classify_text("+build/a"),
-            (Ownership::Drop, vec![member("build")])
+            (Ownership::Unowned, vec![member("build")])
         );
         assert_eq!(
             classify_text("docs/notes+mario2.txt"),
-            (Ownership::Drop, vec![member("mario2")])
+            (Ownership::Unowned, vec![member("mario2")])
         );
-        assert_eq!(classify_text("c++/+-x/a"), (Ownership::Drop, vec![]));
+        assert_eq!(classify_text("c++/+-x/a"), (Ownership::Unowned, vec![]));
     }
 
     #[test]

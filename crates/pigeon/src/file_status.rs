@@ -1,6 +1,6 @@
 //! The statuses a row of the Files page shows, one emoji each, with the
 //! legend that explains them: whether this machine is catching up with a
-//! followed file or keeps a frozen copy, the edits and drafts waiting with
+//! followed file or keeps a pinned copy, the edits and drafts waiting with
 //! the time left, the drafts of one path that rival each other, and the
 //! changes suggested to the group. A file up to date, or neither followed
 //! nor held, shows nothing.
@@ -12,7 +12,7 @@ use serde_json::Value;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Status {
     Updating,
-    Frozen,
+    Pinned,
     Waiting,
     Deleting,
     Drafted,
@@ -24,7 +24,7 @@ pub enum Status {
 impl Status {
     pub const ALL: [Self; 8] = [
         Self::Updating,
-        Self::Frozen,
+        Self::Pinned,
         Self::Waiting,
         Self::Deleting,
         Self::Drafted,
@@ -37,7 +37,7 @@ impl Status {
     pub fn emoji(self) -> &'static str {
         match self {
             Self::Updating => "⏬",
-            Self::Frozen => "🧊",
+            Self::Pinned => "📌",
             Self::Waiting => "⏳",
             Self::Deleting => "🗑️",
             Self::Drafted => "✍️",
@@ -53,7 +53,7 @@ impl Status {
             Self::Updating => {
                 "followed, but missing or older here: the current version is on its way"
             }
-            Self::Frozen => "a copy kept here, frozen: it no longer syncs",
+            Self::Pinned => "a copy kept here, pinned at a time: it no longer syncs",
             Self::Waiting => "your edit waits to be published",
             Self::Deleting => "your deletion waits to be published",
             Self::Drafted => "another member is adding this file",
@@ -131,7 +131,7 @@ pub fn file_status(file: Option<&Value>, waiting: Option<&Value>, drafts: &[&Val
             @if file["cutoff"] == "PlusInfinity" && (!held || file["outdated"] == true) {
                 (mark(Status::Updating, None, &empty))
             }
-            @if pinned && held { (mark(Status::Frozen, None, &empty)) }
+            @if pinned && held { (mark(Status::Pinned, None, &empty)) }
         }
         @if let Some(waiting) = waiting {
             @let status = if waiting["deleted"] == true { Status::Deleting } else { Status::Waiting };
@@ -263,7 +263,7 @@ mod tests {
         assert_eq!(shown(&file(json!("MinusInfinity"), false, false)), "");
         assert!(shown(&file(followed.clone(), false, false)).contains("⏬"));
         assert!(shown(&file(followed, true, true)).contains("⏬"));
-        assert!(shown(&file(pinned.clone(), true, true)).contains("🧊"));
+        assert!(shown(&file(pinned.clone(), true, true)).contains("📌"));
         assert_eq!(shown(&file(pinned, false, false)), "");
     }
 

@@ -21,8 +21,8 @@ fn any_member_writes_any_file_and_is_its_author() {
     for patch in [
         bob.patch(4, vec![change("+mario/a", Some(2), Some(create.stamp()))]),
         bob.patch(5, vec![change("x/+Mario/b", Some(2), None)]),
-        bob.patch(6, vec![change("drop/c", Some(3), None)]),
-        mario.patch(7, vec![change("drop/c", Some(4), Some(bob.stamp(6)))]),
+        bob.patch(6, vec![change("shared/c", Some(3), None)]),
+        mario.patch(7, vec![change("shared/c", Some(4), Some(bob.stamp(6)))]),
     ] {
         ledger.insert(patch.clone()).unwrap();
         assert!(ledger.outcome(&patch.stamp()).unwrap().is_ok());
@@ -33,7 +33,7 @@ fn any_member_writes_any_file_and_is_its_author() {
         ("bob", Some(content(2)))
     );
     assert_eq!(
-        ledger.head(&key("drop/c")).unwrap().author.as_str(),
+        ledger.head(&key("shared/c")).unwrap().author.as_str(),
         "mario"
     );
 }
@@ -53,7 +53,7 @@ fn the_rightmost_tag_naming_a_member_names_the_owner() {
     assert_eq!(owner("+mario/+bob/a").as_deref(), Some("bob"));
     assert_eq!(owner("docs/texte+mario.txt").as_deref(), Some("mario"));
     assert_eq!(owner("+mario/+nobody/a").as_deref(), Some("mario"));
-    assert_eq!(owner("drop/a"), None);
+    assert_eq!(owner("shared/a"), None);
 }
 
 #[test]
@@ -98,7 +98,7 @@ fn a_suggestion_is_decided_once_and_as_it_was_seen() {
         11,
         vec![
             change(path.as_str(), None, Some(made.stamp())),
-            change("drop/a", Some(5), None),
+            change("shared/a", Some(5), None),
         ],
     );
     let discard = emmy.patch(12, vec![change(path.as_str(), None, Some(made.stamp()))]);
@@ -106,7 +106,7 @@ fn a_suggestion_is_decided_once_and_as_it_was_seen() {
         13,
         vec![
             change(path.as_str(), None, Some(made.stamp())),
-            change("drop/b", Some(6), None),
+            change("shared/b", Some(6), None),
         ],
     );
     for patch in [&late_validate, &discard, &validate] {
@@ -119,8 +119,8 @@ fn a_suggestion_is_decided_once_and_as_it_was_seen() {
             Rejection::AlreadyDecided(path.clone())
         );
     }
-    assert!(ledger.head(&key("drop/a")).unwrap().is_live());
-    assert!(ledger.head(&key("drop/b")).is_none());
+    assert!(ledger.head(&key("shared/a")).unwrap().is_live());
+    assert!(ledger.head(&key("shared/b")).is_none());
     let renewed = suggestion_path(&mario.stamp(20));
     let first = mario.patch(20, vec![change(renewed.as_str(), Some(1), None)]);
     let update = mario.patch(
@@ -230,8 +230,8 @@ fn a_tag_claims_a_name_until_no_path_bears_it() {
     let build = machine("build", 2);
     let mut ledger = Ledger::new(group());
     ledger.insert(mario.join(1)).unwrap();
-    let dropped = mario.patch(2, vec![change("docs/+Build/a", Some(1), None)]);
-    ledger.insert(dropped.clone()).unwrap();
+    let added = mario.patch(2, vec![change("docs/+Build/a", Some(1), None)]);
+    ledger.insert(added.clone()).unwrap();
     assert_eq!(
         ledger
             .tag_claims()
@@ -246,10 +246,7 @@ fn a_tag_claims_a_name_until_no_path_bears_it() {
         Rejection::ClaimedByTag(_)
     ));
     ledger
-        .insert(mario.patch(
-            4,
-            vec![change("docs/+Build/a", None, Some(dropped.stamp()))],
-        ))
+        .insert(mario.patch(4, vec![change("docs/+Build/a", None, Some(added.stamp()))]))
         .unwrap();
     assert_eq!(ledger.tag_claims().count(), 0);
     let joined = build.join(5);

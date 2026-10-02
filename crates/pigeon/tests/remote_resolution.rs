@@ -1,6 +1,6 @@
 //! A member who never looks at pigeon: while the family is apart, papy's
 //! laptop and desktop pile up every kind of suggestion, an edit that lost
-//! to a later one, a save over alice's file, a drop whose name he took
+//! to a later one, a save over alice's file, a new file at a path he took
 //! after alice and a name Windows cannot hold; alice decides them all from
 //! her machine, and papy's machines carry it out alone.
 
@@ -18,8 +18,8 @@ async fn suggestion_id(machine: &Machine, path: &str, author: &str) -> Value {
     suggestion["id"].clone()
 }
 
-/// Plays the family apart: alice drops a plan first, papy's laptop edits
-/// his budget, then his desktop drops his own plan under the same name,
+/// Plays the family apart: alice adds a plan first, papy's laptop edits
+/// his budget, then his desktop adds his own plan under the same name,
 /// edits the budget later, saves over alice's recipe and writes an invoice
 /// whose name Windows cannot hold.
 async fn apart(alice: &mut Machine, desktop: &mut Machine, laptop: &mut Machine) {

@@ -451,7 +451,7 @@ pub const ACTIONS: &[Action] = &[
     view(
         "config",
         "preview",
-        "Show what applying a configuration would download, free and freeze here, rule by rule: the text given, or config.toml as it is now",
+        "Show what applying a configuration would download, free and pin here, rule by rule: the text given, or config.toml as it is now",
         &[optional(
             "text",
             "A file holding the configuration, or - for standard input",
@@ -504,11 +504,11 @@ pub const ACTIONS: &[Action] = &[
         &[SUGGESTIONS],
     ),
     on_machine(Action {
-        columns: &["group", "download", "free", "freeze"],
+        columns: &["group", "download", "free", "pin"],
         ..action(
             "daemon",
             "reload",
-            "Restart every group from its files, applying the edits of each group's config.toml, unless one does not read; tell what they download, free and freeze here",
+            "Restart every group from its files, applying the edits of each group's config.toml, unless one does not read; tell what they download, free and pin here",
             &[YES],
         )
     }),

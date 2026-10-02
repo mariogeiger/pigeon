@@ -1,4 +1,4 @@
-//! Drafts announced among machines: a new file in a drop folder shows on
+//! Drafts announced among machines: a new file no member owns shows on
 //! the other machines with its author before it is published, two drafts
 //! of one path in any case are rivals, the later one learns it will become
 //! a suggestion and renames its draft to keep both, and a draft that goes
@@ -19,7 +19,7 @@ fn path(text: &str) -> GroupPath {
 #[tokio::test(flavor = "multi_thread")]
 async fn drafts_of_one_path_warn_both_members_until_one_goes() {
     let machines = group_with(&["alice", "bob"], |options| {
-        options.settle_drop = Duration::from_secs(600);
+        options.settle_draft = Duration::from_secs(600);
     })
     .await;
     joined(&machines).await;

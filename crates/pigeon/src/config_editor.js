@@ -1,7 +1,7 @@
 // The editor of a group's config.toml on its Overview page: the text,
 // highlighted as TOML by a layer drawn under it, which the daemon reads
 // after each keystroke to preview what saving would download, free and
-// freeze, rule by rule; a pin's row offers the times its files have
+// pin, rule by rule; a pin's row offers the times its files have
 // versions at, the present or any local time, and choosing one writes it
 // into its line, as does a pin line that misses its time, under the error
 // it gets. Save applies the whole text, asking first when it frees space,

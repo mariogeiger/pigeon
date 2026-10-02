@@ -45,8 +45,8 @@ pub struct PendingView {
     pub size: u64,
     /// Seconds until it is published, if it stays unchanged.
     pub due_in: u64,
-    /// Whether it is a new file at a path no member owns, which waits
-    /// longer.
+    /// Whether it is a draft, a new file at a path no member owns, which
+    /// other machines learn of and which waits longer.
     pub draft: bool,
     /// The cutoff the selection gives the file.
     pub cutoff: Cutoff,
@@ -54,19 +54,12 @@ pub struct PendingView {
     pub rivals: Vec<Rival>,
 }
 
-impl PendingView {
-    /// Whether it is a draft, which other machines learn of.
-    fn is_draft(&self) -> bool {
-        self.draft && !self.deleted
-    }
-}
-
 /// Tells each draft of `views` the other drafts of its path, and which of
 /// them are published no later.
 fn mark_rivals(views: &mut [PendingView]) {
     let mut by_key: BTreeMap<PathKey, Vec<usize>> = BTreeMap::new();
     for (index, view) in views.iter().enumerate() {
-        if view.is_draft() {
+        if view.draft {
             by_key.entry(view.path.key()).or_default().push(index);
         }
     }
@@ -93,11 +86,6 @@ fn left(settle: Duration, elapsed: Duration) -> u64 {
 }
 
 impl Inner {
-    /// Whether the edit `pending` is a draft, which other machines learn of.
-    fn is_draft(&self, pending: &Pending) -> bool {
-        pending.stat.is_some() && self.is_new_drop(&pending.path)
-    }
-
     /// Announces this machine's drafts, signed, when they changed since
     /// they were last announced.
     pub(crate) fn announce_drafts(&self, work: &mut Work) {
@@ -109,10 +97,7 @@ impl Inner {
         drafts.sort_by(|a, b| a.path.cmp(&b.path));
         let announced: Vec<(PathKey, u64, Instant)> = drafts
             .iter()
-            .map(|pending| {
-                let size = pending.stat.as_ref().map_or(0, |stat| stat.size);
-                (pending.path.key(), size, pending.since)
-            })
+            .map(|pending| (pending.path.key(), pending.size(), pending.since))
             .collect();
         if work.announced.as_ref() == Some(&announced) {
             return;
@@ -123,8 +108,8 @@ impl Inner {
                 .iter()
                 .map(|pending| Draft {
                     path: pending.path.clone(),
-                    size: pending.stat.as_ref().map_or(0, |stat| stat.size),
-                    due_in: left(self.settle_time(&pending.path), pending.since.elapsed()),
+                    size: pending.size(),
+                    due_in: left(self.settle_time(pending), pending.since.elapsed()),
                 })
                 .collect(),
         };
@@ -150,9 +135,9 @@ impl Engine {
                 author: inner.member.clone(),
                 here: true,
                 deleted: pending.stat.is_none(),
-                size: pending.stat.as_ref().map_or(0, |stat| stat.size),
-                due_in: left(inner.settle_time(&pending.path), pending.since.elapsed()),
-                draft: inner.is_new_drop(&pending.path),
+                size: pending.size(),
+                due_in: left(inner.settle_time(pending), pending.since.elapsed()),
+                draft: inner.is_draft(pending),
                 cutoff: work.config.selection.cutoff(&pending.path),
                 rivals: Vec::new(),
             })

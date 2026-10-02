@@ -31,7 +31,7 @@ fn options(lookup: &MemoryLookup) -> Options {
     Options {
         network: Network::Local(lookup.clone()),
         settle_personal: Duration::from_millis(100),
-        settle_drop: Duration::from_millis(400),
+        settle_draft: Duration::from_millis(400),
         rescan: Duration::from_secs(600),
         tick: Duration::from_millis(50),
         join_delay: Duration::from_millis(300),

@@ -256,11 +256,11 @@ fn follow(home: &Home, list: &mut Checklist, membership: &Membership) -> Result<
     let free = chosen.unchecked_here > 0
         && {
             let question = format!(
-                "{} files you unchecked are on this machine ({}): keep them, frozen, or free the space?",
+                "{} files you unchecked are on this machine ({}): pin them here as they are now, or free the space?",
                 chosen.unchecked_here,
                 render::size(chosen.unchecked_bytes)
             );
-            let choices = ["Keep a frozen copy".to_owned(), "Free the space".to_owned()];
+            let choices = ["Pin them here".to_owned(), "Free the space".to_owned()];
             ask::choose(&term, &question, &choices)? == 1
         };
     for (pattern, follows) in &chosen.toggles {

@@ -1,5 +1,5 @@
 //! Replacing the whole selection: the preview counts what the draft rules
-//! would download, free and freeze, and which rule decides each file; the
+//! would download, free and pin, and which rule decides each file; the
 //! replacement keeps the rules as given, refuses a stale version when given
 //! one, and frees only the copies nobody modified. A configuration edited
 //! by hand applies when the engine starts, and nothing writes over it
@@ -39,10 +39,10 @@ fn changed(file: &str, size: u64, rule: usize) -> Changed {
 }
 
 /// The three deltas of a preview, given as their files.
-fn deltas(download: Vec<Changed>, free: Vec<Changed>, freeze: Vec<Changed>) -> Vec<DeltaFiles> {
-    [Delta::Download, Delta::Free, Delta::Freeze]
+fn deltas(download: Vec<Changed>, free: Vec<Changed>, pin: Vec<Changed>) -> Vec<DeltaFiles> {
+    Delta::ALL
         .into_iter()
-        .zip([download, free, freeze])
+        .zip([download, free, pin])
         .map(|(delta, largest)| DeltaFiles {
             delta,
             total: Amount {
@@ -163,7 +163,7 @@ async fn a_draft_is_previewed_then_saved_whole_keeping_modified_copies() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_saved_draft_frees_untouched_copies_and_previews_freezes() {
+async fn a_saved_draft_frees_untouched_copies_and_previews_pins() {
     let machines = alice_and_bob().await;
     let bob = &machines[1];
     edit_notes(bob).await;
@@ -196,8 +196,8 @@ async fn a_saved_draft_frees_untouched_copies_and_previews_freezes() {
     .await;
     assert_eq!(bob.read("+bob/notes.txt").as_deref(), Some("changed"));
 
-    let frozen = vec![rule("+alice/", Cutoff::At(bob.engine.now()))];
-    let preview = bob.engine.preview(frozen).await.unwrap();
+    let pinned = vec![rule("+alice/", Cutoff::At(bob.engine.now()))];
+    let preview = bob.engine.preview(pinned).await.unwrap();
     assert_eq!(
         preview.deltas,
         deltas(

@@ -75,9 +75,8 @@ pub struct Options {
     /// How long an edit in a personal folder must stay unchanged before it
     /// is published.
     pub settle_personal: Duration,
-    /// The same for a new file at a path no member owns, a draft until
-    /// it is published.
-    pub settle_drop: Duration,
+    /// The same for a draft, a new file at a path no member owns.
+    pub settle_draft: Duration,
     /// How often the whole root is compared with the ledger.
     pub rescan: Duration,
     /// How often settled edits are published.
@@ -96,7 +95,7 @@ impl Default for Options {
             network: Network::Internet,
             announcement: Announcement::speaking_ours(env!("CARGO_PKG_VERSION"), "unknown"),
             settle_personal: Duration::from_secs(3),
-            settle_drop: Duration::from_secs(300),
+            settle_draft: Duration::from_secs(300),
             rescan: Duration::from_secs(600),
             tick: Duration::from_secs(1),
             join_delay: Duration::from_secs(5),
@@ -164,6 +163,13 @@ pub(crate) struct Pending {
     pub location: std::path::PathBuf,
     pub stat: Option<Stat>,
     pub since: Instant,
+}
+
+impl Pending {
+    /// The bytes of the file it leaves, none for a deletion.
+    pub fn size(&self) -> u64 {
+        self.stat.as_ref().map_or(0, |stat| stat.size)
+    }
 }
 
 /// What the loop changes as it works, behind one lock so that one task at
@@ -506,7 +512,7 @@ impl Engine {
         }
         let (wake, wakes) = mpsc::unbounded_channel();
         let (rescans, rescan_events) = mpsc::unbounded_channel();
-        let laid_out = state.placed()?;
+        let placed = state.placed()?;
         let inner = Arc::new(Inner {
             member: config.member.clone(),
             root: config.root.clone(),
@@ -527,7 +533,7 @@ impl Engine {
                 tags: Vec::new(),
                 join: JoinState::Pending,
                 protect_due: true,
-                placed: laid_out,
+                placed,
                 out_of_place: Vec::new(),
                 watcher: None,
                 watched: Vec::new(),

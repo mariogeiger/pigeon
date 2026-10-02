@@ -1,5 +1,5 @@
 //! Tests of placed folders: a folder moves to its destination behind a
-//! link and keeps syncing both ways, a missing destination freezes it
+//! link and keeps syncing both ways, a missing destination pauses it
 //! without publishing a deletion, even through a restart, and the folder
 //! moves back into the root.
 
@@ -88,7 +88,7 @@ async fn a_placed_folder_moves_behind_a_link_and_keeps_syncing() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_missing_destination_freezes_its_folder_until_it_returns() {
+async fn a_missing_destination_pauses_its_folder_until_it_returns() {
     let machines = group(&["alice", "bob"]).await;
     joined(&machines).await;
     let [alice, bob]: [Machine; 2] = machines.try_into().ok().unwrap();

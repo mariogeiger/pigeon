@@ -1,6 +1,6 @@
 //! Conflicts as a family meets them: machines that go offline and come
-//! back, edits of someone else's files, two people dropping the same file
-//! while apart, names one system cannot hold, actions that reach an owner
+//! back, edits of someone else's files, two people adding a file at the
+//! same path while apart, names one system cannot hold, actions that reach an owner
 //! who edited meanwhile, and files moved or deleted by someone who does
 //! not own them; each becomes a suggestion that anyone decides, played on
 //! daemons driven through the command line's client and edited on disk.
@@ -143,7 +143,7 @@ async fn an_edit_of_someone_elses_file_is_suggested_and_anyone_validates_it_once
 }
 
 #[tokio::test]
-async fn two_members_dropping_one_name_while_apart_both_keep_their_content() {
+async fn two_members_adding_one_path_while_apart_both_keep_their_content() {
     let internet = MemoryLookup::new();
     let (mut alice, mut desktop, mut laptop) = family(&internet).await;
     laptop.switch_off().await;

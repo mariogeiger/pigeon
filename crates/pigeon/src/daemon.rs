@@ -326,7 +326,7 @@ impl Daemon {
     /// `config.toml` apply; starts the groups added there and stops those
     /// gone. Changes nothing unless every configuration reads, nor, unless
     /// `yes`, if the edits free space on this machine. Returns, for each
-    /// group running before, what its edits download, free and freeze.
+    /// group running before, what its edits download, free and pin.
     ///
     /// # Errors
     ///

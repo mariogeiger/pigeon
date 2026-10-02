@@ -1,9 +1,10 @@
 //! Changing the selection: one rule at a time, or every rule at once after
-//! a preview of what the new rules would download, free and freeze on this
+//! a preview of what the new rules would download, free and pin on this
 //! machine. Held copies the change stops holding go, unless modified; those
 //! no rule held, such as files created here, stay.
 
 use std::collections::HashSet;
+use std::fmt;
 
 use anyhow::{Result, bail};
 use pigeon_core::path::{GroupPath, PathKey};
@@ -12,7 +13,7 @@ use pigeon_core::statement::is_statement;
 use pigeon_store::config::Config;
 use pigeon_store::disk::{self, fs_path};
 use pigeon_store::index::IndexEntry;
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
 use crate::disk_sync::{file_stat, target};
 use crate::engine::{Engine, Inner, Work};
@@ -44,16 +45,36 @@ pub struct RuleEffect {
     pub decides: Amount,
 }
 
-/// How a file's copy on this machine changes.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
-#[serde(rename_all = "lowercase")]
+/// How a file's copy on this machine changes, serialized as its name.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Delta {
     /// A version comes here.
     Download,
     /// The copy goes.
     Free,
-    /// The copy stays, frozen at a time.
-    Freeze,
+    /// The copy stays, pinned at a time.
+    Pin,
+}
+
+impl Delta {
+    /// Every delta, in the order a preview lists them.
+    pub const ALL: [Self; 3] = [Self::Download, Self::Free, Self::Pin];
+}
+
+impl fmt::Display for Delta {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Download => "download",
+            Self::Free => "free",
+            Self::Pin => "pin",
+        })
+    }
+}
+
+impl Serialize for Delta {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
 }
 
 /// One file whose copy changes, with the draft rule that decides it.
@@ -92,17 +113,18 @@ pub struct Preview {
     pub after: Amount,
     /// One effect per draft rule.
     pub rules: Vec<RuleEffect>,
-    /// Downloads, frees and freezes, in that order.
+    /// The files of each delta, in the order of [`Delta::ALL`].
     pub deltas: Vec<DeltaFiles>,
     pub own_freed: Vec<OwnFreed>,
 }
 
-/// The delta between the content held now and after, if any.
+/// The delta between the content held now and after, if any, `after`
+/// telling whether the change pins it.
 fn delta(now: Option<u64>, after: Option<(u64, bool)>, same: bool) -> Option<(Delta, u64)> {
     match (now, after) {
         (None, Some((size, _))) => Some((Delta::Download, size)),
         (Some(size), None) => Some((Delta::Free, size)),
-        (Some(_), Some((size, true))) => Some((Delta::Freeze, size)),
+        (Some(_), Some((size, true))) => Some((Delta::Pin, size)),
         (Some(_), Some((size, false))) if !same => Some((Delta::Download, size)),
         _ => None,
     }
@@ -180,15 +202,8 @@ impl Engine {
     /// Fails if the pattern is invalid or the configuration or the state
     /// cannot be written.
     pub async fn set_rule(&self, rule: Rule) -> Result<()> {
-        let inner = &self.inner;
-        let mut work = inner.work.lock().await;
-        let before = work.config.selection.clone();
-        let mut config = Config::clone(&work.config);
-        config.selection.set(rule)?;
-        work.config.save(config)?;
-        inner.free_unselected(&work, &before)?;
-        inner.refresh(&mut work, &Rescan::All).await;
-        Ok(())
+        self.change_selection(|selection| Ok(selection.set(rule)?))
+            .await
     }
 
     /// Replaces the whole selection with `rules`, kept as given, if it is
@@ -200,15 +215,28 @@ impl Engine {
     /// Fails if the selection changed since `version`, a pattern is
     /// invalid, or the configuration or the state cannot be written.
     pub async fn set_selection(&self, rules: Vec<Rule>, version: Option<&str>) -> Result<()> {
+        self.change_selection(|selection| {
+            let current = selection.version();
+            if let Some(version) = version.filter(|version| *version != current) {
+                bail!("the selection changed since version {version}: it is now at {current}");
+            }
+            *selection = Selection::exactly(rules)?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Saves the selection `change` makes of the current one, removes the
+    /// held copies nobody modified that it stops holding, and rescans.
+    async fn change_selection(
+        &self,
+        change: impl FnOnce(&mut Selection) -> Result<()>,
+    ) -> Result<()> {
         let inner = &self.inner;
         let mut work = inner.work.lock().await;
-        let current = work.config.selection.version();
-        if let Some(version) = version.filter(|version| *version != current) {
-            bail!("the selection changed since version {version}: it is now at {current}");
-        }
         let before = work.config.selection.clone();
         let mut config = Config::clone(&work.config);
-        config.selection = Selection::exactly(rules)?;
+        change(&mut config.selection)?;
         work.config.save(config)?;
         inner.free_unselected(&work, &before)?;
         inner.refresh(&mut work, &Rescan::All).await;
@@ -253,10 +281,10 @@ impl Engine {
             let kept = modified.contains(key)
                 || (indexed.contains(key) && current == Cutoff::MinusInfinity);
             let after = target(&ledger, key, cutoff, kept).and_then(|version| version.content);
-            let freezes = matches!(cutoff, Cutoff::At(_)) && !matches!(current, Cutoff::At(_));
+            let pins = matches!(cutoff, Cutoff::At(_)) && !matches!(current, Cutoff::At(_));
             let same = now.map(|content| content.hash) == after.map(|content| content.hash);
             let now = now.map(|content| content.size);
-            let after = after.map(|content| (content.size, freezes));
+            let after = after.map(|content| (content.size, pins));
             tally.totals(now, after.map(|(size, _)| size));
             if let Some((delta, size)) = delta(now, after, same) {
                 let file = Changed {
@@ -271,26 +299,31 @@ impl Engine {
     }
 }
 
-/// A preview being counted, file by file.
+/// A preview being counted, file by file, each delta listing every file
+/// until the count ends.
 struct Tally {
     preview: Preview,
-    changed: [Vec<Changed>; 3],
-    totals: [Amount; 3],
 }
 
 impl Tally {
     fn new(version: String, rules: usize) -> Self {
+        let deltas = Delta::ALL
+            .into_iter()
+            .map(|delta| DeltaFiles {
+                delta,
+                total: Amount::default(),
+                largest: Vec::new(),
+            })
+            .collect();
         Self {
             preview: Preview {
                 version,
                 now: Amount::default(),
                 after: Amount::default(),
                 rules: vec![RuleEffect::default(); rules],
-                deltas: Vec::new(),
+                deltas,
                 own_freed: Vec::new(),
             },
-            changed: Default::default(),
-            totals: [Amount::default(); 3],
         }
     }
 
@@ -323,8 +356,6 @@ impl Tally {
     /// Counts a file that `delta` changes, one of this member's own when
     /// `own`.
     fn change(&mut self, delta: Delta, file: Changed, own: bool) {
-        let slot = delta as usize;
-        self.totals[slot].add(file.size);
         if delta == Delta::Free && own {
             let freed = &mut self.preview.own_freed;
             if let Some(known) = freed.iter_mut().find(|known| known.rule == file.rule) {
@@ -338,22 +369,19 @@ impl Tally {
                 });
             }
         }
-        self.changed[slot].push(file);
+        let deltas = &mut self.preview.deltas;
+        if let Some(files) = deltas.iter_mut().find(|files| files.delta == delta) {
+            files.total.add(file.size);
+            files.largest.push(file);
+        }
     }
 
     fn preview(self) -> Preview {
         let mut preview = self.preview;
         preview.own_freed.sort_by_key(|freed| freed.rule);
-        preview.deltas = [Delta::Download, Delta::Free, Delta::Freeze]
-            .into_iter()
-            .zip(self.totals)
-            .zip(self.changed)
-            .map(|((delta, total), files)| DeltaFiles {
-                delta,
-                total,
-                largest: largest(files),
-            })
-            .collect();
+        for files in &mut preview.deltas {
+            files.largest = largest(std::mem::take(&mut files.largest));
+        }
         preview
     }
 }

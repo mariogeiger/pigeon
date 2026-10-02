@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use pigeon_core::clock::Stamp;
-use pigeon_core::ledger::Version;
+use pigeon_core::ledger::{Ledger, Version};
+use pigeon_core::name::MemberName;
 use pigeon_core::patch::{Change, Content, ContentHash, VersionRef};
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::selection::Cutoff;
@@ -19,6 +20,34 @@ use pigeon_store::index::{IndexEntry, Seen, hash_file};
 
 use crate::disk_sync::{change_at, file_stat, stat_time};
 use crate::engine::{Inner, JoinState, Pending, Work, now};
+
+/// What a machine publishes by itself, rather than suggest it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Publishes {
+    /// A change of its member's personal files.
+    Personal,
+    /// A new file at a path no member owns, where no file lives: a draft,
+    /// which waits longer.
+    Draft,
+}
+
+/// What a machine of `member` publishes by itself of a change at `path`,
+/// which leaves a file there when `adds`, if anything: never a statement.
+fn publishes(
+    ledger: &Ledger,
+    member: &MemberName,
+    path: &GroupPath,
+    adds: bool,
+) -> Option<Publishes> {
+    if is_statement(&path.key()) {
+        return None;
+    }
+    match ledger.owner(path) {
+        Some(owner) => (owner == *member).then_some(Publishes::Personal),
+        None => (adds && !ledger.head(&path.key()).is_some_and(Version::is_live))
+            .then_some(Publishes::Draft),
+    }
+}
 
 /// An edit that settled: the change it makes, the index entry it leaves,
 /// when the disk changed, in NTP64, and what it does to the content the
@@ -87,20 +116,19 @@ impl Inner {
         Ok(content)
     }
 
-    /// Whether a file at `path` would be a new drop: outside the statements
-    /// folder, in no member's personal path, where no file lives.
-    pub(crate) fn is_new_drop(&self, path: &GroupPath) -> bool {
+    /// Whether the edit `pending` is a draft, which other machines learn
+    /// of.
+    pub(crate) fn is_draft(&self, pending: &Pending) -> bool {
         let ledger = self.ledger.lock();
-        !is_statement(&path.key())
-            && ledger.owner(path).is_none()
-            && !ledger.head(&path.key()).is_some_and(Version::is_live)
+        publishes(&ledger, &self.member, &pending.path, pending.stat.is_some())
+            == Some(Publishes::Draft)
     }
 
-    /// How long an edit at `path` must stay unchanged before it is
-    /// published: longer for a new drop, a draft until then.
-    pub(crate) fn settle_time(&self, path: &GroupPath) -> Duration {
-        if self.is_new_drop(path) {
-            self.options.settle_drop
+    /// How long the edit `pending` must stay unchanged before it is
+    /// published or suggested: longer for a draft.
+    pub(crate) fn settle_time(&self, pending: &Pending) -> Duration {
+        if self.is_draft(pending) {
+            self.options.settle_draft
         } else {
             self.options.settle_personal
         }
@@ -177,7 +205,7 @@ impl Inner {
             .pending
             .iter()
             .filter(|(key, pending)| {
-                at_once.contains(key) || pending.since.elapsed() >= self.settle_time(&pending.path)
+                at_once.contains(key) || pending.since.elapsed() >= self.settle_time(pending)
             })
             .map(|(key, _)| key.clone())
             .collect();
@@ -242,8 +270,8 @@ impl Inner {
 
     /// Why the rules leave `unit` to the group, if they do: an edit made
     /// before a version this machine had not seen yet lost to it, and
-    /// this machine publishes by itself only its member's personal files
-    /// and new drops, outside the statements folder and pinned files.
+    /// this machine publishes by itself only what [`publishes`] says,
+    /// outside pinned files.
     fn reason(&self, work: &Work, unit: &[Settled]) -> Option<Reason> {
         let ledger = self.ledger.lock();
         let superseded = unit.iter().any(|settled| {
@@ -256,14 +284,8 @@ impl Inner {
         }
         let automatic = unit.iter().all(|settled| {
             let path = &settled.change.path;
-            let own = match ledger.owner(path) {
-                Some(owner) => owner == self.member,
-                None => {
-                    settled.change.content.is_some()
-                        && !ledger.head(&settled.key).is_some_and(Version::is_live)
-                }
-            };
-            own && !is_statement(&path.key())
+            let adds = settled.change.content.is_some();
+            publishes(&ledger, &self.member, path, adds).is_some()
                 && !matches!(work.config.selection.cutoff(path), Cutoff::At(_))
         });
         (!automatic).then_some(Reason::OutsideRules)

@@ -21,7 +21,7 @@ fn preview() -> Value {
         "deltas": [
             { "delta": "download", "total": { "files": 1, "bytes": 180_000_000 }, "largest": [{ "path": "+mario/a b.txt", "size": 180_000_000, "rule": 0 }] },
             { "delta": "free", "total": { "files": 134, "bytes": 890_000_000 }, "largest": listed },
-            { "delta": "freeze", "total": { "files": 0, "bytes": 0 }, "largest": [] },
+            { "delta": "pin", "total": { "files": 0, "bytes": 0 }, "largest": [] },
         ],
         "own_freed": [{ "rule": 1, "total": { "files": 2, "bytes": 5000 } }, { "rule": null, "total": { "files": 1, "bytes": 10 } }],
     })
@@ -66,7 +66,7 @@ fn the_panel_lists_the_largest_files_then_counts_the_rest() {
         .to_owned();
     assert!(panel.contains("download: +1 file, +180.0 MB"), "{panel}");
     assert!(panel.contains("free: -134 files, -890.0 MB"), "{panel}");
-    assert!(!panel.contains("frozen:"), "{panel}");
+    assert!(!panel.contains("pin:"), "{panel}");
     assert!(panel.contains("… and 34 more (889.9 MB)"), "{panel}");
     assert!(panel.contains("href=\"/g/g/files?under=big\""), "{panel}");
     assert!(
