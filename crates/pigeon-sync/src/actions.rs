@@ -9,7 +9,6 @@ use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::retention::Retention;
 use pigeon_store::config::Config;
 
-use crate::disk_sync::Probe;
 use crate::engine::{Engine, Inner, Work};
 
 impl Inner {
@@ -20,9 +19,11 @@ impl Inner {
         paths: &[GroupPath],
     ) -> Result<()> {
         let keys: Vec<PathKey> = paths.iter().map(GroupPath::key).collect();
+        let mut prober = self.prober(work);
         for path in paths {
-            let probe = Probe::at(&self.root, path.clone());
-            self.sync_key(work, &path.key(), Some(probe)).await?;
+            let probe = prober.probe(path);
+            self.sync_key(work, &mut prober, &path.key(), Some((path.clone(), probe)))
+                .await?;
         }
         self.publish_settled(work, &keys).await;
         Ok(())

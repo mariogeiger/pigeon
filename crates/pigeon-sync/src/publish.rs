@@ -18,7 +18,7 @@ use pigeon_core::statement::{Reason, SuggestedChange, is_statement};
 use pigeon_store::disk::Stat;
 use pigeon_store::index::{IndexEntry, Seen, hash_file, now_nanos};
 
-use crate::disk_sync::{change_at, file_stat, stat_time};
+use crate::disk_sync::{change_at, probed, stat_time};
 use crate::engine::{Inner, JoinState, Pending, Work, now};
 
 /// What a machine publishes by itself, rather than suggest it.
@@ -236,10 +236,13 @@ impl Inner {
         due
     }
 
-    /// Takes the pending edits at `due`, with the changes they make. An
-    /// edit that changed again waits anew.
+    /// Takes the pending edits at `due`, with the changes they make, as a
+    /// new look at the disk confirms them. An edit that changed again
+    /// waits anew; one at a path now ignored, or where nothing can be
+    /// told, is dropped.
     async fn take_settled(&self, work: &mut Work, due: &BTreeSet<PathKey>) -> Vec<Settled> {
         let mut settled = Vec::new();
+        let mut prober = self.prober(work);
         for key in due {
             let Some(pending) = work.pending.get(key).cloned() else {
                 continue;
@@ -247,13 +250,25 @@ impl Inner {
             if work.is_out_of_place(&pending.path) {
                 continue;
             }
-            let stat = file_stat(&pending.location);
-            if stat != pending.stat {
-                let since = Instant::now();
+            let probe = prober.probe(&pending.path);
+            let now = match probed(&self.root, &pending.path, probe) {
+                Ok(Some(now)) => now,
+                Ok(None) => {
+                    work.pending.remove(key);
+                    continue;
+                }
+                Err(reason) => {
+                    work.pending.remove(key);
+                    self.report(reason);
+                    continue;
+                }
+            };
+            if now.stat != pending.stat || now.path != pending.path {
                 let again = Pending {
-                    stat,
-                    since,
-                    ..pending
+                    path: now.path,
+                    location: now.location,
+                    stat: now.stat,
+                    since: Instant::now(),
                 };
                 work.pending.insert(key.clone(), again);
                 continue;
@@ -342,7 +357,8 @@ impl Inner {
     }
 
     /// The change a settled edit makes, with the index entry it leaves, or
-    /// `None` when the file only changed its time.
+    /// `None` when the file only changed its time: the same content where
+    /// the disk spelled the same path.
     async fn prepare(
         &self,
         work: &mut Work,
@@ -350,6 +366,7 @@ impl Inner {
         pending: &Pending,
     ) -> Result<Option<Settled>> {
         let entry = self.state.index_entry(key)?;
+        let spelled = entry.as_ref().map(|entry| entry.path.clone());
         let synced = entry.as_ref().and_then(|entry| entry.synced);
         let synced_change = self.synced_at(key)?;
         let seen = match pending.stat {
@@ -366,10 +383,12 @@ impl Inner {
             seen,
             synced,
         };
-        if content
-            == synced_change
-                .as_ref()
-                .and_then(|(_, change)| change.content)
+        let same_path = spelled.is_none_or(|spelled| spelled == pending.path);
+        if same_path
+            && content
+                == synced_change
+                    .as_ref()
+                    .and_then(|(_, change)| change.content)
         {
             if entry.synced.is_some() || entry.seen.is_some() {
                 self.state.update_index([(key, Some(&entry))])?;

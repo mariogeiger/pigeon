@@ -46,16 +46,22 @@ impl Seen {
     }
 
     /// Whether a file whose metadata is now `stat` still holds this content
-    /// as far as metadata tells: the same size, time, executable bit where
-    /// the system has one, and inode where both know it, read long enough
-    /// after its last change.
+    /// as far as metadata tells: it [matches](Self::matches), and was read
+    /// long enough after its last change.
     #[must_use]
     pub fn holds(&self, stat: &Stat) -> bool {
+        !self.racy && self.matches(stat)
+    }
+
+    /// Whether `stat` shows the metadata this content was read with: the
+    /// same size, time, executable bit where the system has one, and inode
+    /// where both know it.
+    #[must_use]
+    pub fn matches(&self, stat: &Stat) -> bool {
         let known = |now: Option<(u64, u64)>, then: Option<(u64, u64)>| {
             now.zip(then).is_none_or(|(now, then)| now == then)
         };
-        !self.racy
-            && self.stat.size == stat.size
+        self.stat.size == stat.size
             && self.stat.modified == stat.modified
             && stat
                 .executable

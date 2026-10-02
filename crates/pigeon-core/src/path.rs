@@ -31,6 +31,8 @@ pub enum PathError {
     Trailing(String),
     #[error("{0:?} is longer than 255 bytes")]
     Long(String),
+    #[error("{0:?} is not in NFC form, which systems write differently")]
+    Unnormalized(String),
 }
 
 const FORBIDDEN: &[char] = &['<', '>', ':', '"', '\\', '|', '?', '*'];
@@ -65,6 +67,18 @@ fn check_name(name: &str) -> Result<(), PathError> {
         return Err(PathError::Long(name.to_owned()));
     }
     Ok(())
+}
+
+/// Checks that `name`, spelled exactly so, is one portable name of a
+/// group path, as a name read from a disk must be.
+///
+/// # Errors
+/// Returns the first rule it breaks.
+pub fn check_disk_name(name: &str) -> Result<(), PathError> {
+    if name.nfc().ne(name.chars()) {
+        return Err(PathError::Unnormalized(name.to_owned()));
+    }
+    check_name(name)
 }
 
 impl GroupPath {
@@ -190,6 +204,16 @@ mod tests {
             GroupPath::parse(decomposed).unwrap().as_str(),
             "caf\u{e9}.txt"
         );
+    }
+
+    #[test]
+    fn a_disk_name_must_be_spelled_in_nfc() {
+        assert!(check_disk_name("caf\u{e9}.txt").is_ok());
+        assert_eq!(
+            check_disk_name("caf\u{65}\u{301}.txt"),
+            Err(PathError::Unnormalized("caf\u{65}\u{301}.txt".into()))
+        );
+        assert!(check_disk_name("a:b").is_err());
     }
 
     #[test]

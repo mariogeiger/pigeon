@@ -17,31 +17,44 @@ use pigeon_core::selection::Cutoff;
 use pigeon_core::statement::{Reason, SuggestedChange, is_statement};
 use pigeon_store::disk::{self, Stat, fs_path};
 use pigeon_store::index::{IndexEntry, Seen, now_nanos, observe};
-use pigeon_store::scan::scan;
+use pigeon_store::probe::{Probe, Prober};
 use pigeon_store::state::Kept;
 
 use crate::engine::{Inner, Pending, Work};
 use crate::reconcile::{Disk, KeptSuggestion, Step, View, reconcile};
 use crate::watch::Rescan;
 
-/// Where a path is on disk and what is there.
+/// Where a path is on disk, as the disk spells it, and whether a file is
+/// there, as a probe told it.
 #[derive(Clone, Debug)]
-pub(crate) struct Probe {
+pub(crate) struct Probed {
     pub path: GroupPath,
     pub location: PathBuf,
     /// The file's metadata, `None` when no file is there.
     pub stat: Option<Stat>,
 }
 
-impl Probe {
-    pub(crate) fn at(root: &Path, path: GroupPath) -> Self {
-        let location = fs_path(root, &path);
-        let stat = file_stat(&location);
-        Self {
-            path,
-            location,
-            stat,
-        }
+/// What a probe of `sought` under `root` tells pigeon to act on: a file
+/// or none; nothing at an ignored path; and why nothing can be told
+/// otherwise.
+pub(crate) fn probed(
+    root: &Path,
+    sought: &GroupPath,
+    probe: Probe,
+) -> Result<Option<Probed>, String> {
+    match probe {
+        Probe::Present(found) => Ok(Some(Probed {
+            path: found.path,
+            location: found.location,
+            stat: Some(found.stat),
+        })),
+        Probe::Absent => Ok(Some(Probed {
+            path: sought.clone(),
+            location: fs_path(root, sought),
+            stat: None,
+        })),
+        Probe::Ignored => Ok(None),
+        Probe::Unknown(reason) => Err(reason),
     }
 }
 
@@ -87,10 +100,11 @@ pub(crate) fn change_at(ledger: &Ledger, stamp: &Stamp, key: &PathKey) -> Option
 }
 
 /// How the disk at `probe` compares with the synced content, and what it
-/// holds when known. The file is hashed only when its metadata changed and
-/// `hash` asks for its content.
+/// holds when known. A file whose metadata changed is hashed only when
+/// `hash` asks for its content; one whose metadata did not is hashed again
+/// only while it was last read too soon after its change to be sure.
 fn compare_disk(
-    probe: &Probe,
+    probe: &Probed,
     previous: Option<Seen>,
     synced: Option<Content>,
     hash: bool,
@@ -103,10 +117,11 @@ fn compare_disk(
         };
         return Ok((disk, None));
     };
-    let seen = match previous.filter(|seen| seen.stat == stat) {
-        Some(seen) => Some(seen),
-        None if !hash => None,
-        None => Some(observe(&probe.location, stat, previous.as_ref())?),
+    let unchanged = previous.is_some_and(|seen| seen.matches(&stat));
+    let seen = if hash || unchanged {
+        Some(observe(&probe.location, stat, previous.as_ref())?)
+    } else {
+        None
     };
     let disk = if seen.is_some_and(|seen| Some(seen.content) == synced) {
         Disk::Unchanged
@@ -157,6 +172,16 @@ impl Inner {
         }
     }
 
+    /// A look at the disk through the placed folders in place.
+    pub(crate) fn prober(&self, work: &Work) -> Prober {
+        let placed: Vec<GroupPath> = work
+            .in_place()
+            .into_iter()
+            .map(|place| place.folder)
+            .collect();
+        Prober::new(&self.root, &placed)
+    }
+
     /// Compares every path the scan, the index, and, for the whole root,
     /// the ledger know with the ledger.
     pub(crate) async fn refresh(self: &Arc<Self>, work: &mut Work, rescan: &Rescan) {
@@ -164,33 +189,24 @@ impl Inner {
             return;
         }
         self.lay_out(work);
-        let root = self.root.clone();
         let under = match rescan {
             Rescan::Under(path) => Some(path.clone()),
             Rescan::All => None,
         };
-        let placed: Vec<GroupPath> = work
-            .in_place()
-            .into_iter()
-            .map(|place| place.folder)
-            .collect();
-        let found = scan(&root, under.as_ref(), &placed);
-        let mut probes: BTreeMap<PathKey, Option<Probe>> = found
+        let mut prober = self.prober(work);
+        let found = prober.scan(under.as_ref());
+        for error in &found.errors {
+            self.report(error);
+        }
+        let mut sought: BTreeMap<PathKey, Option<(GroupPath, Probe)>> = found
             .files
             .into_iter()
-            .map(|(key, file)| {
-                let probe = Probe {
-                    path: file.path,
-                    location: file.location,
-                    stat: Some(file.stat),
-                };
-                (key, Some(probe))
-            })
+            .map(|(key, file)| (key, Some((file.path.clone(), Probe::Present(file)))))
             .collect();
         match self.state.index(under.as_ref()) {
             Ok(entries) => {
                 for entry in entries {
-                    probes.entry(entry.path.key()).or_insert(None);
+                    sought.entry(entry.path.key()).or_insert(None);
                 }
             }
             Err(error) => self.report(error),
@@ -200,25 +216,25 @@ impl Inner {
                 .as_ref()
                 .is_none_or(|under| pending.path.is_within(under))
             {
-                probes.entry(key.clone()).or_insert(None);
+                sought.entry(key.clone()).or_insert(None);
             }
         }
         if under.is_none() {
             let ledger = self.ledger.lock();
             for key in ledger.keys() {
-                probes.entry(key.clone()).or_insert(None);
+                sought.entry(key.clone()).or_insert(None);
             }
         }
-        for skipped in found.skipped {
+        for unportable in found.unportable {
             if let Err(error) = self
-                .suggest_unportable(work, &skipped.location, skipped.reason)
+                .suggest_unportable(work, &unportable.location, unportable.reason)
                 .await
             {
                 self.report(error);
             }
         }
-        for (key, probe) in probes {
-            if let Err(error) = self.sync_key(work, &key, probe).await {
+        for (key, probe) in sought {
+            if let Err(error) = self.sync_key(work, &mut prober, &key, probe).await {
                 self.report(format!("{}: {error:#}", key.as_str()));
             }
         }
@@ -230,39 +246,30 @@ impl Inner {
             return;
         }
         self.lay_out(work);
+        let mut prober = self.prober(work);
         for key in keys {
-            if let Err(error) = self.sync_key(work, key, None).await {
+            if let Err(error) = self.sync_key(work, &mut prober, key, None).await {
                 self.report(format!("{}: {error:#}", key.as_str()));
             }
         }
     }
 
-    /// Brings one path into agreement, unless it lies in a folder out of
-    /// place, whose files are not where pigeon can see them.
+    /// Brings one path into agreement, given the path probed there and what
+    /// the probe found, or else probing the path the index, the ledger or
+    /// a pending edit knows; unless it lies in a folder out of place, whose
+    /// files are not where pigeon can see them. Nothing is done at an
+    /// ignored path, nor where nothing can be told, which is reported.
     pub(crate) async fn sync_key(
         self: &Arc<Self>,
         work: &mut Work,
+        prober: &mut Prober,
         key: &PathKey,
-        probe: Option<Probe>,
+        probe: Option<(GroupPath, Probe)>,
     ) -> Result<()> {
         let entry = self.state.index_entry(key)?;
-        let root = self.root.clone();
-        let probe = if let Some(probe) = probe {
-            probe
-        } else {
-            let path = match &entry {
-                Some(entry) => entry.path.clone(),
-                None => match (self.ledger.lock().head(key), work.pending.get(key)) {
-                    (Some(head), _) => head.path.clone(),
-                    (None, Some(pending)) => pending.path.clone(),
-                    (None, None) => return Ok(()),
-                },
-            };
-            Probe::at(&root, path)
-        };
-        if work.is_out_of_place(&probe.path) {
+        let Some(probe) = self.probe_key(work, prober, key, entry.as_ref(), probe) else {
             return Ok(());
-        }
+        };
         let look = self.look(work, key, &probe.path, entry.as_ref());
         let synced_stamp = entry.as_ref().and_then(|entry| entry.synced);
         let target_stamp = look.target.as_ref().map(|version| version.stamp);
@@ -272,15 +279,31 @@ impl Inner {
         let record = self.state.kept_at(probe.path.as_str())?;
         let hash = moved || record.is_some();
         let (disk, seen) = compare_disk(&probe, previous, synced_content, hash)?;
+        let renamed = probe.stat.is_some()
+            && entry
+                .as_ref()
+                .is_some_and(|entry| entry.seen.is_some() && entry.path != probe.path);
+        let disk = if renamed { Disk::Changed } else { disk };
         let disk_content = match (probe.stat, seen) {
             (None, _) => Some(None),
             (Some(_), Some(seen)) => Some(Some(seen.content)),
             (Some(_), None) => None,
         };
-        if moved && disk_content == Some(look.target.as_ref().and_then(|version| version.content)) {
+        let in_place = match (&look.target, probe.stat) {
+            (Some(version), Some(_)) => prober.locate(&version.path).1 == probe.location,
+            _ => true,
+        };
+        if moved
+            && in_place
+            && disk_content == Some(look.target.as_ref().and_then(|version| version.content))
+        {
             work.pending.remove(key);
             let adopted = look.target.map(|version| IndexEntry {
-                path: version.path,
+                path: if probe.stat.is_some() {
+                    probe.path.clone()
+                } else {
+                    version.path
+                },
                 seen,
                 synced: Some(version.stamp),
             });
@@ -318,7 +341,54 @@ impl Inner {
         if step != Step::Settle {
             work.pending.remove(key);
         }
-        self.carry_out(work, key, &probe, step, &look).await
+        self.carry_out(work, prober, key, &probe, step, &look).await
+    }
+
+    /// What the disk holds at `key`: what `probe` found at the path
+    /// probed, or else what a probe finds at the path the index, the
+    /// ledger or a pending edit knows. Nothing is told in a folder out of
+    /// place, at an ignored path or where nothing can be told, which is
+    /// reported; no edit waits at such a path.
+    fn probe_key(
+        &self,
+        work: &mut Work,
+        prober: &mut Prober,
+        key: &PathKey,
+        entry: Option<&IndexEntry>,
+        probe: Option<(GroupPath, Probe)>,
+    ) -> Option<Probed> {
+        let (sought, probe) = if let Some(probe) = probe {
+            probe
+        } else {
+            let path = match entry {
+                Some(entry) => entry.path.clone(),
+                None => match (self.ledger.lock().head(key), work.pending.get(key)) {
+                    (Some(head), _) => head.path.clone(),
+                    (None, Some(pending)) => pending.path.clone(),
+                    (None, None) => return None,
+                },
+            };
+            if work.is_out_of_place(&path) {
+                return None;
+            }
+            let probe = prober.probe(&path);
+            (path, probe)
+        };
+        if work.is_out_of_place(&sought) {
+            return None;
+        }
+        match probed(&self.root, &sought, probe) {
+            Ok(Some(probe)) => Some(probe),
+            Ok(None) => {
+                work.pending.remove(key);
+                None
+            }
+            Err(reason) => {
+                work.pending.remove(key);
+                self.report(reason);
+                None
+            }
+        }
     }
 
     /// Whether the disk at `path`, holding `disk_content`, shows what
@@ -386,8 +456,9 @@ impl Inner {
     async fn carry_out(
         self: &Arc<Self>,
         work: &mut Work,
+        prober: &mut Prober,
         key: &PathKey,
-        probe: &Probe,
+        probe: &Probed,
         step: Step,
         look: &Look,
     ) -> Result<()> {
@@ -411,7 +482,7 @@ impl Inner {
                 }
             }
             Step::Materialize => {
-                self.materialize(work, key, probe, look.target.as_ref())
+                self.materialize(work, prober, key, probe, look.target.as_ref())
                     .await?;
             }
         }
@@ -419,12 +490,14 @@ impl Inner {
     }
 
     /// Makes the disk show `target`, fetching its content first if needed,
+    /// into the folders the disk holds under any spelling of their names,
     /// and forgets what a suggestion of this machine kept there.
     async fn materialize(
         self: &Arc<Self>,
         work: &mut Work,
+        prober: &mut Prober,
         key: &PathKey,
-        probe: &Probe,
+        probe: &Probed,
         target: Option<&Version>,
     ) -> Result<()> {
         let root = &self.root;
@@ -447,16 +520,19 @@ impl Inner {
             self.fetch(work, content.hash, version.stamp.machine, key.clone());
             return Ok(());
         }
-        let location = fs_path(root, &version.path);
+        let (path, location, grows) = prober.locate(&version.path);
         if probe.stat.is_some() && probe.location != location {
             disk::remove(root, &probe.location)?;
         }
         self.blobs
             .export(&content.hash, &location, content.executable)
             .await?;
+        if let Some(folder) = grows {
+            prober.forget(&folder);
+        }
         let seen = file_stat(&location).map(|stat| Seen::read(stat, content, now_nanos()));
         let entry = IndexEntry {
-            path: version.path.clone(),
+            path,
             seen,
             synced: Some(version.stamp),
         };
