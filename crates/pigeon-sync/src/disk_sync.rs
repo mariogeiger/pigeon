@@ -463,9 +463,10 @@ impl Inner {
 
     /// Whether the disk at `path`, holding `disk_content`, shows what
     /// `record` says a suggestion of this machine keeps there, and whether
-    /// the group decided it; a record the disk no longer shows is
-    /// forgotten, as the disk moved on, and so is one of a suggestion the
-    /// ledger refused, which leaves the disk's content an edit again.
+    /// the group decided it; a record of a content the disk does not hold
+    /// is forgotten, as there is nothing of the disk's to keep, and so is
+    /// one of a suggestion the ledger refused, which leaves the disk's
+    /// content an edit again.
     fn kept(
         &self,
         path: &GroupPath,

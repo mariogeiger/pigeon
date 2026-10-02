@@ -1,8 +1,8 @@
 //! Whether a group converged, as each test that leaves its group at rest
 //! asks last: every machine knows the same patches, files and suggestions
 //! and waits for nothing; each disk shows the current version of every file
-//! its machine follows, what its own suggestions keep, and nothing the
-//! group does not know; no machine reported an error but those the
+//! its machine follows, or what one of its own suggestions keeps there, and
+//! nothing the group does not know; no machine reported an error but those the
 //! scenario makes; and some machine holds the content of every version in
 //! the history of every file.
 
@@ -68,17 +68,18 @@ fn files_under(folder: &Path, files: &mut BTreeSet<PathBuf>) {
 }
 
 /// How `machine`'s disk differs from what it must show, if it does: the
-/// current version of each file it follows, but where one of its own live
-/// suggestions keeps another or none, and no file the group does not know.
-/// A file it pins or leaves free may show any version or none.
+/// current version of each file it follows, or what one of its own live
+/// suggestions keeps there, which the disk shows only if it held it when
+/// the group did not take it; and no file the group does not know. A file
+/// it pins or leaves free may show any version or none.
 async fn disk_difference(machine: &Machine) -> Option<String> {
     let engine = &machine.engine;
-    let mut shown: BTreeMap<PathBuf, Option<Content>> = BTreeMap::new();
+    let mut shown: BTreeMap<PathBuf, Vec<Option<Content>>> = BTreeMap::new();
     let mut known = BTreeSet::new();
     for file in engine.list(None).await.unwrap() {
         let location = fs_path(&machine.root, &file.path);
         if file.cutoff == Cutoff::PlusInfinity {
-            shown.insert(location.clone(), Some(file.content));
+            shown.insert(location.clone(), vec![Some(file.content)]);
         }
         known.insert(location);
     }
@@ -86,7 +87,9 @@ async fn disk_difference(machine: &Machine) -> Option<String> {
         if view.machine == engine.machine() {
             for change in view.changes {
                 let location = fs_path(&machine.root, &change.path);
-                shown.insert(location.clone(), change.content);
+                if let Some(contents) = shown.get_mut(&location) {
+                    contents.push(change.content);
+                }
                 known.insert(location);
             }
         }
@@ -99,11 +102,14 @@ async fn disk_difference(machine: &Machine) -> Option<String> {
             unknown.display()
         ));
     }
-    for (location, content) in shown {
+    for (location, contents) in shown {
         let hash = hash_file(&location).ok();
-        if hash != content.map(|content| content.hash) {
+        if !contents
+            .iter()
+            .any(|content| hash == content.map(|content| content.hash))
+        {
             return Some(format!(
-                "{} as {hash:?}, not {content:?}",
+                "{} as {hash:?}, not one of {contents:?}",
                 location.display()
             ));
         }
