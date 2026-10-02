@@ -9,6 +9,8 @@ use std::time::Duration;
 
 use common::{GROUP, Machine, alice_with_notes, eventually};
 use iroh::address_lookup::MemoryLookup;
+use pigeon::catalog::find;
+use pigeon::render;
 use serde_json::json;
 
 #[tokio::test]
@@ -434,4 +436,37 @@ async fn a_group_lists_and_tells_its_status_while_its_engine_is_busy() {
             "{noun} {verb} waited"
         );
     }
+}
+
+#[tokio::test]
+async fn a_group_whose_folder_went_missing_says_so_in_its_status_and_on_its_overview() {
+    let lookup = MemoryLookup::new();
+    let (peer, _) = alice_with_notes(&lookup).await;
+    assert!(!peer.page("/g/family/overview").await.contains("Paused: "));
+    std::fs::rename(peer.root(), peer.outside("away")).unwrap();
+    let status = find("group", "status").unwrap();
+    let told = async || {
+        let shown = peer.run("group", "status", json!({})).await;
+        render::text(status, &shown)
+    };
+    eventually("the status says the group is paused", &[], async || {
+        told().await.starts_with("Paused: ")
+    })
+    .await;
+    let told = told().await;
+    assert!(told.lines().count() > 1, "{told}");
+    let first = told.lines().next().unwrap();
+    eventually("the overview says it too", &[], async || {
+        let page = peer.page("/g/family/overview").await;
+        page.contains(&format!(r#"<p class="error">{}</p>"#, html_escape(first)))
+    })
+    .await;
+}
+
+/// `text` as a page writes it.
+fn html_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }

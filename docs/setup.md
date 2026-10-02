@@ -84,6 +84,10 @@ not answer, after 5 seconds without connecting and 10 minutes without an
 answer, and the status of a group answers at once even while the group is
 busy. `pigeon daemon stop` stops it.
 
+A group that stands still, such as when its folder went missing, says why:
+`pigeon group status` begins with a line `Paused: <reason>`, and so does the
+group's Overview page. It resumes by itself once the folder is back.
+
 On Linux, pigeon keeps its files in three `pigeon` folders, where the XDG
 base directories put configuration, data and state. On macOS one folder,
 `~/Library/Application Support/pigeon`, holds all three, and on Windows

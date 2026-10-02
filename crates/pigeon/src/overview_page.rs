@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use crate::config_preview::{Freed, count};
 use crate::form::form;
 use crate::pages::{self, Bar, action, encode, fields, file_link, fill, layout, short_time};
-use crate::render::{cell, size};
+use crate::render::{cell, paused_line, size};
 
 /// What the Overview page shows of a group.
 pub struct Overview<'a> {
@@ -196,6 +196,9 @@ pub fn overview(bar: &Bar<'_>, shown: &Overview<'_>) -> Markup {
     });
     let body = html! {
         p { (status_line(status)) }
+        @if let Some(line) = paused_line(status) {
+            p class="error" { (line) }
+        }
         @for error in items(&status["errors"]) {
             p class="error" { (cell("", error)) }
         }

@@ -148,7 +148,17 @@ fn outline(fields: &Map<String, Value>, indent: usize, out: &mut String) {
     }
 }
 
-/// The result of `action` as text for a person.
+/// The line that tells why a group stands still, if the status `status`
+/// of a group says it does.
+#[must_use]
+pub fn paused_line(status: &Value) -> Option<String> {
+    status["paused"]
+        .as_str()
+        .map(|reason| format!("Paused: {reason}"))
+}
+
+/// The result of `action` as text for a person; a status that says why its
+/// group stands still begins with that.
 #[must_use]
 pub fn text(action: &Action, result: &Value) -> String {
     match result {
@@ -156,8 +166,10 @@ pub fn text(action: &Action, result: &Value) -> String {
         Value::Array(items) if items.is_empty() => "nothing\n".to_owned(),
         Value::Array(items) if !action.columns.is_empty() => table(action.columns, items),
         Value::Object(fields) => {
-            let mut out = String::new();
-            outline(fields, 0, &mut out);
+            let mut out = paused_line(result).map_or_else(String::new, |line| line + "\n");
+            let mut rest = fields.clone();
+            rest.remove("paused");
+            outline(&rest, 0, &mut out);
             out
         }
         Value::String(text) if text.is_empty() || text.ends_with('\n') => text.clone(),
@@ -209,6 +221,18 @@ mod tests {
             super::text(find("group", "key").unwrap(), &key),
             "key  cheapmo-abc\n"
         );
+    }
+
+    #[test]
+    fn a_status_begins_with_why_its_group_stands_still() {
+        let status = find("group", "status").unwrap();
+        let standing = json!({"member": "alice", "paused": "the folder is gone"});
+        assert_eq!(
+            text(status, &standing),
+            "Paused: the folder is gone\nmember  alice\n"
+        );
+        let moving = json!({"member": "alice", "paused": null});
+        assert_eq!(text(status, &moving), "member  alice\n");
     }
 
     #[test]
