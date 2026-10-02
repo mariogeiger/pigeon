@@ -196,7 +196,7 @@ impl Inner {
         for (key, pending) in &work.pending {
             if under
                 .as_ref()
-                .is_none_or(|under| pending.path.key().is_within(&under.key()))
+                .is_none_or(|under| pending.path.is_within(under))
             {
                 probes.entry(key.clone()).or_insert(None);
             }

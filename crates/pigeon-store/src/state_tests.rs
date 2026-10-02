@@ -2,62 +2,23 @@
 //! into the same ledger, and the index, kept suggestions, and placed
 //! folders round-trip, every write counted.
 
-use iroh_base::SecretKey;
-use pigeon_core::clock::Stamp;
-use pigeon_core::identity::{GroupSecret, MachineCert, member_key};
-use pigeon_core::name::MemberName;
-use pigeon_core::patch::{Change, Content, ContentHash, Patch};
+use pigeon_core::patch::Content;
 use pigeon_core::path::GroupPath;
 use pigeon_core::places::Places;
-use pigeon_core::statement::member_path;
+use pigeon_core::test_machines::{change, content, group, machine};
 
 use super::*;
 use crate::disk::Stat;
 use crate::index::Seen;
-
-fn group() -> GroupId {
-    GroupSecret([3; 32]).id()
-}
-
-fn content(byte: u8) -> Content {
-    Content {
-        hash: ContentHash([byte; 32]),
-        size: 1,
-        executable: false,
-    }
-}
-
-fn patch(time: u64, path: &GroupPath) -> SignedPatch {
-    let name = MemberName::parse("mario").unwrap();
-    let key = SecretKey::from_bytes(&[1; 32]);
-    let cert = MachineCert::issue(
-        &group(),
-        name,
-        &member_key(&group(), &MemberName::parse("mario").unwrap()),
-        key.public(),
-    );
-    let unsigned = Patch {
-        stamp: Stamp {
-            time,
-            machine: key.public(),
-        },
-        changes: vec![Change {
-            path: path.clone(),
-            content: Some(content(1)),
-            replaces: None,
-            continues: None,
-        }],
-    };
-    SignedPatch::sign(&group(), unsigned, cert, &key)
-}
 
 #[test]
 fn patches_survive_reopening_in_stamp_order() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("state.redb");
     let file = GroupPath::parse("+mario/a").unwrap();
-    let join = patch(1, &member_path(&MemberName::parse("mario").unwrap()));
-    let write = patch(300, &file);
+    let mario = machine("mario", 1);
+    let join = mario.join(1);
+    let write = mario.patch(300, vec![change(file.as_str(), Some(1), None)]);
     {
         let state = State::open(&path).unwrap();
         state.add_patch(&write).unwrap();

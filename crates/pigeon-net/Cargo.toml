@@ -23,6 +23,7 @@ serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+pigeon-core = { workspace = true, features = ["test-support"] }
 iroh-base.workspace = true
 tempfile.workspace = true
 

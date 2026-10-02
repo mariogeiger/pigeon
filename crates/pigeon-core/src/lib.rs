@@ -17,5 +17,5 @@ pub mod restore;
 pub mod retention;
 pub mod selection;
 pub mod statement;
-#[cfg(test)]
-mod test_machines;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_machines;

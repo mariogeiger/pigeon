@@ -141,8 +141,7 @@ impl Engine {
     pub async fn pending(&self, under: Option<&GroupPath>) -> Vec<PendingView> {
         let inner = &self.inner;
         let work = inner.work.lock().await;
-        let within =
-            |path: &GroupPath| under.is_none_or(|under| path.key().is_within(&under.key()));
+        let within = |path: &GroupPath| under.is_none_or(|under| path.is_within(under));
         let mut views: Vec<PendingView> = work
             .pending
             .values()

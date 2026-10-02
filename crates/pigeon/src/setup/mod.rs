@@ -215,8 +215,7 @@ fn follow(home: &Home, list: &mut Checklist, membership: &Membership) -> Result<
         keep_every_history(home, group)?;
         return list.set(FOLLOW, Mark::Done, "everything, with its history (server)");
     }
-    let tag = format!("+{}", membership.member);
-    let own = format!("{tag}/");
+    let own = format!("+{}/", membership.member);
     match membership.origin {
         Origin::Created | Origin::Joined { heard: false } => {
             return list.set(
@@ -239,16 +238,12 @@ fn follow(home: &Home, list: &mut Checklist, membership: &Membership) -> Result<
             GroupPath::parse(file["path"].as_str().unwrap_or_default())
                 .is_ok_and(|path| !is_statement(&path.key()))
         })
-        .map(|file| {
-            let path = file["path"].as_str().unwrap_or_default().to_owned();
-            let mine = path.split('/').rev().skip(1).any(|folder| folder == tag);
-            File {
-                size: file["content"]["size"].as_u64().unwrap_or(0),
-                followed: file["cutoff"] == "PlusInfinity",
-                held: file["held"].as_bool().unwrap_or(false),
-                own: mine,
-                path,
-            }
+        .map(|file| File {
+            path: file["path"].as_str().unwrap_or_default().to_owned(),
+            size: file["content"]["size"].as_u64().unwrap_or(0),
+            followed: file["cutoff"] == "PlusInfinity",
+            held: file["held"].as_bool().unwrap_or(false),
+            own: file["owner"] == membership.member.as_str(),
         })
         .collect();
     if files.is_empty() {

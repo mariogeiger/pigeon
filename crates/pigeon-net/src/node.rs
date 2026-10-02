@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
-use iroh::endpoint::Connection;
+use iroh::endpoint::{Connection, SendStream};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, RelayMap, RelayUrl};
 use iroh_blobs::api::Store;
@@ -158,8 +158,7 @@ impl Shared {
         count(&self.connected, remote, true);
         lock(&self.incompatible).remove(&remote);
         let writer = async {
-            let missing = Message::Patches(self.log.missing_from(&theirs.vector));
-            wire::write(&mut send, &missing).await?;
+            self.catch_up(&mut send, &theirs.vector).await?;
             let announced = drafts.borrow_and_update().clone();
             if let Some(announced) = announced {
                 wire::write(&mut send, &Message::Drafts(Box::new(announced))).await?;
@@ -168,9 +167,10 @@ impl Shared {
                 let message = tokio::select! {
                     patches = outgoing.recv() => match patches {
                         Ok(message) => message,
-                        Err(broadcast::error::RecvError::Lagged(_)) => Arc::new(
-                            Message::Patches(self.log.missing_from(&theirs.vector)),
-                        ),
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            self.catch_up(&mut send, &theirs.vector).await?;
+                            continue;
+                        }
                         Err(broadcast::error::RecvError::Closed) => return Ok(()),
                     },
                     changed = drafts.changed() => {
@@ -210,6 +210,14 @@ impl Shared {
             lock(&self.announced).remove(&remote);
         }
         result
+    }
+
+    /// Sends every patch a machine holding `vector` lacks.
+    async fn catch_up(&self, send: &mut SendStream, vector: &Vector) -> Result<()> {
+        for message in wire::patch_messages(self.log.missing_from(vector)) {
+            wire::write(send, &message).await?;
+        }
+        Ok(())
     }
 
     fn dial(self: &Arc<Self>, machine: MachineId) {
@@ -404,11 +412,8 @@ impl Node {
 
     /// Sends patches to every connected peer.
     pub fn publish(&self, patches: Patches) {
-        if !patches.is_empty() {
-            let _ = self
-                .shared
-                .outgoing
-                .send(Arc::new(Message::Patches(patches)));
+        for message in wire::patch_messages(patches) {
+            let _ = self.shared.outgoing.send(Arc::new(message));
         }
     }
 

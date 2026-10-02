@@ -15,7 +15,10 @@ use pigeon_core::patch::{Content, SignedPatch};
 use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::places::{Place, Places};
 use pigeon_core::selection::Rule;
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use redb::{
+    AccessGuard, Database, ReadableDatabase, ReadableTable, TableDefinition, WriteTransaction,
+};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, StoreError};
@@ -35,6 +38,11 @@ const SELECTION: &str = "selection";
 pub struct Kept {
     pub statement: GroupPath,
     pub content: Option<Content>,
+}
+
+/// Decodes a value the database holds.
+fn decode<T: DeserializeOwned>(value: &AccessGuard<'_, &[u8]>) -> Result<T> {
+    Ok(postcard::from_bytes(value.value())?)
 }
 
 /// A patch's key, which sorts patches in stamp order.
@@ -82,6 +90,44 @@ impl State {
         self.revision.load(Ordering::Relaxed)
     }
 
+    /// Runs `change` in one write transaction and commits it, a new
+    /// revision.
+    fn write(&self, change: impl FnOnce(&WriteTransaction) -> Result<()>) -> Result<()> {
+        let transaction = self.database.begin_write()?;
+        change(&transaction)?;
+        transaction.commit()?;
+        self.revision.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// The value at `key` in `table`, decoded.
+    fn value<T: DeserializeOwned>(
+        &self,
+        table: TableDefinition<'static, &'static str, &'static [u8]>,
+        key: &str,
+    ) -> Result<Option<T>> {
+        let transaction = self.database.begin_read()?;
+        let table = transaction.open_table(table)?;
+        let value = table.get(key)?;
+        value.as_ref().map(decode).transpose()
+    }
+
+    /// Stores `value` at `key` in `table`.
+    fn set_value<T: Serialize + ?Sized>(
+        &self,
+        table: TableDefinition<'static, &'static str, &'static [u8]>,
+        key: &str,
+        value: &T,
+    ) -> Result<()> {
+        let bytes = postcard::to_stdvec(value)?;
+        self.write(|transaction| {
+            transaction
+                .open_table(table)?
+                .insert(key, bytes.as_slice())?;
+            Ok(())
+        })
+    }
+
     /// Records a patch; recording one twice changes nothing.
     ///
     /// # Errors
@@ -89,13 +135,12 @@ impl State {
     /// Fails if the database cannot be written.
     pub fn add_patch(&self, patch: &SignedPatch) -> Result<()> {
         let bytes = postcard::to_stdvec(patch)?;
-        let transaction = self.database.begin_write()?;
-        transaction
-            .open_table(PATCHES)?
-            .insert(stamp_key(&patch.stamp()).as_slice(), bytes.as_slice())?;
-        transaction.commit()?;
-        self.revision.fetch_add(1, Ordering::Relaxed);
-        Ok(())
+        self.write(|transaction| {
+            transaction
+                .open_table(PATCHES)?
+                .insert(stamp_key(&patch.stamp()).as_slice(), bytes.as_slice())?;
+            Ok(())
+        })
     }
 
     /// Every recorded patch, in stamp order.
@@ -106,12 +151,7 @@ impl State {
     pub fn patches(&self) -> Result<Vec<SignedPatch>> {
         let transaction = self.database.begin_read()?;
         let table = transaction.open_table(PATCHES)?;
-        let mut patches = Vec::new();
-        for entry in table.iter()? {
-            let (_, value) = entry?;
-            patches.push(postcard::from_bytes(value.value())?);
-        }
-        Ok(patches)
+        table.iter()?.map(|entry| decode(&entry?.1)).collect()
     }
 
     /// The ledger folded from every recorded patch. A patch whose signature
@@ -134,12 +174,7 @@ impl State {
     ///
     /// Fails if the database cannot be read.
     pub fn index_entry(&self, key: &PathKey) -> Result<Option<IndexEntry>> {
-        let transaction = self.database.begin_read()?;
-        let table = transaction.open_table(INDEX)?;
-        let value = table.get(key.as_str())?;
-        Ok(value
-            .map(|value| postcard::from_bytes(value.value()))
-            .transpose()?)
+        self.value(INDEX, key.as_str())
     }
 
     /// The index entries at `under` and inside it, or every entry, by path
@@ -151,24 +186,20 @@ impl State {
     pub fn index(&self, under: Option<&GroupPath>) -> Result<Vec<IndexEntry>> {
         let transaction = self.database.begin_read()?;
         let table = transaction.open_table(INDEX)?;
-        let start = under.map(GroupPath::key);
-        let range = match &start {
-            Some(key) => table.range(key.as_str()..)?,
-            None => table.range::<&str>(..)?,
+        let Some(folder) = under else {
+            return table.iter()?.map(|entry| decode(&entry?.1)).collect();
         };
+        let start = folder.key();
         let mut entries = Vec::new();
-        for entry in range {
+        for entry in table.range(start.as_str()..)? {
             let (key, value) = entry?;
-            let key = key.value();
-            if let Some(start) = &start {
-                let Some(rest) = key.strip_prefix(start.as_str()) else {
-                    break;
-                };
-                if !rest.is_empty() && !rest.starts_with('/') {
-                    continue;
-                }
+            if !key.value().starts_with(start.as_str()) {
+                break;
             }
-            entries.push(postcard::from_bytes(value.value())?);
+            let entry: IndexEntry = decode(&value)?;
+            if entry.path.is_within(folder) {
+                entries.push(entry);
+            }
         }
         Ok(entries)
     }
@@ -183,8 +214,7 @@ impl State {
         &self,
         updates: impl IntoIterator<Item = (&'a PathKey, Option<&'a IndexEntry>)>,
     ) -> Result<()> {
-        let transaction = self.database.begin_write()?;
-        {
+        self.write(|transaction| {
             let mut table = transaction.open_table(INDEX)?;
             for (key, entry) in updates {
                 match entry {
@@ -197,10 +227,8 @@ impl State {
                     }
                 }
             }
-        }
-        transaction.commit()?;
-        self.revision.fetch_add(1, Ordering::Relaxed);
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Records that the disk keeps `kept` at `path`, a path relative to
@@ -210,14 +238,7 @@ impl State {
     ///
     /// Fails if the database cannot be written.
     pub fn keep(&self, path: &str, kept: &Kept) -> Result<()> {
-        let bytes = postcard::to_stdvec(kept)?;
-        let transaction = self.database.begin_write()?;
-        transaction
-            .open_table(KEPT)?
-            .insert(path, bytes.as_slice())?;
-        transaction.commit()?;
-        self.revision.fetch_add(1, Ordering::Relaxed);
-        Ok(())
+        self.set_value(KEPT, path, kept)
     }
 
     /// Forgets what the disk keeps at `path`.
@@ -226,11 +247,10 @@ impl State {
     ///
     /// Fails if the database cannot be written.
     pub fn unkeep(&self, path: &str) -> Result<()> {
-        let transaction = self.database.begin_write()?;
-        transaction.open_table(KEPT)?.remove(path)?;
-        transaction.commit()?;
-        self.revision.fetch_add(1, Ordering::Relaxed);
-        Ok(())
+        self.write(|transaction| {
+            transaction.open_table(KEPT)?.remove(path)?;
+            Ok(())
+        })
     }
 
     /// What the disk keeps at `path` for a suggestion, if anything.
@@ -239,12 +259,7 @@ impl State {
     ///
     /// Fails if the database cannot be read.
     pub fn kept_at(&self, path: &str) -> Result<Option<Kept>> {
-        let transaction = self.database.begin_read()?;
-        let table = transaction.open_table(KEPT)?;
-        let value = table.get(path)?;
-        Ok(value
-            .map(|value| postcard::from_bytes(value.value()))
-            .transpose()?)
+        self.value(KEPT, path)
     }
 
     /// What the disk keeps for suggestions, by path relative to the root.
@@ -255,15 +270,13 @@ impl State {
     pub fn kept(&self) -> Result<BTreeMap<String, Kept>> {
         let transaction = self.database.begin_read()?;
         let table = transaction.open_table(KEPT)?;
-        let mut kept = BTreeMap::new();
-        for entry in table.iter()? {
-            let (path, value) = entry?;
-            kept.insert(
-                path.value().to_owned(),
-                postcard::from_bytes(value.value())?,
-            );
-        }
-        Ok(kept)
+        table
+            .iter()?
+            .map(|entry| {
+                let (path, value) = entry?;
+                Ok((path.value().to_owned(), decode(&value)?))
+            })
+            .collect()
     }
 
     /// The rules of the selection the disk was last brought to, if any was.
@@ -272,12 +285,7 @@ impl State {
     ///
     /// Fails if the database cannot be read.
     pub fn applied_selection(&self) -> Result<Option<Vec<Rule>>> {
-        let transaction = self.database.begin_read()?;
-        let table = transaction.open_table(APPLIED)?;
-        let value = table.get(SELECTION)?;
-        Ok(value
-            .map(|value| postcard::from_bytes(value.value()))
-            .transpose()?)
+        self.value(APPLIED, SELECTION)
     }
 
     /// Records the rules of the selection the disk was brought to.
@@ -286,14 +294,7 @@ impl State {
     ///
     /// Fails if the database cannot be written.
     pub fn set_applied_selection(&self, rules: &[Rule]) -> Result<()> {
-        let bytes = postcard::to_stdvec(rules)?;
-        let transaction = self.database.begin_write()?;
-        transaction
-            .open_table(APPLIED)?
-            .insert(SELECTION, bytes.as_slice())?;
-        transaction.commit()?;
-        self.revision.fetch_add(1, Ordering::Relaxed);
-        Ok(())
+        self.set_value(APPLIED, SELECTION, rules)
     }
 
     /// The folders the disk holds at other destinations, as last moved.
@@ -327,9 +328,8 @@ impl State {
     /// Fails if a destination is not valid Unicode or the database cannot
     /// be written.
     pub fn set_placed(&self, placed: &Places) -> Result<()> {
-        let transaction = self.database.begin_write()?;
-        transaction.delete_table(PLACED)?;
-        {
+        self.write(|transaction| {
+            transaction.delete_table(PLACED)?;
             let mut table = transaction.open_table(PLACED)?;
             for place in placed.iter() {
                 let destination = place.destination.to_str().ok_or_else(|| {
@@ -340,10 +340,8 @@ impl State {
                 })?;
                 table.insert(place.folder.as_str(), destination)?;
             }
-        }
-        transaction.commit()?;
-        self.revision.fetch_add(1, Ordering::Relaxed);
-        Ok(())
+            Ok(())
+        })
     }
 }
 

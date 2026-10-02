@@ -18,5 +18,8 @@ thiserror.workspace = true
 uhlc.workspace = true
 unicode-normalization.workspace = true
 
+[features]
+test-support = []
+
 [lints]
 workspace = true

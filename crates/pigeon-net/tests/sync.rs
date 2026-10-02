@@ -1,7 +1,6 @@
-//! Tests of the network on this host: admitted machines exchange what the
-//! other lacks and every later patch, a machine without the group secret
-//! learns nothing unless the member list recognizes it, recognized machines
-//! receive the latest secret, and blobs move only between admitted machines,
+//! Tests of the network on this host: machines that know the group secret
+//! exchange what the other lacks and every later patch, a machine without
+//! it learns nothing, and blobs move only between admitted machines,
 //! each from several machines at once, which serve what they hold while
 //! still downloading, and reach each other through the group's relay; a
 //! machine speaking another version of the protocol is reported with the
@@ -20,11 +19,10 @@ use iroh_base::SecretKey;
 use iroh_blobs::Hash;
 use iroh_blobs::protocol::{ChunkRanges, GetRequest};
 use iroh_blobs::store::mem::MemStore;
-use pigeon_core::clock::Stamp;
-use pigeon_core::identity::{GroupId, GroupSecret, MachineCert, member_key};
+use pigeon_core::identity::{GroupSecret, MachineCert};
 use pigeon_core::ledger::Ledger;
-use pigeon_core::name::MemberName;
-use pigeon_core::patch::{Change, Patch, SignedPatch};
+use pigeon_core::patch::SignedPatch;
+use pigeon_core::test_machines;
 use pigeon_net::bind::bind_local;
 use pigeon_net::hello::{Announcement, Announcing, HELLO_ALPN, Heard, Standing};
 use pigeon_net::relay::{relay_url, serve_relay};
@@ -55,17 +53,12 @@ impl Log for Held {
     }
 }
 
-fn group() -> GroupId {
-    GroupSecret([5; 32]).id()
-}
-
 fn secret(byte: u8) -> GroupSecret {
     GroupSecret([byte; 32])
 }
 
 struct Machine {
-    cert: MachineCert,
-    key: SecretKey,
+    signer: test_machines::Machine,
     log: Arc<Held>,
     node: Node,
     received: mpsc::Receiver<Received>,
@@ -107,22 +100,19 @@ impl Machine {
     }
 
     fn on(endpoint: Endpoint, key: SecretKey, secret: GroupSecret) -> Self {
-        let log = Arc::new(Held(Mutex::new(Ledger::new(group()))));
+        let log = Arc::new(Held(Mutex::new(Ledger::new(test_machines::group()))));
         let blobs = MemStore::new();
-        let name = MemberName::parse("mario").unwrap();
-        let member = member_key(&group(), &name);
-        let cert = MachineCert::issue(&group(), name, &member, key.public());
+        let signer = test_machines::signer("mario", key);
         let (node, received) = Node::spawn(
             endpoint,
             Announcement::speaking_ours("0.1.0", "test"),
-            group(),
+            test_machines::group(),
             secret,
             log.clone(),
             &blobs,
         );
         Self {
-            cert,
-            key,
+            signer,
             log,
             node,
             received,
@@ -130,19 +120,8 @@ impl Machine {
         }
     }
 
-    fn signed(&self, time: u64, changes: Vec<Change>) -> SignedPatch {
-        let patch = Patch {
-            stamp: Stamp {
-                time,
-                machine: self.key.public(),
-            },
-            changes,
-        };
-        SignedPatch::sign(&group(), patch, self.cert.clone(), &self.key)
-    }
-
     fn patch(&self, time: u64) -> SignedPatch {
-        self.signed(time, Vec::new())
+        self.signer.patch(time, Vec::new())
     }
 
     fn hold(&self, patch: &SignedPatch) {

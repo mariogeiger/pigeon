@@ -1,5 +1,6 @@
 //! The sync protocol's messages and their framing: each message is a
-//! postcard value preceded by its length as four big-endian bytes.
+//! postcard value preceded by its length as four big-endian bytes, and
+//! patches go in as many messages as keep each within the bound.
 
 use std::collections::BTreeMap;
 
@@ -42,6 +43,39 @@ pub enum Message {
     Drafts(Box<SignedDrafts>),
 }
 
+/// At most what `Message::Patches` adds around its patches: the variant
+/// and the count, as varints.
+const ENVELOPE: usize = 1 + 10;
+
+/// The messages that carry `patches`, in order, each within
+/// [`MAX_MESSAGE`] unless a patch alone exceeds it.
+#[must_use]
+pub fn patch_messages(patches: Patches) -> Vec<Message> {
+    split(patches, MAX_MESSAGE)
+}
+
+/// Splits `patches`, in order, into the fewest consecutive messages of at
+/// most `bound` bytes, a patch that alone exceeds it in a message of its
+/// own.
+fn split(patches: Patches, bound: usize) -> Vec<Message> {
+    let mut messages = Vec::new();
+    let mut batch = Vec::new();
+    let mut size = ENVELOPE;
+    for patch in patches {
+        let bytes = postcard::experimental::serialized_size(&patch).unwrap_or(usize::MAX);
+        if !batch.is_empty() && size.saturating_add(bytes) > bound {
+            messages.push(Message::Patches(std::mem::take(&mut batch)));
+            size = ENVELOPE;
+        }
+        size = size.saturating_add(bytes);
+        batch.push(patch);
+    }
+    if !batch.is_empty() {
+        messages.push(Message::Patches(batch));
+    }
+    messages
+}
+
 /// Writes one message.
 ///
 /// # Errors
@@ -79,4 +113,61 @@ pub async fn read<T: DeserializeOwned>(recv: &mut RecvStream) -> Result<T> {
     let mut bytes = vec![0; length];
     recv.read_exact(&mut bytes).await?;
     postcard::from_bytes(&bytes).context("decoding a message")
+}
+
+#[cfg(test)]
+mod tests {
+    use pigeon_core::test_machines::{change, machine};
+
+    use super::*;
+
+    fn size(message: &Message) -> usize {
+        postcard::to_stdvec(message).unwrap().len()
+    }
+
+    #[test]
+    fn patches_split_into_the_fewest_messages_within_the_bound() {
+        let mario = machine("mario", 1);
+        let patches: Patches = (1..=40)
+            .map(|time| {
+                let changes = (0..time % 7)
+                    .map(|n| change(&format!("+mario/{time}/{n}"), Some(1), None))
+                    .collect();
+                mario.patch(time, changes)
+            })
+            .collect();
+        let largest = patches
+            .iter()
+            .map(|patch| size(&Message::Patches(vec![patch.clone()])))
+            .max()
+            .unwrap();
+        let bound = 3 * largest;
+        let messages = split(patches.clone(), bound);
+        assert!(messages.len() > 3);
+        let batches: Vec<Patches> = messages
+            .iter()
+            .map(|message| match message {
+                Message::Patches(batch) => batch.clone(),
+                Message::Drafts(_) => unreachable!(),
+            })
+            .collect();
+        for (message, next) in messages.iter().zip(&batches[1..]) {
+            assert!(size(message) <= bound);
+            let first = postcard::to_stdvec(&next[0]).unwrap().len();
+            assert!(
+                size(message) + first + ENVELOPE > bound,
+                "a fuller batch fits"
+            );
+        }
+        assert_eq!(batches.concat(), patches);
+        assert!(split(Vec::new(), bound).is_empty());
+    }
+
+    #[test]
+    fn a_patch_over_the_bound_goes_alone() {
+        let mario = machine("mario", 1);
+        let patches = vec![mario.join(1), mario.join(2), mario.join(3)];
+        let messages = split(patches, 8);
+        assert_eq!(messages.len(), 3);
+    }
 }

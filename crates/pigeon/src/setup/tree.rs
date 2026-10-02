@@ -22,7 +22,7 @@ pub struct File {
     pub size: u64,
     pub followed: bool,
     pub held: bool,
-    /// Whether it lies in one of the member's own `+name` folders.
+    /// Whether the member owns it, as its personal path says.
     pub own: bool,
 }
 
