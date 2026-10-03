@@ -2,23 +2,27 @@
 //! whose garbage collector keeps exactly the hashes pigeon protects, and
 //! everything until pigeon first says which, each content stored kept
 //! until a collection keeping what pigeon protected since begins, on a disk
-//! whose size bounds the history; a store stops whole, its collector,
-//! threads and files gone, before another opens in its folder.
+//! whose size bounds the history, and each content read kept while it is
+//! read; a store stops whole, its collector, threads and files gone, before
+//! another opens in its folder.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use iroh_blobs::Hash;
 use iroh_blobs::api::TempTag;
+use iroh_blobs::api::blobs::BlobReader;
 use iroh_blobs::api::proto::BlobStatus;
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::store::fs::options::Options;
 use iroh_blobs::store::{GcConfig, ProtectOutcome};
 use pigeon_core::patch::ContentHash;
-use tokio::io::AsyncRead;
+use tokio::io::{AsyncRead, ReadBuf};
 use tokio::sync::watch;
 
 use crate::disk;
@@ -37,6 +41,34 @@ fn blob_error(error: impl std::error::Error) -> StoreError {
         cause = next.source();
     }
     StoreError::Blobs(told)
+}
+
+/// Whether `error` tells that the store holds no such content, which
+/// iroh-blobs says with an I/O error of kind `NotFound`, for an entry it
+/// lacks as for one a collection removed while it was read.
+fn is_absence(error: &(dyn std::error::Error + 'static)) -> bool {
+    std::iter::successors(Some(error), |cause| cause.source()).any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+    })
+}
+
+/// A reader of one content that keeps it from garbage collection while it
+/// lives.
+struct HeldReader {
+    reader: BlobReader,
+    _held: TempTag,
+}
+
+impl AsyncRead for HeldReader {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.reader).poll_read(cx, buf)
+    }
 }
 
 /// The iroh-blobs hash of a content hash; both are BLAKE3.
@@ -281,25 +313,48 @@ impl Blobs {
         disk::install(&temporary, target, executable, expected)
     }
 
-    /// Reads a whole content into memory, for statements and small files.
+    /// Reads a whole content into memory, for statements and small files,
+    /// or `None` when the store does not hold all of it. The read holds the
+    /// content from its start, so that no collection begun since takes it,
+    /// and one begun before that takes it meanwhile makes it read as not
+    /// held.
     ///
     /// # Errors
     ///
-    /// Fails if the store lacks the content.
-    pub async fn read(&self, hash: &ContentHash) -> Result<Vec<u8>> {
-        let bytes = self
-            .store
-            .blobs()
-            .get_bytes(blob_hash(hash))
-            .await
-            .map_err(blob_error)?;
-        Ok(bytes.to_vec())
+    /// Fails if the store cannot be read.
+    pub async fn read(&self, hash: &ContentHash) -> Result<Option<Vec<u8>>> {
+        let _held = self.hold(hash).await?;
+        if !self.has(hash).await? {
+            return Ok(None);
+        }
+        match self.store.blobs().get_bytes(blob_hash(hash)).await {
+            Ok(bytes) => Ok(Some(bytes.to_vec())),
+            Err(error) if is_absence(&error) => Ok(None),
+            Err(error) => Err(blob_error(error)),
+        }
     }
 
-    /// Reads a content as a stream, for files too large to hold in memory.
-    #[must_use]
-    pub fn stream(&self, hash: &ContentHash) -> impl AsyncRead + Unpin + Send + use<> {
-        self.store.blobs().reader(blob_hash(hash))
+    /// Reads a content as a stream, for files too large to hold in memory,
+    /// or `None` when the store does not hold all of it. The stream holds
+    /// the content while it lives, so that no collection begun since takes
+    /// it; one begun before that takes it meanwhile ends the stream with an
+    /// error.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the store cannot answer.
+    pub async fn stream(
+        &self,
+        hash: &ContentHash,
+    ) -> Result<Option<impl AsyncRead + Unpin + Send + use<>>> {
+        let held = self.hold(hash).await?;
+        if !self.has(hash).await? {
+            return Ok(None);
+        }
+        Ok(Some(HeldReader {
+            reader: self.store.blobs().reader(blob_hash(hash)),
+            _held: held,
+        }))
     }
 
     /// Stores bytes, such as a statement pigeon writes itself.
@@ -397,7 +452,10 @@ mod tests {
         .await;
         assert!(stopped.is_ok(), "the store outlived its stop");
         let reopened = Blobs::open(&path, hour).await.unwrap();
-        assert_eq!(reopened.read(&hash).await.unwrap(), b"kept");
+        assert_eq!(
+            reopened.read(&hash).await.unwrap().as_deref(),
+            Some(&b"kept"[..])
+        );
         reopened.stop_whole().await;
     }
 
@@ -488,7 +546,64 @@ mod tests {
         }
         assert!(!blobs.has(&content(dropped_hash)).await.unwrap());
         assert!(blobs.has(&content(kept_hash)).await.unwrap());
-        assert_eq!(blobs.read(&content(kept_hash)).await.unwrap(), b"kept");
+        assert_eq!(
+            blobs.read(&content(kept_hash)).await.unwrap().as_deref(),
+            Some(&b"kept"[..])
+        );
         blobs.shutdown().await.unwrap();
+    }
+
+    /// Waits until a collection that began after now is over.
+    async fn past_a_collection(blobs: &Blobs) {
+        let begun = blobs.collections();
+        while blobs.collections() < begun + 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_content_never_stored_or_collected_reads_as_not_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = Blobs::open(&dir.path().join("blobs"), Duration::from_millis(20))
+            .await
+            .unwrap();
+        blobs.protect(HashSet::new(), Vec::new());
+        let never = ContentHash([9; 32]);
+        let tag = blobs.add_bytes(b"collected".to_vec()).await.unwrap();
+        let collected = ContentHash(*tag.hash().as_bytes());
+        drop(tag);
+        past_a_collection(&blobs).await;
+        for hash in [never, collected] {
+            assert_eq!(blobs.read(&hash).await.unwrap(), None);
+            assert!(blobs.stream(&hash).await.unwrap().is_none());
+        }
+        let lacked = blobs.store.blobs().get_bytes(blob_hash(&never)).await;
+        assert!(is_absence(&lacked.unwrap_err()));
+        let refused = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(!is_absence(&refused));
+        blobs.stop_whole().await;
+    }
+
+    #[tokio::test]
+    async fn a_stream_keeps_its_content_through_the_collections_begun_while_it_lives() {
+        use tokio::io::AsyncReadExt;
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = Blobs::open(&dir.path().join("blobs"), Duration::from_millis(20))
+            .await
+            .unwrap();
+        blobs.protect(HashSet::new(), Vec::new());
+        let content: Vec<u8> = (0..4u32 << 20).map(|n| (n % 251) as u8).collect();
+        let tag = blobs.add_bytes(content.clone()).await.unwrap();
+        let hash = ContentHash(*tag.hash().as_bytes());
+        let mut stream = blobs.stream(&hash).await.unwrap().unwrap();
+        drop(tag);
+        past_a_collection(&blobs).await;
+        let mut read = Vec::new();
+        stream.read_to_end(&mut read).await.unwrap();
+        assert!(read == content, "{} of {} bytes", read.len(), content.len());
+        drop(stream);
+        past_a_collection(&blobs).await;
+        assert!(!blobs.has(&hash).await.unwrap());
+        blobs.stop_whole().await;
     }
 }

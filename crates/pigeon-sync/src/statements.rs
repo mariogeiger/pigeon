@@ -2,7 +2,7 @@
 //! read rather than people: reading one's body from the blob store, and
 //! publishing one as the next version of its path.
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use pigeon_core::clock::Stamp;
 use pigeon_core::patch::{Change, Content};
 use pigeon_core::path::GroupPath;
@@ -13,9 +13,13 @@ use crate::engine::{Inner, Work};
 impl Inner {
     /// Reads a statement's body from the blob store.
     pub(crate) async fn read_statement<T: DeserializeOwned>(&self, content: &Content) -> Result<T> {
-        Ok(serde_json::from_slice(
-            &self.blobs.read(&content.hash).await?,
-        )?)
+        let Some(body) = self.blobs.read(&content.hash).await? else {
+            bail!(
+                "the statement's content {} is not on this machine",
+                content.hash
+            );
+        };
+        Ok(serde_json::from_slice(&body)?)
     }
 
     /// Publishes `body` at `path` with `stamp` as its patch's stamp,

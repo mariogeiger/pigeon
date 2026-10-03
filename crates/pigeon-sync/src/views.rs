@@ -273,27 +273,21 @@ impl Engine {
     ///
     /// Fails if the blob store cannot be read.
     pub async fn read(&self, content: &Content) -> Result<Option<Vec<u8>>> {
-        let blobs = &self.inner.blobs;
-        if !blobs.has(&content.hash).await? {
-            return Ok(None);
-        }
-        Ok(Some(blobs.read(&content.hash).await?))
+        Ok(self.inner.blobs.read(&content.hash).await?)
     }
 
-    /// The content as a stream, if this machine holds it.
+    /// The content as a stream, if this machine holds it, which keeps it
+    /// while it lives; a collection begun before that takes it meanwhile
+    /// ends the stream with an error.
     ///
     /// # Errors
     ///
-    /// Fails if the blob store cannot be read.
+    /// Fails if the blob store cannot answer.
     pub async fn stream(
         &self,
         content: &Content,
     ) -> Result<Option<impl AsyncRead + Unpin + Send + use<>>> {
-        let blobs = &self.inner.blobs;
-        if !blobs.has(&content.hash).await? {
-            return Ok(None);
-        }
-        Ok(Some(blobs.stream(&content.hash)))
+        Ok(self.inner.blobs.stream(&content.hash).await?)
     }
 
     /// Every file of the group at `under` or inside it, but the
