@@ -42,7 +42,10 @@ impl Installed {
     /// Starts the daemon on any free port and waits until it answers.
     fn start() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::copy(env!("CARGO_BIN_EXE_pigeon"), dir.path().join("pigeon")).unwrap();
+        copy_outside_this_process(
+            Path::new(env!("CARGO_BIN_EXE_pigeon")),
+            &dir.path().join("pigeon"),
+        );
         let mut installed = Self { dir, daemon: None };
         let daemon = installed
             .command(&["daemon", "--port", "0"])
@@ -76,6 +79,15 @@ impl Drop for Installed {
             let _ = daemon.wait();
         }
     }
+}
+
+/// Copies the file `from` to `to` with `cp`, so that this process never
+/// holds `to` open for writing: a child another test spawns meanwhile
+/// would inherit that descriptor until it runs its own program, and running
+/// `to` would fail as busy.
+fn copy_outside_this_process(from: &Path, to: &Path) {
+    let copied = Command::new("cp").arg(from).arg(to).status().unwrap();
+    assert!(copied.success(), "cp {} {}", from.display(), to.display());
 }
 
 fn make_executable(path: &Path) {
@@ -112,8 +124,9 @@ fn the_command_line_calls_the_daemon_it_started_and_the_daemon_stops_on_sigterm(
 fn rolling_back_puts_the_previous_program_in_the_daemons_place_and_restarts_onto_it() {
     let installed = Installed::start();
     let previous = installed.dir.path().join("pigeon.previous");
+    let script = installed.dir.path().join("previous.sh");
     std::fs::write(
-        &previous,
+        &script,
         format!(
             "#!/bin/sh\ntouch '{}'\nexec '{}' \"$@\"\n",
             installed.marker().display(),
@@ -121,6 +134,7 @@ fn rolling_back_puts_the_previous_program_in_the_daemons_place_and_restarts_onto
         ),
     )
     .unwrap();
+    copy_outside_this_process(&script, &previous);
     make_executable(&previous);
     let program_before = std::fs::read(installed.program()).unwrap();
     let rollback = installed
