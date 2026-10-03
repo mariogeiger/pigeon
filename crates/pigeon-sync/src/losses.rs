@@ -1,14 +1,18 @@
 //! The changes this machine published that did not last: refused by the
 //! ledger, or replaced by another machine that had not seen them. Each
 //! becomes a suggestion of this machine once, whatever its disk holds,
-//! unless the group's version already shows what it did.
+//! unless the group's version already shows what it did, or it had not
+//! lasted already when the state came to hold its patch: kept by an older
+//! pigeon, which suggested what fell by itself, or sent back by a peer
+//! after this machine lost its state.
 
 use anyhow::Result;
 use pigeon_core::clock::{MachineId, Stamp};
 use pigeon_core::ledger::Ledger;
-use pigeon_core::patch::Change;
+use pigeon_core::patch::{Change, SignedPatch};
 use pigeon_core::path::PathKey;
 use pigeon_core::statement::{Reason, SuggestedChange, is_statement};
+use pigeon_store::state::State;
 
 use crate::engine::{Inner, JoinState, Work};
 
@@ -21,14 +25,18 @@ struct Loss {
     reason: Reason,
 }
 
-/// The changes the machine `me` published that did not last, but those
-/// of statements, in stamp order.
-fn losses(ledger: &Ledger, me: MachineId) -> Vec<Loss> {
-    let mut losses = Vec::new();
-    for signed in ledger
+/// The patches of the machine `me`, in stamp order.
+fn patches_of(ledger: &Ledger, me: MachineId) -> impl Iterator<Item = &SignedPatch> {
+    ledger
         .patches()
-        .filter(|signed| signed.stamp().machine == me)
-    {
+        .filter(move |signed| signed.stamp().machine == me)
+}
+
+/// The changes of the patches `made` that did not last, but those of
+/// statements, in the order of `made`.
+fn losses<'a>(ledger: &Ledger, made: impl IntoIterator<Item = &'a SignedPatch>) -> Vec<Loss> {
+    let mut losses = Vec::new();
+    for signed in made {
         let stamp = signed.stamp();
         let rejection = match ledger.outcome(&stamp) {
             Some(Err(rejection)) => Some(rejection.to_string()),
@@ -61,11 +69,33 @@ fn losses(ledger: &Ledger, me: MachineId) -> Vec<Loss> {
     losses
 }
 
+/// The changes of the patches `made` that did not last, each as the
+/// stamp of its patch and the key it changed.
+pub(crate) fn standing_losses<'a>(
+    ledger: &Ledger,
+    made: impl IntoIterator<Item = &'a SignedPatch>,
+) -> Vec<(Stamp, PathKey)> {
+    losses(ledger, made)
+        .into_iter()
+        .map(|loss| (loss.stamp, loss.key))
+        .collect()
+}
+
+/// Notes the changes of `me` that the stored `ledger` shows did not last,
+/// without suggesting them, on a state that never noted losses: none on a
+/// fresh state, and those of its time on the state of an older pigeon.
+pub(crate) fn note_stored_losses(state: &State, ledger: &Ledger, me: MachineId) -> Result<()> {
+    if !state.notes_losses()? {
+        let standing = standing_losses(ledger, patches_of(ledger, me));
+        state.note_losses(standing.iter().map(|(stamp, key)| (stamp, key)))?;
+    }
+    Ok(())
+}
+
 impl Inner {
     /// Suggests once each change of this machine that did not last, those
-    /// of one patch together, unless the group's version shows what it
-    /// did. On a state where an older pigeon suggested what fell by
-    /// itself, the changes lost by then are noted without being suggested.
+    /// of one patch together, unless it is noted or the group's version
+    /// shows what it did.
     pub(crate) async fn suggest_losses(&self, work: &mut Work) {
         if work.join != JoinState::Joined {
             return;
@@ -80,7 +110,7 @@ impl Inner {
     async fn suggest_new_losses(&self, work: &mut Work) -> Result<()> {
         let (losses, shown): (Vec<Loss>, Vec<bool>) = {
             let ledger = self.ledger.lock();
-            losses(&ledger, self.me())
+            losses(&ledger, patches_of(&ledger, self.me()))
                 .into_iter()
                 .map(|loss| {
                     let head = ledger.head(&loss.key).and_then(|version| version.content);
@@ -89,11 +119,6 @@ impl Inner {
                 })
                 .unzip()
         };
-        if !self.state.notes_losses()? {
-            self.state
-                .note_losses(losses.iter().map(|loss| (&loss.stamp, &loss.key)))?;
-            return Ok(());
-        }
         let mut units: Vec<(Vec<&Loss>, Vec<SuggestedChange>)> = Vec::new();
         for (loss, shown) in losses.iter().zip(shown) {
             if self.state.loss_noted(&loss.stamp, &loss.key)? {

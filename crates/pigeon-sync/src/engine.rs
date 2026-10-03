@@ -42,6 +42,7 @@ use pigeon_store::state::State;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{JoinHandle, JoinSet};
 
+use crate::losses::note_stored_losses;
 use crate::receive::{take, wanted};
 use crate::root::open_root;
 use crate::suggestions::Live;
@@ -509,12 +510,16 @@ impl Inner {
         let taken = take(
             &self.ledger,
             |new| self.state.add_patches(new),
+            |standing| {
+                self.state
+                    .note_losses(standing.iter().map(|(stamp, key)| (stamp, key)))
+            },
             &self.clock,
             &self.first_stamp,
             received,
         );
-        for refusal in taken.refusals {
-            self.report(refusal);
+        for report in taken.reports {
+            self.report(report);
         }
         if taken.fresh.is_empty() {
             return None;
@@ -602,6 +607,7 @@ impl Engine {
         let state = State::open(&dirs.state_path())?;
         let group = key.group;
         let ledger = state.ledger(group)?;
+        note_stored_losses(&state, &ledger, machine.public())?;
         let clock = Clock::new(machine.public(), options.max_drift);
         if let Some(newest) = ledger.newest() {
             clock.observe(newest);

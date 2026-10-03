@@ -1,7 +1,9 @@
 //! What did not last: a change a machine published that lost to a
 //! concurrent one becomes a suggestion of that machine once, whatever its
-//! disk holds, and a suggestion the group decided never comes back through
-//! a machine that took it further meanwhile.
+//! disk holds, even when the patch it lost to is the first its machine
+//! takes from a peer, and never again once the machine restarts or loses
+//! its state; a suggestion the group decided never comes back through a
+//! machine that took it further meanwhile.
 
 mod common;
 
@@ -84,6 +86,17 @@ async fn an_action_that_lost_is_suggested_once_by_its_machine_holding_nothing_th
     bob.wait_past_settling().await;
     assert!(alice.engine.suggestions().await.is_empty());
     assert!(bob.engine.suggestions().await.is_empty());
+    let bob = bob
+        .restart_after(|dirs, _| std::fs::remove_file(dirs.state_path()).unwrap())
+        .await;
+    eventually("bob rebuilds his state from alice", || async {
+        bob.engine.status().patches == alice.engine.status().patches
+    })
+    .await;
+    bob.wait_past_settling().await;
+    bob.wait_past_settling().await;
+    assert!(alice.engine.suggestions().await.is_empty());
+    assert!(bob.engine.suggestions().await.is_empty());
     for machine in [alice, &bob] {
         assert!(machine.engine.status().errors.is_empty());
     }
@@ -146,5 +159,45 @@ async fn a_suggestion_decided_while_its_machine_took_it_further_never_comes_back
     );
     assert_eq!(bob.read("+alice/old.txt"), None);
     machines.push(bob);
+    shut_down(machines).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_machine_that_loses_by_the_first_patch_it_takes_suggests_what_it_lost() {
+    let lookup = MemoryLookup::new();
+    let mut machines = group_on(&lookup, &["alice", "alice"], |_| {}).await;
+    joined(&machines).await;
+    let desktop = machines.pop().unwrap();
+    let laptop = &machines[0];
+    laptop.edit("+alice/todo.txt", "base");
+    eventually("the desktop holds the file", || async {
+        desktop.read("+alice/todo.txt").as_deref() == Some("base")
+    })
+    .await;
+    let desktop = desktop.restart_on(&MemoryLookup::new()).await;
+    laptop.edit("+alice/todo.txt", "laptop");
+    eventually("the laptop publishes its edit", || async {
+        laptop.engine.history(&path("+alice/todo.txt")).len() == 2
+    })
+    .await;
+    desktop.edit("+alice/todo.txt", "desktop");
+    eventually("the desktop publishes its later edit", || async {
+        desktop.engine.history(&path("+alice/todo.txt")).len() == 2
+    })
+    .await;
+    let desktop = desktop.restart_on(&lookup).await;
+    eventually(
+        "the laptop suggests what it lost and its disk keeps it",
+        || async {
+            let views = laptop.engine.suggestions().await;
+            one_change(&views, laptop, "+alice/todo.txt", 6)
+                && views[0].reason == Reason::Superseded
+                && desktop.engine.suggestions().await.len() == 1
+                && laptop.read("+alice/todo.txt").as_deref() == Some("laptop")
+                && desktop.read("+alice/todo.txt").as_deref() == Some("desktop")
+        },
+    )
+    .await;
+    machines.push(desktop);
     shut_down(machines).await;
 }

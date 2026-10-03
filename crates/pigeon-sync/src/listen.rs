@@ -89,12 +89,16 @@ impl Listening {
         let taken = take(
             &self.ledger,
             |new| self.state.add_patches(new),
+            |standing| {
+                self.state
+                    .note_losses(standing.iter().map(|(stamp, key)| (stamp, key)))
+            },
             &self.clock,
             &self.first_stamp,
             received,
         );
-        for refusal in &taken.refusals {
-            eprintln!("pigeon: listening to {}: {refusal}", self.key.name);
+        for report in &taken.reports {
+            eprintln!("pigeon: listening to {}: {report}", self.key.name);
         }
         if taken.stored {
             self.heard.send_replace(true);

@@ -489,8 +489,9 @@ impl State {
         })
     }
 
-    /// Whether this machine ever noted the losses of its changes, which a
-    /// state database of an older pigeon never did.
+    /// Whether this state notes the losses of its machine's changes, as it
+    /// does from the first start of an engine of this pigeon on, and never
+    /// did under an older one.
     ///
     /// # Errors
     ///

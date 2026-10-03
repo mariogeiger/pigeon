@@ -3,7 +3,10 @@
 //! machine's key since this run began, are stored all together before the
 //! ledger folds them, so that the ledger never holds a patch a
 //! restart would lose, and are refused all together when storing fails;
-//! the machines to keep sessions with follow from the ledger.
+//! the changes of those this machine made before that did not last are
+//! noted before anyone reads the ledger, so that a machine that lost its
+//! state never suggests them again; the machines to keep sessions with
+//! follow from the ledger.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -17,6 +20,7 @@ use pigeon_net::wire::Patches;
 use pigeon_store::group_key::GroupKey;
 
 use crate::engine::SharedLedger;
+use crate::losses::standing_losses;
 
 /// What taking a peer's patches did.
 #[derive(Default)]
@@ -25,20 +29,23 @@ pub(crate) struct Taken {
     pub fresh: Patches,
     /// The paths whose versions were computed anew.
     pub keys: BTreeSet<PathKey>,
-    /// Why patches were refused, one line per reason.
-    pub refusals: Vec<String>,
+    /// Why patches were refused, or their losses not noted, one line per
+    /// reason.
+    pub reports: Vec<String>,
     /// Whether the state stored what was taken.
     pub stored: bool,
 }
 
-/// Stores with `store` and folds the new patches `received` holds, and
-/// observes their times; `first` is the first stamp this machine's clock
-/// made in this run, after which every patch this machine signed is in the
-/// ledger already, so that another one signed with its key comes from a
-/// copy of it.
+/// Stores with `store` and folds the new patches `received` holds, notes
+/// with `note` the changes of those this machine made that did not last,
+/// and observes their times; `first` is the first stamp this machine's
+/// clock made in this run, after which every patch this machine signed is
+/// in the ledger already, so that another one signed with its key comes
+/// from a copy of it.
 pub(crate) fn take<E: std::fmt::Display>(
     ledger: &SharedLedger,
     store: impl FnOnce(&[SignedPatch]) -> Result<(), E>,
+    note: impl FnOnce(&[(Stamp, PathKey)]) -> Result<(), E>,
     clock: &Clock,
     first: &Stamp,
     received: Received,
@@ -68,14 +75,14 @@ pub(crate) fn take<E: std::fmt::Display>(
         })
         .collect();
     if copied > 0 {
-        taken.refusals.push(format!(
+        taken.reports.push(format!(
             "refused {copied} patches from {from} signed with this machine's key that this machine \
              never made: another machine runs with a copy of its key, such as a copied data folder \
              or a cloned system; that machine must leave the group and join it again"
         ));
     }
     if let Some(lead) = ahead.iter().max() {
-        taken.refusals.push(format!(
+        taken.reports.push(format!(
             "refused {} patches from {from} dated up to {}s ahead of this machine's clock: one of \
              the two clocks is wrong; they come again once it is set right",
             ahead.len(),
@@ -86,7 +93,7 @@ pub(crate) fn take<E: std::fmt::Display>(
     let inserted = match ledger.insert_all(candidates, store) {
         Ok(inserted) => inserted,
         Err(error) => {
-            taken.refusals.push(format!(
+            taken.reports.push(format!(
                 "could not store {count} patches from {from}, so none was taken; they come again: \
                  {error}"
             ));
@@ -95,13 +102,30 @@ pub(crate) fn take<E: std::fmt::Display>(
     };
     taken.stored = true;
     if let Some((_, error)) = inserted.refused.first() {
-        taken.refusals.push(format!(
+        taken.reports.push(format!(
             "refused {} patches from {from} whose signatures do not hold: {error}",
             inserted.refused.len()
         ));
     }
     for stamp in &inserted.added {
         clock.observe(stamp.time);
+    }
+    let standing = standing_losses(
+        &ledger,
+        inserted
+            .added
+            .iter()
+            .filter(|stamp| stamp.machine == first.machine)
+            .filter_map(|stamp| ledger.patch(stamp)),
+    );
+    if !standing.is_empty()
+        && let Err(error) = note(&standing)
+    {
+        taken.reports.push(format!(
+            "could not note {} changes this machine made before that did not last, which came \
+             back from {from}, so they may be suggested again: {error}",
+            standing.len()
+        ));
     }
     taken.keys = inserted
         .folded
@@ -158,22 +182,24 @@ mod tests {
                 kept.extend(new.iter().map(SignedPatch::stamp));
                 Ok::<(), String>(())
             },
+            |_: &[(Stamp, PathKey)]| Ok(()),
             &clock,
             &first,
             received(patches.clone()),
         );
-        assert!(taken.stored && taken.refusals.is_empty());
+        assert!(taken.stored && taken.reports.is_empty());
         assert_eq!(taken.fresh, patches);
         assert_eq!(kept, [bob.stamp(1), bob.stamp(2)]);
         assert!(taken.keys.contains(&key("x")));
         let again = take(
             &ledger,
             |_: &[SignedPatch]| Ok::<(), String>(()),
+            |_: &[(Stamp, PathKey)]| Ok(()),
             &clock,
             &first,
             received(patches),
         );
-        assert!(again.fresh.is_empty() && again.refusals.is_empty());
+        assert!(again.fresh.is_empty() && again.reports.is_empty());
     }
 
     #[test]
@@ -185,17 +211,18 @@ mod tests {
         let taken = take(
             &ledger,
             |_: &[SignedPatch]| Err("disk full"),
+            |_: &[(Stamp, PathKey)]| Ok(()),
             &clock,
             &first,
             received(vec![bob.join(1), bob.patch(2, vec![])]),
         );
         assert!(!taken.stored && taken.fresh.is_empty());
         assert!(
-            taken.refusals[0].contains("could not store 2 patches"),
+            taken.reports[0].contains("could not store 2 patches"),
             "{:?}",
-            taken.refusals
+            taken.reports
         );
-        assert!(taken.refusals[0].contains("disk full"));
+        assert!(taken.reports[0].contains("disk full"));
         assert_eq!(ledger.lock().patches().count(), 0);
     }
 
@@ -212,6 +239,7 @@ mod tests {
         let taken = take(
             &ledger,
             |_: &[SignedPatch]| Ok::<(), String>(()),
+            |_: &[(Stamp, PathKey)]| Ok(()),
             &clock,
             &first,
             received(vec![
@@ -223,8 +251,45 @@ mod tests {
         );
         let times: Vec<u64> = taken.fresh.iter().map(|patch| patch.stamp().time).collect();
         assert_eq!(times, [5, 6]);
-        assert_eq!(taken.refusals.len(), 2, "{:?}", taken.refusals);
-        assert!(taken.refusals[0].contains("copy of its key"));
-        assert!(taken.refusals[1].contains("ahead of this machine's clock"));
+        assert_eq!(taken.reports.len(), 2, "{:?}", taken.reports);
+        assert!(taken.reports[0].contains("copy of its key"));
+        assert!(taken.reports[1].contains("ahead of this machine's clock"));
+    }
+
+    #[test]
+    fn the_changes_this_machine_made_before_that_did_not_last_come_back_noted() {
+        let (mario, bob) = (machine("mario", 1), machine("bob", 2));
+        let ledger = SharedLedger::new(Ledger::new(group()));
+        let clock = Clock::new(mario.key.public(), Duration::from_secs(300));
+        let first = clock.stamp();
+        let mut noted = Vec::new();
+        let mut take_noting = |patches| {
+            take(
+                &ledger,
+                |_: &[SignedPatch]| Ok::<(), String>(()),
+                |standing: &[(Stamp, PathKey)]| {
+                    noted.extend_from_slice(standing);
+                    Ok(())
+                },
+                &clock,
+                &first,
+                received(patches),
+            )
+        };
+        let taken = take_noting(vec![
+            mario.join(1),
+            bob.join(2),
+            mario.patch(
+                3,
+                vec![change("x", Some(1), None), change("y", Some(1), None)],
+            ),
+            bob.patch(4, vec![change("x", Some(2), None)]),
+        ]);
+        assert!(taken.stored && taken.reports.is_empty());
+        let later = take_noting(vec![bob.patch(5, vec![change("y", Some(2), None)])]);
+        assert!(later.stored && later.reports.is_empty());
+        assert_eq!(noted, [(mario.stamp(3), key("x"))]);
+        let ledger = ledger.lock();
+        assert_eq!(ledger.unseen_versions(&key("y"))[0].stamp, mario.stamp(3));
     }
 }
