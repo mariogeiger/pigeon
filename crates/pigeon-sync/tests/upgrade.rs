@@ -108,6 +108,16 @@ async fn record_the_state_this_version_leaves() {
     shut_down([alice]).await;
 }
 
+/// Names `root` as the root in the configuration at `config`, in place of
+/// the root of the machine that recorded it, which may be a path this
+/// system cannot hold.
+fn name_root(config: &Path, root: &Path) {
+    let text = std::fs::read_to_string(config).unwrap();
+    let mut table: toml::Table = toml::from_str(&text).unwrap();
+    table.insert("root".to_owned(), root.to_str().unwrap().into());
+    std::fs::write(config, toml::to_string(&table).unwrap()).unwrap();
+}
+
 /// Opens a copy of the state `fixture` holds and checks that it shows the
 /// files recorded there, with their contents, publishing nothing.
 async fn opens(fixture: &Path) {
@@ -117,6 +127,10 @@ async fn opens(fixture: &Path) {
     for folder in ["config", "data", "root"] {
         copy_folder(&fixture.join(folder), &dir.path().join(folder));
     }
+    name_root(
+        &dir.path().join("config/config.toml"),
+        &dir.path().join("root"),
+    );
     let machine = reopen(dir, options(&MemoryLookup::new())).await;
     machine.wait_past_settling().await;
     let machines = [machine];
