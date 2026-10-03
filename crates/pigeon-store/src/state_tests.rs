@@ -124,6 +124,34 @@ fn kept_suggestions_round_trip_each_write_counted() {
 }
 
 #[test]
+fn only_writes_that_change_what_the_disk_keeps_wait_for_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::open(&dir.path().join("s")).unwrap();
+    let kept = Kept {
+        statement: GroupPath::parse(".pigeon/suggestions/1.json").unwrap(),
+        content: None,
+    };
+    state.keep("a", &kept).unwrap();
+    state.keep("a", &kept).unwrap();
+    state.unkeep("b").unwrap();
+    state.set_applied_root(dir.path()).unwrap();
+    state.set_applied_root(dir.path()).unwrap();
+    assert_eq!((state.revision(), state.syncs()), (2, 2));
+    state.unkeep("a").unwrap();
+    assert_eq!(state.kept_at("a").unwrap(), None);
+    assert_eq!((state.revision(), state.syncs()), (3, 3));
+    let path = GroupPath::parse("a.txt").unwrap();
+    let entry = IndexEntry {
+        path: path.clone(),
+        seen: None,
+        synced: None,
+    };
+    state.refresh_index([(&path.key(), Some(&entry))]).unwrap();
+    assert_eq!(state.index_entry(&path.key()).unwrap(), Some(entry));
+    assert_eq!((state.revision(), state.syncs()), (4, 3));
+}
+
+#[test]
 fn placed_folders_round_trip() {
     let dir = tempfile::tempdir().unwrap();
     let state = State::open(&dir.path().join("s")).unwrap();

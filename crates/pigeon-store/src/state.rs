@@ -2,7 +2,10 @@
 //! the disk index, the suggestions whose content the disk keeps, the
 //! folders the disk holds at other destinations, and the selection the
 //! disk was last brought to, in one redb file whose transactions keep them
-//! consistent across crashes.
+//! consistent across crashes. Each write waits for the disk to keep it,
+//! save a refresh of what the index already says, whose loss only makes
+//! pigeon read the files again; recording a value already held, or
+//! forgetting what nothing keeps, writes nothing.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -16,7 +19,8 @@ use pigeon_core::path::{GroupPath, PathKey};
 use pigeon_core::places::{Place, Places};
 use pigeon_core::selection::Rule;
 use redb::{
-    AccessGuard, Database, ReadableDatabase, ReadableTable, TableDefinition, WriteTransaction,
+    AccessGuard, Database, Durability, ReadableDatabase, ReadableTable, TableDefinition,
+    WriteTransaction,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -93,6 +97,7 @@ fn loss_key(stamp: &Stamp, key: &PathKey) -> Vec<u8> {
 pub struct State {
     database: Database,
     revision: AtomicU64,
+    syncs: AtomicU64,
 }
 
 impl State {
@@ -117,6 +122,7 @@ impl State {
         Ok(Self {
             database,
             revision: AtomicU64::new(0),
+            syncs: AtomicU64::new(0),
         })
     }
 
@@ -127,13 +133,42 @@ impl State {
         self.revision.load(Ordering::Relaxed)
     }
 
+    /// How many writes this handle waited for the disk to keep, each one
+    /// a sync of the file.
+    #[must_use]
+    pub fn syncs(&self) -> u64 {
+        self.syncs.load(Ordering::Relaxed)
+    }
+
     /// Runs `change` in one write transaction and commits it, a new
-    /// revision.
+    /// revision, once the disk keeps it.
     fn write(&self, change: impl FnOnce(&WriteTransaction) -> Result<()>) -> Result<()> {
-        let transaction = self.database.begin_write()?;
-        change(&transaction)?;
+        self.commit(Durability::Immediate, |transaction| {
+            change(transaction).map(|()| true)
+        })
+    }
+
+    /// Runs `change` in one write transaction, committed with
+    /// `durability` as a new revision when `change` says it wrote
+    /// something, and dropped otherwise.
+    fn commit(
+        &self,
+        durability: Durability,
+        change: impl FnOnce(&WriteTransaction) -> Result<bool>,
+    ) -> Result<()> {
+        let mut transaction = self.database.begin_write()?;
+        transaction
+            .set_durability(durability)
+            .map_err(redb::Error::from)?;
+        if !change(&transaction)? {
+            transaction.abort()?;
+            return Ok(());
+        }
         transaction.commit()?;
         self.revision.fetch_add(1, Ordering::Relaxed);
+        if matches!(durability, Durability::Immediate) {
+            self.syncs.fetch_add(1, Ordering::Relaxed);
+        }
         Ok(())
     }
 
@@ -149,7 +184,8 @@ impl State {
         value.as_ref().map(decode).transpose()
     }
 
-    /// Stores `value` at `key` in `table`.
+    /// Stores `value` at `key` in `table`, writing nothing when `key`
+    /// holds it already.
     fn set_value<T: Serialize + ?Sized>(
         &self,
         table: TableDefinition<'static, &'static str, &'static [u8]>,
@@ -157,11 +193,16 @@ impl State {
         value: &T,
     ) -> Result<()> {
         let bytes = postcard::to_stdvec(value)?;
-        self.write(|transaction| {
-            transaction
-                .open_table(table)?
-                .insert(key, bytes.as_slice())?;
-            Ok(())
+        self.commit(Durability::Immediate, |transaction| {
+            let mut table = transaction.open_table(table)?;
+            if table
+                .get(key)?
+                .is_some_and(|held| held.value() == bytes.as_slice())
+            {
+                return Ok(false);
+            }
+            table.insert(key, bytes.as_slice())?;
+            Ok(true)
         })
     }
 
@@ -263,20 +304,23 @@ impl State {
         &self,
         updates: impl IntoIterator<Item = (&'a PathKey, Option<&'a IndexEntry>)>,
     ) -> Result<()> {
-        self.write(|transaction| {
-            let mut table = transaction.open_table(INDEX)?;
-            for (key, entry) in updates {
-                match entry {
-                    Some(entry) => {
-                        let bytes = postcard::to_stdvec(entry)?;
-                        table.insert(key.as_str(), bytes.as_slice())?;
-                    }
-                    None => {
-                        table.remove(key.as_str())?;
-                    }
-                }
-            }
-            Ok(())
+        self.write(|transaction| put_index(transaction, updates))
+    }
+
+    /// Replaces index entries as [`State::update_index`] does, without
+    /// waiting for the disk to keep them, so that a crash may lose them:
+    /// for what the disk holds as the index already says, whose loss costs
+    /// only reading the files again.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the database cannot be written.
+    pub fn refresh_index<'a>(
+        &self,
+        updates: impl IntoIterator<Item = (&'a PathKey, Option<&'a IndexEntry>)>,
+    ) -> Result<()> {
+        self.commit(Durability::None, |transaction| {
+            put_index(transaction, updates).map(|()| true)
         })
     }
 
@@ -290,15 +334,15 @@ impl State {
         self.set_value(KEPT, path, kept)
     }
 
-    /// Forgets what the disk keeps at `path`.
+    /// Forgets what the disk keeps at `path`, writing nothing where it keeps
+    /// nothing.
     ///
     /// # Errors
     ///
     /// Fails if the database cannot be written.
     pub fn unkeep(&self, path: &str) -> Result<()> {
-        self.write(|transaction| {
-            transaction.open_table(KEPT)?.remove(path)?;
-            Ok(())
+        self.commit(Durability::Immediate, |transaction| {
+            Ok(transaction.open_table(KEPT)?.remove(path)?.is_some())
         })
     }
 
@@ -494,6 +538,26 @@ impl State {
             Ok(())
         })
     }
+}
+
+/// Sets or removes each index entry of `updates` in `transaction`.
+fn put_index<'a>(
+    transaction: &WriteTransaction,
+    updates: impl IntoIterator<Item = (&'a PathKey, Option<&'a IndexEntry>)>,
+) -> Result<()> {
+    let mut table = transaction.open_table(INDEX)?;
+    for (key, entry) in updates {
+        match entry {
+            Some(entry) => {
+                let bytes = postcard::to_stdvec(entry)?;
+                table.insert(key.as_str(), bytes.as_slice())?;
+            }
+            None => {
+                table.remove(key.as_str())?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

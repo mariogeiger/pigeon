@@ -413,7 +413,7 @@ impl Inner {
                     seen,
                     ..entry.clone()
                 };
-                self.state.update_index([(key, Some(&refreshed))])?;
+                self.state.refresh_index([(key, Some(&refreshed))])?;
             }
             return Ok(());
         };

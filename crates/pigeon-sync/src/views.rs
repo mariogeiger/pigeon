@@ -62,6 +62,9 @@ pub struct Status {
     /// The garbage collections of the blob store begun, a count that only
     /// grows: each one ends before the next begins.
     pub collections: u64,
+    /// The writes of the state the disk was waited for to keep, each a
+    /// sync of its file, a count that only grows within one run.
+    pub syncs: u64,
     /// The latest errors, oldest first.
     pub errors: Vec<String>,
 }
@@ -235,6 +238,7 @@ impl Engine {
             ticks: inner.passes.ticks.load(Ordering::Relaxed),
             scans: inner.passes.scans.load(Ordering::Relaxed),
             collections: inner.blobs.collections(),
+            syncs: inner.state.syncs(),
             errors: inner
                 .errors
                 .lock()
