@@ -1,5 +1,6 @@
 //! Tests of how patches reach every machine: through a machine between two
-//! that cannot reach each other, which tell why; once the clock of the
+//! that cannot reach each other, which tell why, even while that machine is
+//! busy with its disk; once the clock of the
 //! machine that refused them as dated too far ahead caught up; and from a
 //! machine restarted with its clock behind its own patches, which still
 //! dates its new patches after them and says so.
@@ -46,6 +47,37 @@ async fn patches_pass_through_a_machine_between_two_that_cannot_reach_each_other
             })
     })
     .await;
+    shut_down(machines).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_machine_busy_with_its_disk_takes_patches_and_passes_them_on() {
+    let near = MemoryLookup::new();
+    let mut machines = group_on(&near, &["bob", "alice"], |_| {}).await;
+    joined(&machines).await;
+    let far = MemoryLookup::new();
+    far.add_endpoint_info(
+        near.get_endpoint_info(machines[0].engine.machine())
+            .unwrap(),
+    );
+    let key = machines[0].engine.group_key().parse().unwrap();
+    machines.push(start_with(key, "carol", options(&far)).await);
+    joined(&machines).await;
+    let [bob, alice, carol] = &machines[..] else {
+        unreachable!()
+    };
+    let busy = bob.engine.hold_work().await;
+    let patches = bob.engine.status().patches;
+    alice.edit("+alice/note.txt", "from alice");
+    eventually("bob takes alice's patch while busy", || async {
+        bob.engine.status().patches > patches
+    })
+    .await;
+    eventually("carol takes it through bob while bob is busy", || async {
+        carol.engine.history(&path("+alice/note.txt")).len() == 1
+    })
+    .await;
+    drop(busy);
     shut_down(machines).await;
 }
 

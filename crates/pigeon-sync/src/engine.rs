@@ -1,7 +1,8 @@
 //! The engine of one group on one machine: it opens the group's state,
-//! binds its endpoint, and runs the one loop that receives patches, follows
-//! the root's changes, publishes settled edits or suggests them, follows
-//! the suggestions, joins the member to the group, and keeps the blobs it
+//! binds its endpoint, takes the patches peers send and passes them on as
+//! they come, and runs the one loop that follows the patches taken and the
+//! root's changes, publishes settled edits or suggests them, follows the
+//! suggestions, joins the member to the group, and keeps the blobs it
 //! needs from garbage collection. After each turn it announces this
 //! machine's drafts and signals whether what the engine shows may have
 //! changed.
@@ -500,10 +501,10 @@ impl Inner {
         Ok(())
     }
 
-    /// Takes patches from a peer: stores and folds the new ones, passes
-    /// them on, suggests the changes of this machine they made lose, and
-    /// brings the paths they touch into agreement.
-    async fn receive(self: &Arc<Self>, work: &mut Work, received: Received) {
+    /// Takes patches from a peer, apart from the loop: stores and folds the
+    /// new ones and passes them on, saying which paths they touch and
+    /// whether they change the relays.
+    fn take_from_peer(&self, received: Received) -> Option<Taken> {
         let taken = take(
             &self.ledger,
             |new| self.state.add_patches(new),
@@ -515,14 +516,29 @@ impl Inner {
             self.report(refusal);
         }
         if taken.fresh.is_empty() {
-            return;
+            return None;
         }
+        let relayed = taken.fresh.iter().any(|signed| {
+            signed
+                .patch
+                .changes
+                .iter()
+                .any(|change| is_relay_path(&change.path))
+        });
         self.node.publish(taken.fresh);
         self.want_peers();
+        Some(Taken {
+            keys: taken.keys.into_iter().collect(),
+            relayed,
+        })
+    }
+
+    /// Follows patches taken: suggests the changes of this machine they
+    /// made lose, and brings the paths they touch into agreement.
+    async fn follow_taken(self: &Arc<Self>, work: &mut Work, keys: &[PathKey]) {
         work.join = self.join_state();
         self.suggest_losses(work).await;
-        let keys: Vec<PathKey> = taken.keys.into_iter().collect();
-        self.refresh_keys(work, &keys).await;
+        self.refresh_keys(work, keys).await;
         if keys.iter().any(is_statement) {
             self.follow_suggestions(work).await;
         }
@@ -723,9 +739,30 @@ fn merge(rescans: &mut Vec<Rescan>, rescan: Rescan) {
     }
 }
 
-async fn run(
+/// The paths patches taken touch, and whether they change the relays.
+struct Taken {
+    keys: Vec<PathKey>,
+    relayed: bool,
+}
+
+/// Takes the patches peers send as they come, apart from the loop, so
+/// that the ledger, the status and the machines this one passes patches
+/// on to never wait for its disk; the loop follows what was taken.
+async fn take_patches(
     inner: Arc<Inner>,
     mut received: mpsc::Receiver<Received>,
+    taken: mpsc::UnboundedSender<Taken>,
+) {
+    while let Some(patches) = received.recv().await {
+        if let Some(new) = inner.take_from_peer(patches) {
+            let _ = taken.send(new);
+        }
+    }
+}
+
+async fn run(
+    inner: Arc<Inner>,
+    received: mpsc::Receiver<Received>,
     mut rescan_events: mpsc::UnboundedReceiver<Rescan>,
     mut wakes: mpsc::UnboundedReceiver<Vec<PathKey>>,
     (begun, mut stopped): (oneshot::Sender<()>, oneshot::Receiver<()>),
@@ -736,6 +773,9 @@ async fn run(
     let mut last_protect = Instant::now();
     let mut gathered = Vec::new();
     let mut gathered_until = None;
+    let (taken_sender, mut taken) = mpsc::unbounded_channel();
+    let mut taking = JoinSet::new();
+    taking.spawn(take_patches(inner.clone(), received, taken_sender));
     {
         let mut work = inner.work.lock().await;
         let _ = begun.send(());
@@ -754,15 +794,15 @@ async fn run(
     }
     loop {
         tokio::select! {
-            _ = &mut stopped => return,
-            Some(patches) = received.recv() => {
-                let relayed = patches.patches.iter().any(|signed| {
-                    signed.patch.changes.iter().any(|change| is_relay_path(&change.path))
-                });
+            _ = &mut stopped => {
+                taking.shutdown().await;
+                return;
+            }
+            Some(new) = taken.recv() => {
                 let mut work = inner.work.lock().await;
-                inner.receive(&mut work, patches).await;
+                inner.follow_taken(&mut work, &new.keys).await;
                 drop(work);
-                if relayed {
+                if new.relayed {
                     inner.follow_relay().await;
                 }
             }

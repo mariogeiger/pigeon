@@ -3197,6 +3197,7 @@ dependencies = [
  "pigeon-core",
  "pigeon-net",
  "pigeon-store",
+ "pigeon-sync",
  "postcard",
  "serde",
  "serde_json",
