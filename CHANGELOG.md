@@ -4,6 +4,141 @@ All notable user-visible changes to pigeon are documented here. While the
 version is 0.x, a change that breaks compatibility increments the second
 number, and any other change the third.
 
+## 0.9.0 — 2026-10-03
+
+Every machine of a group must update to 0.9.0 together: sessions now
+speak `pigeon/sync/10`, which earlier versions do not, so a machine left
+on 0.8 syncs with none of the others until it updates.
+
+### Changed
+
+- A deletion is published only when pigeon sees the file gone, in a
+  folder it could read, under a root that holds its `.pigeon` folder. An
+  unreadable folder, an unplugged disk or any other error publishes
+  nothing and is reported.
+- A group whose root or `.pigeon` folder goes missing after files were
+  synced there pauses: it keeps receiving and serving, says why on a
+  `Paused:` line of `pigeon group status` and of the Overview, and
+  resumes on its own when the folder returns. Moving a group to another
+  root resumes there when that folder holds the group's `.pigeon`
+  folder, starts afresh like a join when it is empty or missing, leaving
+  the old root as it was, and is refused when it holds other files.
+- A name some machine cannot hold (decomposed Unicode, a character or
+  name Windows forbids, a trailing dot or space, two names differing only
+  by case) is kept out of the group, instead of being suggested to the
+  whole group. The machine holding it lists it with the free portable
+  name closest to it, which one action renames it to on disk. Renaming
+  only the case of a name is published as a move.
+- A path `.pigeonignore` excludes is never read, published, written or
+  deleted on this machine, whether the group knows it or not.
+- Deleting, restoring, validating, discarding and leaving ask one
+  question, the same on the command line, the API and the web UI, and
+  `--yes` answers it, so scripts that delete or restore files now pass
+  `--yes`. Leaving says when this machine holds the only copy of the
+  group's history.
+- `pigeon update` and the install script install the newest `vX.Y.Z`
+  release instead of the head of main, in the place of the program the
+  daemon runs. `--path` still builds from a local checkout.
+- The daemon restarts five seconds after it fails, however many times.
+  A release build aborts on a panic, so that the service sees the crash,
+  and a detached daemon appends to `daemon.log` instead of truncating it.
+- The API takes its token only from the `Authorization` header, never
+  from the cookie a browser attaches, and a request that changes
+  something is refused when it comes from a page of another site.
+- `pigeon status` and the Overview answer without waiting for the work
+  in progress, and the command line gives up on a daemon that does not
+  connect.
+- A group opens on its Files page, at `/g/{group}`, with the Overview at
+  `/g/{group}/overview`; the Files page lists no statement under
+  `.pigeon`.
+- The relay the group names is used alongside iroh's public relays, so
+  that one relay going down never cuts the group apart.
+- Edits that settle together are published in patches of at most a
+  megabyte of changes, each move kept whole.
+- pigeon is built with the Rust that `rust-toolchain.toml` names, and
+  its tests run on Linux, macOS and Windows on every push.
+
+### Added
+
+- `pigeon file unportable` lists the names kept out of the group, and
+  `pigeon file make-portable` renames one to its proposed portable name,
+  as the button above the Files page's tree does.
+- `pigeon group serve` makes this machine a server of its group: it
+  follows everything and keeps every version. The setup, the install
+  script and the Overview page use it.
+- `pigeon update --rollback` puts back the program the last update
+  replaced, kept as `pigeon.previous`.
+- The status says why each machine could not be synced with, until a
+  session opens, and when this machine's clock lags the group's.
+
+### Fixed
+
+- Two machines that missed each other's patches find the gap: each
+  session's hello, and every minute after, compares a digest of each
+  machine's patches and sends all of a machine's patches when they
+  differ.
+- A patch is dated after every time the clock stamped or observed, across
+  restarts and when the system clock is set back, and a machine refuses
+  loudly the patches a copy of its own key made elsewhere.
+- Each batch of patches received is stored in one transaction before
+  the ledger takes it, and refused whole when storing fails.
+- Files, the configuration and the group's secrets are written whole and
+  flushed to the disk under a name no other write shares, so a crash
+  leaves the old content or the new, never a torn one.
+- A file is written, moved or removed only while the disk shows what
+  pigeon last saw there, so an edit made meanwhile is never overwritten,
+  and a file is published only if it did not change while copied.
+- Files are hashed by chunks without mapping them, so a file truncated
+  while hashed no longer crashes the daemon; an edit that keeps the size
+  and lands within the timestamp's precision is seen; a replaced file is
+  told by its inode.
+- Temporary files a stopped run left are removed when the group starts.
+- A change of this machine that lost is suggested once, whatever its
+  disk holds, and a suggestion the group decided never comes back.
+- A selection pattern matches however its names are spelled in Unicode,
+  and a place whose destination nests with the root or another
+  destination is refused where the system resolves them, from the API
+  and the config file alike.
+- Walking the disk, hashing and moving placed folders no longer block
+  the daemon's other work, and a burst of more than 256 changes is read
+  as one rescan.
+- The handshake is bounded and timed, a machine that cannot be reached
+  is dialed less and less often, a fetch that stops growing fails, and a
+  blob that failed waits longer before it is fetched again.
+- `pigeon reload` reloads the groups whose configuration reads even when
+  another's does not, and a group that does not start can be mended with
+  `pigeon config show` and `pigeon config set`.
+- Uploads of any size are taken: the API, the web forms and `pigeon file
+  write --content` stream a file's content to the disk as it arrives
+  instead of holding it in memory, downloads are sent in chunks, and a
+  version too large to compare is left unread.
+- Stopping a group ends its blob fetches and every blob it serves, then
+  stops its blob store whole, so it can start again at once and a request
+  arriving during the shutdown no longer aborts the daemon.
+- A blob is kept from garbage collection from the start of its fetch
+  until the file it makes is on the disk, so a collection running
+  meanwhile no longer takes a file fetched but not yet written.
+- A file only opened or read no longer wakes a rescan, which made
+  pigeon's own scans wake one another without end on Linux.
+- A burst of changes is read in one look, each folder listed once, while
+  the engine goes on with its other work, so a burst of files no longer
+  lands at about five a second nor costs a listing per file.
+- pigeon watches with notify 9, whose Windows watcher tells when it lost
+  events, and rescans the whole root whenever the system lost track of
+  what changed. A walk waits until the watcher watches every folder it
+  reported new, so each file made in a new folder is seen, in the walk or
+  as a change.
+- The patches a machine receives are stored and passed on as they come,
+  however long its disk work takes, so a machine busy writing a large
+  change no longer holds back the group's patches, nor the machines it
+  relays them to.
+- pigeon waits for the disk once for each file it writes, half as often
+  as before, and never to note what its index already says, so a scan
+  that finds nothing new waits for no disk.
+- A fetch keeps asking a machine that holds nothing of the blob yet,
+  giving up only once no machine is left or the fetch stalls, and an
+  error of the blob store tells each cause under it.
+
 ## 0.8.0 — 2026-10-02
 
 ### Changed

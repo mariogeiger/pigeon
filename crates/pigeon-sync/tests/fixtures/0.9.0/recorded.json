@@ -1,0 +1,9 @@
+{
+  "patches": 3,
+  "files": {
+    "+alice/edited.txt": "605a53e8a7a5a785d4366b24e019272e55da2d93383e3fc8aee54d165c633f37",
+    "+alice/folder/inside.txt": "6a7e924b906143720ce9bdd72de94f56088a55e99d6893c544a740b3cc0441b2",
+    "+alice/large.txt": "e7609e629e71257ec8070a38051f58553368acfafd92d9122e8fb06b9dab5818",
+    "+alice/notes.txt": "f7bc584589a6851261310f7cd0c4413392c0aa7577fd40f128b62c8ab4fbba7e"
+  }
+}

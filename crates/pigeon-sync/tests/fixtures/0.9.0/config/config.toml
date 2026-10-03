@@ -1,0 +1,19 @@
+# pigeon's configuration of this group on this machine. Edit it, then apply
+# it with `pigeon daemon reload`. Each selection line is `follow <pattern>`,
+# `pin <RFC 3339 time> <pattern>` or `free <pattern>`, the last line
+# matching a file deciding it; retention counts days, and its quota is a
+# percentage of the disk. pigeon rewrites this file whole, without other
+# comments, whenever it changes a setting.
+
+member = "alice"
+root = "/tmp/.tmpQfVMTZ/root"
+selection = ["follow +alice/"]
+places = []
+
+[retention]
+every = 1
+daily = 30
+weekly = 365
+deletion = 365
+quota = 20
+everything = false
