@@ -204,7 +204,7 @@ pub(crate) struct Work {
     pub out_of_place: Vec<(GroupPath, String)>,
     /// Why the whole root is out of place, if it is; nothing syncs then.
     pub root_problem: Option<String>,
-    pub watcher: Option<notify::RecommendedWatcher>,
+    pub watcher: Option<Arc<notify::RecommendedWatcher>>,
     pub watched: Vec<Watched>,
     /// The drafts last announced: each path, size, and when it last changed.
     pub announced: Option<Vec<(PathKey, u64, Instant)>>,

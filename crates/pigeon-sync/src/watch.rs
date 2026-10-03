@@ -2,7 +2,9 @@
 //! operating system reports changed paths, which become the group paths
 //! whose subtrees pigeon rescans; a path only opened or read changed
 //! nothing, so that pigeon's own scans wake no other, and events the system
-//! lost track of make one rescan of the whole root.
+//! lost track of make one rescan of the whole root. A walk waits until the
+//! watcher watches every folder it reported new, so that each file shows in
+//! the walk or in a change.
 
 use std::path::{Path, PathBuf};
 
@@ -146,9 +148,18 @@ pub fn watch(
     Ok(system)
 }
 
+/// Waits until `watcher` handled every change it reported so far. A system
+/// that watches each folder apart, as inotify does, reports a new folder
+/// before it watches it, so that a file made there meanwhile shows in no
+/// change: a walk of the folder begun after this sees it.
+pub fn catch_up(watcher: &RecommendedWatcher) {
+    let _ = watcher.watched_paths();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use std::time::Duration;
 
     #[test]
@@ -249,5 +260,69 @@ mod tests {
         })
         .await;
         assert_eq!(seen, Ok(true));
+    }
+
+    /// The paths of the files under `location`, relative to `root`.
+    fn files_under(root: &Path, location: &Path) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(location) else {
+            return Vec::new();
+        };
+        entries
+            .flat_map(|entry| {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    files_under(root, &path)
+                } else {
+                    let relative = path.strip_prefix(root).unwrap();
+                    vec![relative.to_str().unwrap().replace('\\', "/")]
+                }
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_walk_after_catching_up_sees_every_file_no_change_reports() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let (sender, mut changes) = mpsc::unbounded_channel();
+        let watcher = watch(Watched::all(&root, &[]), sender).unwrap();
+        let written: BTreeSet<String> = (0..100)
+            .flat_map(|folder| (0..100).map(move |n| format!("d{folder}/a/b/{n}.txt")))
+            .collect();
+        let writer = std::thread::spawn({
+            let (root, written) = (root.clone(), written.clone());
+            move || {
+                for file in &written {
+                    let location = root.join(file);
+                    std::fs::create_dir_all(location.parent().unwrap()).unwrap();
+                    std::fs::write(location, "x").unwrap();
+                }
+                std::fs::write(root.join("marker"), "m").unwrap();
+            }
+        });
+        let mut seen = BTreeSet::new();
+        while !seen.contains("marker") {
+            let change = tokio::time::timeout(Duration::from_secs(5), changes.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let location = match &change {
+                Rescan::Under(path) => pigeon_store::disk::fs_path(&root, path),
+                Rescan::All => root.clone(),
+            };
+            if location.is_dir() {
+                catch_up(&watcher);
+                seen.extend(files_under(&root, &location));
+            } else if let Rescan::Under(path) = change {
+                seen.insert(path.as_str().to_owned());
+            }
+        }
+        writer.join().unwrap();
+        let missed: Vec<_> = written.difference(&seen).collect();
+        assert!(
+            missed.is_empty(),
+            "{} files missed: {missed:?}",
+            missed.len()
+        );
     }
 }

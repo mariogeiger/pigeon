@@ -4,6 +4,7 @@
 //! written, and watching the destinations.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Result, bail};
 use pigeon_core::path::GroupPath;
@@ -133,7 +134,7 @@ impl Inner {
         }
         match watch(watched.clone(), self.rescans.clone()) {
             Ok(started) => {
-                work.watcher = Some(started);
+                work.watcher = Some(Arc::new(started));
                 work.watched = watched;
             }
             Err(error) => self.report(format!("watching the root: {error}")),

@@ -10,6 +10,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use anyhow::Result;
 use iroh_blobs::api::TempTag;
+use notify::RecommendedWatcher;
 use pigeon_core::clock::{MachineId, Stamp, ntp_time};
 use pigeon_core::ledger::{Ledger, Version};
 use pigeon_core::patch::{Change, Content, ContentHash};
@@ -25,7 +26,7 @@ use pigeon_store::state::Kept;
 use crate::blocking::{blocking, observed};
 use crate::engine::{Inner, Passes, Pending, Work};
 use crate::reconcile::{Disk, KeptSuggestion, Step, View, reconcile};
-use crate::watch::Rescan;
+use crate::watch::{Rescan, catch_up};
 
 /// Where a path is on disk, as the disk spells it, and whether a file is
 /// there, as a probe told it.
@@ -146,12 +147,19 @@ fn subtrees(rescans: &[Rescan]) -> Option<Vec<GroupPath>> {
 }
 
 /// What `prober` sees walking the disk at every one of `rescans` in one
-/// look, on a thread for blocking work, having removed the temporary files
-/// a stopped run left there; why one could not be removed is among the
-/// errors.
-async fn scanned(mut prober: Prober, rescans: &[Rescan]) -> (Prober, Scan) {
+/// look, on a thread for blocking work, once `watcher` watches every
+/// folder it reported new, having removed the temporary files a stopped
+/// run left there; why one could not be removed is among the errors.
+async fn scanned(
+    mut prober: Prober,
+    rescans: &[Rescan],
+    watcher: Option<Arc<RecommendedWatcher>>,
+) -> (Prober, Scan) {
     let under = subtrees(rescans);
     blocking(move || {
+        if let Some(watcher) = &watcher {
+            catch_up(watcher);
+        }
         let mut scan = prober.scan(under.as_deref());
         for temporary in scan
             .temporaries
@@ -212,7 +220,7 @@ impl Inner {
         if !self.ready_to_scan(work, rescans).await {
             return;
         }
-        let (prober, scan) = scanned(self.prober(work), rescans).await;
+        let (prober, scan) = scanned(self.prober(work), rescans, work.watcher.clone()).await;
         self.compare_scan(work, prober, rescans, scan).await;
     }
 
@@ -226,8 +234,9 @@ impl Inner {
         }
         let in_place = work.in_place();
         let prober = self.prober(&work);
+        let watcher = work.watcher.clone();
         drop(work);
-        let (_, scan) = scanned(prober, rescans).await;
+        let (_, scan) = scanned(prober, rescans, watcher).await;
         let mut work = self.work.lock().await;
         self.lay_out(&mut work).await;
         if work.in_place() != in_place || work.root_problem.is_some() {
