@@ -7,6 +7,8 @@ mod common;
 use std::time::Duration;
 
 use common::{eventually, eventually_reaches, group, joined, shut_down};
+use pigeon_core::name::MemberName;
+use pigeon_core::statement::member_path;
 
 /// How long after its change a file is read again by a look, as a later
 /// write may leave its modification time as it was: the resolution of the
@@ -19,6 +21,14 @@ async fn a_machine_waits_for_its_disk_once_per_file_it_writes_and_never_for_a_lo
     joined(&machines).await;
     let bob = machines.pop().unwrap();
     bob.follow("+alice/").await;
+    eventually("bob's disk shows the file of every member", || async {
+        ["alice", "bob"].iter().all(|name| {
+            let path = member_path(&MemberName::parse(name).unwrap());
+            bob.file(path.as_str()).exists()
+        })
+    })
+    .await;
+    bob.wait_for_ticks(1).await;
     let before = bob.engine.status();
     let files: Vec<String> = (0..50).map(|n| format!("+alice/inbox/{n}.txt")).collect();
     for file in &files {
