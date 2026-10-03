@@ -112,6 +112,10 @@ on 0.8 syncs with none of the others until it updates.
   write --content` stream a file's content to the disk as it arrives
   instead of holding it in memory, downloads are sent in chunks, and a
   version too large to compare is left unread.
+- A version garbage collection takes while it is read or downloaded
+  reads as no longer held on this machine, which the web answers with a
+  404, instead of failing, and a download under way keeps its content
+  until it ends.
 - Stopping a group ends its blob fetches and every blob it serves, then
   stops its blob store whole, so it can start again at once and a request
   arriving during the shutdown no longer aborts the daemon.

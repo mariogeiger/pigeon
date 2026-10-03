@@ -6,7 +6,7 @@
 # comments, whenever it changes a setting.
 
 member = "alice"
-root = "/tmp/.tmpQfVMTZ/root"
+root = "/tmp/.tmpUQaENZ/root"
 selection = ["follow +alice/"]
 places = []
 
