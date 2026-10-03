@@ -613,9 +613,11 @@ impl Inner {
     }
 
     /// Fetches a blob from its author's machine and every peer at once, then
-    /// wakes the paths waiting for it; after a failure it waits before
-    /// trying again, twice as long after each failure in a row, but no
-    /// longer than until a session opens, and reports only the first.
+    /// wakes the paths waiting for it; after a failure while this machine
+    /// still wants the blob it waits before trying again, twice as long
+    /// after each failure in a row, but no longer than until a session
+    /// opens, and reports only the first, while a fetch nothing wants any
+    /// more ends at once, as no failure.
     ///
     /// The blob is held from the start, so that garbage collection never
     /// takes what the fetch stores before the paths waiting for it protect
@@ -651,35 +653,71 @@ impl Inner {
                 .node
                 .fetch(pigeon_store::blobs::blob_hash(&hash), providers)
                 .await;
-            if let Err(error) = &fetched {
-                if failures == 0 {
-                    engine.report(format!("{error:#}"));
-                }
-                drop(engine);
-                let wait = RETRY.saturating_mul(1 << failures.min(16)).min(MAX_RETRY);
-                tokio::select! {
-                    () = tokio::time::sleep(wait) => {}
-                    _ = opened.changed() => {}
-                }
-                let Some(again) = inner.upgrade() else {
-                    return;
-                };
-                return again.release(hash, held, false).await;
+            let Err(error) = fetched else {
+                return engine.release(hash, held, false).await;
+            };
+            let wanted = {
+                let work = engine.work.lock().await;
+                engine.wants(&work, hash)
+            };
+            match wanted {
+                Ok(false) => return engine.release(hash, held, false).await,
+                Ok(true) if failures == 0 => engine.report(format!("{error:#}")),
+                Ok(true) => {}
+                Err(failed) => engine.report(format!("{error:#}; {failed:#}")),
             }
-            engine.release(hash, held, true).await;
+            drop(engine);
+            let wait = RETRY.saturating_mul(1 << failures.min(16)).min(MAX_RETRY);
+            tokio::select! {
+                () = tokio::time::sleep(wait) => {}
+                _ = opened.changed() => {}
+            }
+            let Some(again) = inner.upgrade() else {
+                return;
+            };
+            again.release(hash, held, true).await;
         });
     }
 
-    /// Wakes the paths waiting for a blob, counting a failed fetch of it,
-    /// with what the fetch stored `held` until it is protected.
-    async fn release(&self, hash: ContentHash, held: TempTag, fetched: bool) {
+    /// Whether this machine still wants the blob `hash`: the disk is to
+    /// hold it at a path waiting for it, statements included, or a live
+    /// suggestion carries it to a path this machine follows.
+    fn wants(&self, work: &Work, hash: ContentHash) -> Result<bool> {
+        let is_hash =
+            |content: Option<Content>| content.is_some_and(|content| content.hash == hash);
+        let carried = work.suggestions.values().any(|live| {
+            live.suggestion.changes.iter().any(|change| {
+                is_hash(change.content)
+                    && work.config.selection.cutoff(&change.path) == Cutoff::PlusInfinity
+            })
+        });
+        if carried {
+            return Ok(true);
+        }
+        for key in work.fetching.get(&hash).into_iter().flatten() {
+            let indexed = self.state.index_entry(key)?.is_some();
+            let ledger = self.ledger.lock();
+            let Some(head) = ledger.head(key) else {
+                continue;
+            };
+            let cutoff = work.config.selection.cutoff(&head.path);
+            if is_hash(target(&ledger, key, cutoff, indexed).and_then(|version| version.content)) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Wakes the paths waiting for a blob, counting a fetch of it that
+    /// `failed`, with what the fetch stored `held` until it is protected.
+    async fn release(&self, hash: ContentHash, held: TempTag, failed: bool) {
         let mut work = self.work.lock().await;
         work.tags.push(held);
         work.protect_due = true;
-        if fetched {
-            work.fetch_failures.remove(&hash);
-        } else {
+        if failed {
             *work.fetch_failures.entry(hash).or_default() += 1;
+        } else {
+            work.fetch_failures.remove(&hash);
         }
         let keys = work.fetching.remove(&hash);
         drop(work);

@@ -190,8 +190,9 @@ pub(crate) struct Work {
     pub config: ConfigFile,
     /// Blobs being fetched, with the keys waiting for each.
     pub fetching: HashMap<ContentHash, BTreeSet<PathKey>>,
-    /// How many fetches of each blob failed in a row, until one succeeds;
-    /// at most one entry per content the ledger names.
+    /// How many fetches of each blob failed in a row while this machine
+    /// wanted it, until one succeeds or ends with nothing wanting the
+    /// blob; at most one entry per content the ledger names.
     pub fetch_failures: HashMap<ContentHash, u32>,
     /// The tasks fetching blobs, which shutting down ends.
     pub fetches: JoinSet<()>,
